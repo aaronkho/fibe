@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=62.0", "wheel", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fixed_boundary_equilibrium_solver"
+description = "Fixed boundary tokamak equilibrium solver in pure Python"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {file = "LICENSE"}
+keywords = []
+authors = [
+  { name = "Aaron Ho", email = "aaronkho@mit.edu" }
+]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Science/Research",
+  "Topic :: Utilities",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+dynamic = ["version"]
+
+dependencies = [
+  "pip",
+  "numpy",
+  "pandas",
+  "xarray",
+  "hdf5",
+  "netcdf4",
+  "tables",
+  "scipy",
+  "ipython",
+]
+
+[project.optional-dependencies]
+dev = ["coverage", "pytest", "pytest-cov"]
+docs = ["sphinx", "furo", "sphinx-rtd-theme"]
+build = ["build", "twine"]
+
+[project.urls]
+"Homepage" = "https://gitlab.com/aaronkho/fixed_boundary_equilibrium_solver"
+"Bug Reports" = "https://gitlab.com/aaronkho/fixed_boundary_equilibrium_solver/-/issues"
+"Source" = "https://gitlab.com/aaronkho/fixed_boundary_equilibrium_solver"
+
+[project.scripts]
+
+[tool.setuptools.dynamic]
+version = {attr = "fbe.__version__"}
+
+[tool.pytest.ini_options]
+
