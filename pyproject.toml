@@ -3,7 +3,7 @@ requires = ["setuptools>=62.0", "wheel", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "fixed_boundary_equilibrium_solver"
+name = "fbe"
 description = "Fixed boundary tokamak equilibrium solver in pure Python"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -27,7 +27,6 @@ dependencies = [
   "numpy",
   "pandas",
   "xarray",
-  "hdf5",
   "netcdf4",
   "tables",
   "scipy",
