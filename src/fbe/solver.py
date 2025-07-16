@@ -1,6 +1,7 @@
 import argparse
 from pathlib import Path
 import numpy as np
+import xarray as xr
 from scipy.interpolate import splrep, splev, RectBivariateSpline, RegularGridInterpolator
 from scipy.sparse import spdiags
 from scipy.sparse.linalg import factorized
@@ -317,11 +318,11 @@ class FixedBoundaryEquilibrium():
         # COMPUTE DIFFERENCE EQUATION QUANTITIES
         c0 = self._data['rbdry'][:-1] + 1.0j * self._data['zbdry'][:-1]
         c1 = self._data['rbdry'][1:] + 1.0j * self._data['zbdry'][1:]
-        bma = c1 - c0
-        rmask = (bma.imag != 0.0)
-        bmar  = bma.imag.compress(rmask)
-        zmask = (bma.real != 0.0)
-        bmaz  = bma.real.compress(zmask)
+        dl = c1 - c0
+        rmask = (dl.imag != 0.0)
+        dlr  = dl.imag.compress(rmask)
+        zmask = (dl.real != 0.0)
+        dlz  = dl.real.compress(zmask)
 
         #n = self._data['rbdry'].size - 1
         #s = (self._data['rbdry'][1:] - self._data['rbdry'][:n]) / (self._data['zbdry'][1:] - self._data['zbdry'][:n])
@@ -341,13 +342,13 @@ class FixedBoundaryEquilibrium():
             b1 = 1.0
             b2 = 1.0
             a = c0 - (rr + 1.0j * zz)
-            cr = -a.imag.compress(rmask) / bmar
-            cz = -a.real.compress(zmask) / bmaz
-            abma = (a.conj() * bma).imag
-            dr = abma.compress(rmask) / bmar
-            dz = -abma.compress(zmask) / bmaz
-            drc = dr.compress((cr <= 1.0) & (cr >= 0)) * self._data['hrm1']
-            dzc = dz.compress((cz <= 1.0) & (cz >= 0)) * self._data['hzm1']
+            cr = -a.imag.compress(rmask) / dlr
+            cz = -a.real.compress(zmask) / dlz
+            adl = (a.conj() * dl).imag
+            dr = adl.compress(rmask) / dlr
+            dz = -adl.compress(zmask) / dlz
+            drc = dr.compress((cr <= 1.0) & (cr >= 0)) * self._data['hrm1']   # (a.r - dl.r * a.z / dl.z) / hr
+            dzc = dz.compress((cz <= 1.0) & (cz >= 0)) * self._data['hzm1']   # (a.z - dl.z * a.r / dl.r) / hz
 
             # XM,YM = LOCATION OF ADJACENT OUTSIDE POINTS AS A FRACTION OF GRID SPACING
             if inout[ij] & 0b10:
@@ -392,10 +393,10 @@ class FixedBoundaryEquilibrium():
         self.A = spdiags(data, diags, self._data['nrz'], self._data['nrz']).T
         del s1, s2, s3, s4
 
-        self._data['a1'] = self._data['a1'].take(ijedge)
-        self._data['a2'] = self._data['a2'].take(ijedge)
-        self._data['b1'] = self._data['b1'].take(ijedge)
-        self._data['b2'] = self._data['b2'].take(ijedge)
+        #self._data['a1'] = self._data['a1'].take(ijedge)
+        #self._data['a2'] = self._data['a2'].take(ijedge)
+        #self._data['b1'] = self._data['b1'].take(ijedge)
+        #self._data['b2'] = self._data['b2'].take(ijedge)
 
         if solver:
             self.make_solver()
@@ -486,19 +487,19 @@ class FixedBoundaryEquilibrium():
             i = k - j * self._data['nr']
             det = rp[i] * dzb - zp[j] * drb
             det = np.where(det==0.0, 1.e-10, det)
-            r = rp[i] * drzb / det
-            z = zp[j] * drzb / det
+            rr = rp[i] * drzb / det
+            zz = zp[j] * drzb / det
             xin = np.logical_or(
-                np.logical_and(r - rb[1:] <=  1.e-11, r - rb[:-1] >= -1.e-11),
-                np.logical_and(r - rb[1:] >= -1.e-11, r - rb[:-1] <=  1.e-11),
+                np.logical_and(rr - rb[1:] <=  1.e-11, rr - rb[:-1] >= -1.e-11),
+                np.logical_and(rr - rb[1:] >= -1.e-11, rr - rb[:-1] <=  1.e-11),
             )
             yin = np.logical_or(
-                np.logical_and(z - zb[1:] <=  1.e-11, z - zb[:-1] >= -1.e-11),
-                np.logical_and(z - zb[1:] >= -1.e-11, z - zb[:-1] <=  1.e-11),
+                np.logical_and(zz - zb[1:] <=  1.e-11, zz - zb[:-1] >= -1.e-11),
+                np.logical_and(zz - zb[1:] >= -1.e-11, zz - zb[:-1] <=  1.e-11),
             )
             rzin = np.logical_and(yin, xin)
-            rc = r.compress(rzin)
-            zc = z.compress(rzin)
+            rc = rr.compress(rzin)
+            zc = zz.compress(rzin)
             if rc.size == 0 or zc.size == 0:
                 rho = 0.0
             else:
@@ -553,12 +554,12 @@ class FixedBoundaryEquilibrium():
         apsi = np.abs(self._data['psi'].ravel())
         nr = self._data['nr']
         k = apsi.argmax()
-        ax = 0.5 * self._data['hrm1'] * (apsi[k+1] - apsi[k-1])
-        ay = 0.5 * self._data['hzm1'] * (apsi[k+nr] - apsi[k-nr])
-        axx = self._data['hrm2'] * (apsi[k+1] + apsi[k-1] - 2.0 * apsi[k])
-        ayy = self._data['hzm2'] * (apsi[k+nr] + apsi[k-nr] - 2.0 * apsi[k])
+        ax = 0.5 * self._data['hrm1'] * (apsi[k + 1] - apsi[k - 1])
+        ay = 0.5 * self._data['hzm1'] * (apsi[k + nr] - apsi[k - nr])
+        axx = self._data['hrm2'] * (apsi[k + 1] + apsi[k - 1] - 2.0 * apsi[k])
+        ayy = self._data['hzm2'] * (apsi[k + nr] + apsi[k - nr] - 2.0 * apsi[k])
         axy = 0.25 * self._data['hrm1'] * self._data['hzm1'] * (
-            apsi[k+nr+1] + apsi[k-nr-1] - apsi[k-nr+1] - apsi[k+nr-1]
+            apsi[k + nr + 1] + apsi[k - nr - 1] - apsi[k - nr + 1] - apsi[k + nr - 1]
         )
 
         # SOLVE FOR LOCATION WHERE X AND Y DERIVATIVES ARE 0
@@ -581,6 +582,214 @@ class FixedBoundaryEquilibrium():
         i = k - j * nr
         self._data['rmagx'] = xmax + self._data['rvec'][i]
         self._data['zmagx'] = ymax + self._data['zvec'][j]
+
+
+    def extend_psi_beyond_boundary_crude(self):
+        psi_renorm = (
+            (self._data['sibdry'] - self._data['simagx']) * 
+            (self._data['psi_orig'] - self._data['simagx_orig']) /
+            (self._data['sibdry_orig'] - self._data['simagx_orig']) +
+            self._data['simagx']
+        )
+        psi_func = RegularGridInterpolator((self._data['rvec_orig'], self._data['zvec_orig']), psi_renorm.T)
+
+
+    def extend_psi_beyond_boundary(self, tol=1.0e-6):
+
+        vgradr = []
+        gradr = []
+        vgradz = []
+        gradz = []
+
+        psi = self._data['psi'].copy().ravel()
+
+        # DETERMINE GRADIENT OF PSI AT BOUNDARY POINTS
+        jedge = self._data['ijedge'] // self._data['nr']
+        iedge = self._data['ijedge'] - self._data['nr'] * jedge
+        vedge = self._data['rvec'].take(iedge) + 1.0j * self._data['zvec'].take(jedge)
+        k = -1
+        for ij in self._data['ijedge']:
+
+            k += 1
+            j = ij // self._data['nr']
+            i = ij - self._data['nr'] * j
+            a1 = self._data['a1'][ij] #[k]
+            a2 = self._data['a2'][ij] #[k]
+            b1 = self._data['b1'][ij] #[k]
+            b2 = self._data['b2'][ij] #[k]
+            #print(i, j, cedge[k], self._data['xpsi'].ravel()[ij], '{:b}'.format(self._data['inout'][ij]))
+
+            # dpsi/dx AT BOUNDARY POINTS
+            if self._data['inout'][ij] & 0b10 or self._data['inout'][ij] & 0b100:
+                vl = vedge[k] - a1 * self._data['hr']
+                vr = vedge[k] + a2 * self._data['hr']
+                grad = (a1 + a2) * psi[ij] / (a1 * a2)
+                # LEFT OR RIGHT OUT
+                if self._data['inout'][ij] & 0b10 and self._data['inout'][ij] & 0b100:
+                    if (a1 < tol or a2 < tol): continue
+                    # LEFT AND RIGHT OUT
+                    vgradr.extend([vl, vr])
+                    gradr.extend([grad, -grad])
+                elif self._data['inout'][ij] & 0b10:
+                    if (a1 < tol): continue
+                    # ONLY LEFT OUT
+                    vgradr.append(vl)
+                    gradr.append((grad - a1 * psi[ij + 1] / (1.0 + a1)) / self._data['hr'])
+                    #gradr.append(grad - a1 * psi[ij + 1] / (1.0 + a1))
+                else:
+                    if (a2 < tol): continue
+                    # ONLY RIGHT OUT
+                    vgradr.append(vr)
+                    gradr.append((-grad + a2 * psi[ij - 1] / (1.0 + a2)) / self._data['hr'])
+                    #gradr.append(-grad + a2 * psi[ij - 1] / (1.0 + a2))
+
+            # dpsi/dy AT BOUNDARY POINTS
+            if self._data['inout'][ij] & 0b1000 or self._data['inout'][ij] & 0b10000:
+                ni = self._data['nr']
+                vb = vedge[k] - 1.0j * b1 * self._data['hz']
+                va = vedge[k] + 1.0j * b2 * self._data['hz']
+                grad = (b1 + b2) * psi[ij] / (b1 * b2)
+                # ABOVE OR BELOW OUT
+                if self._data['inout'][ij] & 0b1000 and self._data['inout'][ij] & 0b10000:
+                    if (b1 < tol or b2 < tol): continue
+                    # ABOVE AND BELOW OUT
+                    vgradz.extend([vb, va])
+                    gradz.extend([grad, -grad])
+                elif self._data['inout'][ij] & 0b1000:
+                    if (b1 < tol): continue
+                    # ONLY BELOW OUT
+                    vgradz.append(vb)
+                    gradz.append((grad - b1 * psi[ij + ni] / (1.0 + b1)) / self._data['hz'])
+                else:
+                    if (b2 < tol): continue
+                    # ONLY ABOVE OUT
+                    vgradz.append(va)
+                    gradz.append((-grad + b2 * psi[ij - ni] / (1.0 + b2)) / self._data['hz'])
+            #print(vgradr[-1], gradr[-1], vgradz[-1], gradz[-1])
+
+        # SPLINE GRAD PSI AS A FUNCTION OF ANGLE ALONG BOUNDARY
+        # USING MAGNETIC AXIS AS CENTER
+        vmagx = self._data['rmagx'] + 1.0j * self._data['zmagx']
+        vgradr = np.array(vgradr) - vmagx
+        vgradz = np.array(vgradz) - vmagx
+        gr = xr.Dataset(coords={'angle': np.angle(vgradr)}, data_vars={'length': (['angle'], np.abs(vgradr)), 'gradient': (['angle'], np.array(gradr))}).sortby('angle')
+        gz = xr.Dataset(coords={'angle': np.angle(vgradz)}, data_vars={'length': (['angle'], np.abs(vgradz)), 'gradient': (['angle'], np.array(gradz))}).sortby('angle')
+        agradr = gr['angle'].to_numpy()
+        lgradr = gr['length'].to_numpy()
+        gradr = gr['gradient'].to_numpy()
+        agradz = gz['angle'].to_numpy()
+        lgradz = gz['length'].to_numpy()
+        gradz = gz['gradient'].to_numpy()
+
+        self._fit['gradr_bdry'] = splrep(agradr, gradr, k=3, quiet=1)
+        if np.abs(agradr[0] + np.pi) < tol:
+            agradr[0] = -np.pi
+        if np.abs(agradr[-1] - np.pi) < tol:
+            agradr[-1] =  np.pi
+        yy = None
+        if agradr[0] == -np.pi:
+            yy = gradr[0]
+        elif agradr[-1] == np.pi:
+            yy = gradr[-1]
+        if agradr[0] > -np.pi:
+            if yy is None:
+                xx = agradr[0]
+                yy = splev(xx, self._fit['gradr_bdry']) - (np.pi + xx) * splev(xx, self._fit['gradr_bdry'], der=1)  # Why the derivative?
+            agradr = np.concatenate(([-np.pi], agradr))
+            gradr = np.concatenate(([yy], gradr))
+        if agradr[-1] < np.pi:
+            agradr = np.concatenate((agradr, [np.pi]))
+            gradr = np.concatenate((gradr, [yy]))
+        self._fit['gradr_bdry'] = splrep(agradr, gradr, k=3, quiet=1)
+
+        self._fit['gradz_bdry'] = splrep(agradz, gradz, k=3, quiet=1)
+        if np.abs(agradz[0] + np.pi) < tol:
+            agradz[0] = -np.pi
+        if np.abs(agradz[-1] - np.pi) < tol:
+            agradz[-1] =  np.pi
+        yy = None
+        if agradz[0] == -np.pi:
+            yy = gradz[0]
+        elif agradz[-1] == np.pi:
+            yy = gradz[-1]
+        if agradz[0] > -np.pi:
+            if yy is None:
+                xx = agradz[0]
+                yy = splev(xx, self._fit['gradz_bdry']) - (np.pi + xx) * splev(xx, self._fit['gradz_bdry'], der=1)  # Why the derivative?
+            agradz = np.concatenate(([-np.pi], agradz))
+            gradz = np.concatenate(([yy], gradz))
+        if agradz[-1] < np.pi:
+            agradz = np.concatenate((agradz, [np.pi]))
+            gradz = np.concatenate((gradz, [yy]))
+        self._fit['gradz_bdry'] = splrep(agradz, gradz, k=3, quiet=1)
+
+        # VECTORS TO AND BETWEEN BOUNDARY POINTS
+        vbdry = self._data['rbdry'] + 1.0j * self._data['zbdry']
+        vb0 = vbdry[:-1]
+        vb1 = vbdry[1:]
+        dvb = vb1 - vb0
+
+        # VECTORS TO EXTERIOR GRID POINTS
+        jout = self._data['ijout'] // self._data['nr']
+        iout = self._data['ijout'] - self._data['nr'] * jout
+        vvec = self._data['rvec'].take(iout) + 1.0j * self._data['zvec'].take(jout)
+
+        psiout = np.zeros(vvec.shape, dtype=float)
+        ivvec = np.arange(vvec.size)
+
+        ## VECTORS BETWEEN EXTERIOR POINTS AND BOUNDARY POINTS
+        for k in range(dvb.size):
+            c0 = vb0[k] - vmagx
+            angmin = np.angle(c0)
+            angmax = np.angle(vb1[k] - vmagx)
+            angvec = np.angle(vvec - vmagx)
+            angmask = np.isfinite(angvec)
+            if (angmin - angmax) > (1.75 * np.pi):
+                angmask = np.logical_and(
+                    angmask,
+                    angvec > 0.0
+                )
+                angvec.put(np.logical_not(angmask), angvec.compress(np.logical_not(angmask)) + 2.0 * np.pi)
+                angmax += 2.0 * np.pi
+            numer = c0 * np.conj(dvb[k])
+            mask = np.logical_and(
+                angvec >= angmin,
+                angvec < angmax
+            )
+            if not np.all(angmask):
+                angvec.put(np.logical_not(angmask), angvec.compress(np.logical_not(angmask)) - 2.0 * np.pi)
+            if not np.any(mask): continue
+            ang = angvec.compress(mask)
+            vvecc = vvec.compress(mask)
+            ivvecc = ivvec.compress(mask)
+            if ang.size > 0:
+                dvvecc = vvecc - vmagx
+                dv = dvvecc * (1.0 - numer.imag / (dvvecc * np.conj(dvb[k])).imag)
+                vgradc = splev(ang, self._fit['gradr_bdry']) + 1.0j * splev(ang, self._fit['gradz_bdry'])
+                psie = (vgradc * np.conj(dv)).real
+                psiout.put(ivvecc, psie)
+                vvec = vvec.compress(np.logical_not(mask))
+                ivvec = ivvec.compress(np.logical_not(mask))
+            if vvec.size == 0: break
+
+        self._data['psi'].ravel().put(self._data['ijout'], psiout)
+
+        # X-POINT LOCATION
+        #abdry = np.angle(vbdry - vmagx)
+        #self._data['ixpoint'] = np.argmin(splev(abdry, self._fit['gradr_bdry']) ** 2 + splev(abdry, self._fit['gradz_bdry']) ** 2)
+        #self._data['vxpoint'] = vbdry[self._data['ixpoint']]
+        #del abdry
+
+
+    def renormalize_psi(self, simagx=None, sibdry=None):
+        if simagx is None and 'simagx_orig' in self._data:
+            simagx = self._data['simagx_orig']
+        if sibdry is None and 'sibdry_orig' in self._data:
+            sibdry = self._data['sibdry_orig']
+        if 'psi' in self._data and 'simagx' in self._data and 'sibdry' in self._data and simagx is not None and sibdry is not None:
+            self._data['psi'] = ((sibdry - simagx) * (self._data['psi'] - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])) + simagx
+            self._data['simagx'] = simagx
+            self._data['sibdry'] = sibdry
 
 
     def run(
@@ -611,21 +820,24 @@ class FixedBoundaryEquilibrium():
             self._data['psi'] = psinew
             self.find_magnetic_axis()
             #if self.nxiter < 0:
-            #    print('Mhdeq.run: max(psiNew-psiOld)/max(psiNew) = %8.2e'%(error))
+            #    print('max(psiNew-psiOld)/max(psiNew) = %8.2e'%(error))
             if psierror <= self._options['erreq']:
                 break
             self.newj(self._options['relaxj'])
 
         self.error = psierror
         if n + 1 == self._options['nxiter']:
-            #print ('Mhdeq.run: Failed to converge after %i iterations with error = %8.2e. Time = %6.1f S'%(abs_nxiter,error,t0))
+            #print ('Failed to converge after %i iterations with error = %8.2e. Time = %6.1f S'%(abs_nxiter,error,t0))
             self.converged = False
         else:
-            #print ('Mhdeq.run: Converged after %i iterations with error = %8.2e. Time = %6.1f S'%(n+1,error,t0))
+            #print ('Converged after %i iterations with error = %8.2e. Time = %6.1f S'%(n+1,error,t0))
             self.converged = True
 
         if self.A is not None:
             self._data['errsol'] = self.check_solution()
+
+        self._data['gcase'] = 'FBE'
+        self._data['gid'] = 42
 
 
     def check_solution(self):
@@ -635,7 +847,7 @@ class FixedBoundaryEquilibrium():
         cur = self._data['s5'] * self._data['cur']
         curmax = np.abs(cur).max()
         errds  = np.abs(cur - ds).max() / curmax
-        #print('Mhdeq.check: max(-Delta*psi-mu0RJ)/max(mu0RJ) = %8.2e'%(errds))
+        #print('max(-Delta*psi-mu0RJ)/max(mu0RJ) = %8.2e'%(errds))
         return errds
 
 
@@ -644,8 +856,8 @@ class FixedBoundaryEquilibrium():
         return cls(eqdsk=path)
 
 
-    #def to_eqdsk(self, path):
-    #    write_eqdsk_file(path, **{k: v, for k, v in self._data.items() if k in self.eqdsk_fields})
+    def to_eqdsk(self, path):
+        write_eqdsk_file(path, **{k: v for k, v in self._data.items() if k in self.eqdsk_fields})
 
 
 
@@ -658,24 +870,34 @@ def main():
     parser.add_argument('relax', nargs='?', type=float, defualt=1.0, help='Relaxation constant to smoothen psi stepping for stability')
     parser.add_argument('relaxj', nargs='?', type=float, defualt=1.0, help='Relaxation constant to smoothen current stepping for stability')
     parser.add_argument('--ifile', type=str, default=None, help='Path to input g-eqdsk file')
-    paresr.add_arguemnt('--optimize', default=False, action='store_true', help='Toggle on optimal grid dimensions to fit boundary contour')
+    parser.add_argument('--ofile', type=str, default=None, help='Path for output g-eqdsk file')
+    parser.add_arguemnt('--optimize', default=False, action='store_true', help='Toggle on optimal grid dimensions to fit boundary contour')
+    parser.add_argument('--keep_psi_scale', default=False, action='store_true', help='Toggle on renormalization of psi solution to original psi scale')
     args = parser.parse_args()
 
     if args.ifile is None:
         # From scratch
-        mhdeq = FixedBoundaryEquilibrium()
-        #mhdeq.define_grid(args.nr, args.nz, args.rmin, args.rmax, args.zmin, args.zmax)
-        #mhdeq.define_boundary(args.rb, args.zb)
-        #mhdeq.setup()
-        #mhdeq.init_psi()
-        #mhdeq.run(args.niter, args.err, args.relax, args.relaxj)
+        eq = FixedBoundaryEquilibrium()
+        #eq.define_grid(args.nr, args.nz, args.rmin, args.rmax, args.zmin, args.zmax)
+        #eq.define_boundary(args.rb, args.zb)
+        #eq.setup()
+        #eq.init_psi()
+        #eq.run(args.niter, args.err, args.relax, args.relaxj)
     else:
         ipath = Path(args.ifile)
         if ipath.is_file():
-            mhdeq = FixedBoundaryEquilibrium.from_eqdsk(ipath)
-            mhdeq.setup(solver=False)
-            mhdeq.regrid(args.nr, args.nz, optimal=args.optimize)
-            mhdeq.run(args.niter, args.err, args.relax, args.relaxj)
+            eq = FixedBoundaryEquilibrium.from_eqdsk(ipath)
+            eq.setup(solver=False)
+            eq.regrid(args.nr, args.nz, optimal=args.optimize)
+            eq.run(args.niter, args.err, args.relax, args.relaxj)
+            eq.extend_psi_beyond_boundary()
+            if args.keep_psi_scale:
+                eq.renormalize_psi()
+            if args.ofile is not None:
+                opath = Path(args.ofile)
+                if not opath.exists():
+                    opath.parent.mkdir(parents=True, exist_ok=True)
+                    eq.to_eqdsk(opath)
 
 
 if __name__ == '__main__':
