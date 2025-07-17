@@ -130,8 +130,8 @@ class FixedBoundaryEquilibrium():
         newtheta = np.linspace(0.0, 2.0 * np.pi, 5000)
         newradius = np.ones_like(newtheta)
         if boundary_smoothing > 0.0:
-            self._fit['bb'] = splrep(b.angle.to_numpy(), b.radius.to_numpy(), k=3, s=boundary_smoothing, per=True, quiet=1)
-            newradius = splev(newtheta, self._fit['bb'])
+            self._fit['radius_bdry'] = splrep(b.angle.to_numpy(), b.radius.to_numpy(), k=3, s=boundary_smoothing, per=True, quiet=1)
+            newradius = splev(newtheta, self._fit['radius_bdry'])
         else:
             newradius = interp(newtheta, b.angle.to_numpy(), b.radius.to_numpy())
         newb = xr.Dataset(coords={'angle': newtheta}, data_vars={'radius': (['angle'], newradius)})
@@ -152,13 +152,13 @@ class FixedBoundaryEquilibrium():
 
         # theta FOR NEW BOUNDARY POINTS EQUALLY SPACED IN LENGTH
         newlength = np.linspace(length[0], length[-1], n_boundary)
-        self._fit['ll'] = splrep(t.length.to_numpy(), t.angle.to_numpy(), k=3, quiet=1)
-        finaltheta = splev(newlength, self._fit['ll'])
+        self._fit['arclen_bdry'] = splrep(t.length.to_numpy(), t.angle.to_numpy(), k=3, quiet=1)
+        finaltheta = splev(newlength, self._fit['arclen_bdry'])
 
         # NEW BOUNDARY POINTS
         finalradius = np.ones_like(finaltheta)
-        if 'bb' in self._fit:
-            finalradius = splev(finaltheta, self._fit['bb'])
+        if 'radius_bdry' in self._fit:
+            finalradius = splev(finaltheta, self._fit['radius_bdry'])
         else:
             finalradius= interp(finaltheta, b.angle.to_numpy(), b.radius.to_numpy())
         self._data['rbdry'] = (finalradius * np.cos(finaltheta) + rb0)[::-1]
@@ -168,13 +168,13 @@ class FixedBoundaryEquilibrium():
     def optimize_grid(self, nr, nz):
         # FIT GRID TO BOUNDARY
         e = 3.5
-        m = float(nx - 1)
+        m = float(nr - 1)
         g = 1.0 / ((m - e)**2 - e**2)
         x0 = self._data['rbdry'].min()
         x1 = self._data['zbdry'].max()
         rmax = m * g * (x1 * (m - e) - x0 * e)
         rmin = m * g * (x0 * (m - e) - x1 * e)
-        m = float(ny - 1)
+        m = float(nz - 1)
         g = 1.0 / ((m - e)**2 - e**2)
         y0 = self._data['rbdry'].min()
         y1 = self._data['zbdry'].max()
@@ -436,7 +436,7 @@ class FixedBoundaryEquilibrium():
 
         # LINEAR INTERPOLATING FUNCTION FOR PSI
         #meshes = np.meshgrid(self._data['rvec_orig'], self._data['zvec_orig'])
-        psi_func = RegularGridInterpolator((self._data['rvec_orig'], self._data['zvec_orig']), self._data['psi_orig'].T)
+        psi_func = RegularGridInterpolator((self._data['rvec_orig'], self._data['zvec_orig']), self._data['psi_orig'])
 
         # SETUP NEW GRID
         if optimal:
@@ -457,7 +457,7 @@ class FixedBoundaryEquilibrium():
             i1 = self._data['imax'][j] + 1
             ip0 = j * self._data['nr'] + i0
             ip1 = j * self._data['nr'] + i1
-            segment = np.stack([self._data['rpsi'][i0:i1, j].flatten(), self._data['zpsi'][i0:i1, j].flatten()], axis=-1)
+            segment = np.stack([self._data['rpsi'][j, i0:i1].flatten(), self._data['zpsi'][j, i0:i1].flatten()], axis=-1)
             newpsi[ip0:ip1] = psi_func(segment).ravel()
         self._data['psi'] = newpsi.reshape(self._data['nr'], self._data['nz'])
         self.find_magnetic_axis()
@@ -582,16 +582,6 @@ class FixedBoundaryEquilibrium():
         i = k - j * nr
         self._data['rmagx'] = xmax + self._data['rvec'][i]
         self._data['zmagx'] = ymax + self._data['zvec'][j]
-
-
-    def extend_psi_beyond_boundary_crude(self):
-        psi_renorm = (
-            (self._data['sibdry'] - self._data['simagx']) * 
-            (self._data['psi_orig'] - self._data['simagx_orig']) /
-            (self._data['sibdry_orig'] - self._data['simagx_orig']) +
-            self._data['simagx']
-        )
-        psi_func = RegularGridInterpolator((self._data['rvec_orig'], self._data['zvec_orig']), psi_renorm.T)
 
 
     def extend_psi_beyond_boundary(self, tol=1.0e-6):
@@ -744,7 +734,7 @@ class FixedBoundaryEquilibrium():
             angmax = np.angle(vb1[k] - vmagx)
             angvec = np.angle(vvec - vmagx)
             angmask = np.isfinite(angvec)
-            if (angmin - angmax) > (1.75 * np.pi):
+            if (angmin - angmax) > (1.99 * np.pi):
                 angmask = np.logical_and(
                     angmask,
                     angvec > 0.0
