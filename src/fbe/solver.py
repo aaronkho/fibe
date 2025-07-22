@@ -2,9 +2,12 @@ import argparse
 from pathlib import Path
 import numpy as np
 import xarray as xr
-from scipy.interpolate import splrep, splev, RectBivariateSpline, RegularGridInterpolator
+from scipy.interpolate import splrep, splev, RectBivariateSpline, RegularGridInterpolator, make_interp_spline
 from scipy.sparse import spdiags
 from scipy.sparse.linalg import factorized
+from scipy.optimize import fsolve
+import contourpy
+from shapely import Point, Polygon
 
 from .eqdsk import read_eqdsk_file, write_eqdsk_file
 
@@ -65,6 +68,7 @@ class FixedBoundaryEquilibrium():
 
 
     def define_grid(self, nr, nz, rmin, rmax, zmin, zmax):
+        '''Initialize rectangular grid. Use if no geqdsk is read.'''
         if 'nr' not in self._data:
             self._data['nr'] = int(nr)
         if 'nz' not in self._data:
@@ -80,114 +84,106 @@ class FixedBoundaryEquilibrium():
 
 
     def define_boundary(self, rb, zb):
+        '''Initialize last-closed-flux-surface. Use if no geqdsk is read.'''
         if 'nbdry' not in self._data and 'rbdry' not in self._data and 'zbdry' not in self._data and len(rb) == len(zb):
             self._data['nbdry'] = len(rb)
             self._data['rbdry'] = copy.deepcopy(rbdry)
             self._data['zbdry'] = copy.deepcopy(zbdry)
 
 
-    def refine_boundary(self, n_boundary=300, boundary_smoothing=1.0e-4):
-
-        if 'rbdry_orig' not in self._data:
-            self._data['rbdry_orig'] = self._data['rbdry'].copy()
-        if 'zbdry_orig' not in self._data:
-            self._data['zbdry_orig'] = self._data['zbdry'].copy()
-
-        if n_boundary < 0:
-            n_boundary = self._data['rbdry'].size
-
-        rb0 = 0.5 * (self._data['rbdry'].max() + self._data['rbdry'].min())
-        zb0 = 0.5 * (self._data['zbdry'].max() + self._data['zbdry'].min())
-
-        # ORIGINAL BOUNDARY in r,theta
-        complex_b = (self._data['rbdry'] - rb0) + 1.0j * (self._data['zbdry'] - zb0)
-        theta = np.angle(complex_b)
-        theta = np.where(theta < 0.0, 2.0 * np.pi + theta, theta)
-        radius = np.abs(complex_b)
-
-        b = xr.Dataset(coords={'angle': theta}, data_vars={'radius': (['angle'], radius)})
-        b = b.sortby('angle')
-        _, mask = b.angle.to_numpy().unique(return_index=True)
-        b = b.isel(angle=mask)
-        if b.angle[0] == 0.0:
-            b = xr.concat([
-                xr.Dataset(coords={'angle': [2.0 * np.pi]}, data_vars={'radius': [b.radius[0].to_numpy()]}),
-                b,
-            ], dim='angle')
-        elif b.angle[-1] == 2.0 * np.pi:
-            b = xr.concat([
-                b,
-                xr.Dataset(coords={'angle': [0.0]}, data_vars={'radius': [b.radius[-1].to_numpy()]})
-            ], dim='angle')
-        else:
-            rezero = b.isel(angle=[0, -1]).radius.mean().to_numpy()
-            b = xr.concat([
-                xr.Dataset(coords={'angle': [2.0 * np.pi]}, data_vars={'radius': [rezero]}),
-                b,
-                xr.Dataset(coords={'angle': [0.0]}, data_vars={'radius': [rezero]}),
-            ], dim='angle')
-
-        newtheta = np.linspace(0.0, 2.0 * np.pi, 5000)
-        newradius = np.ones_like(newtheta)
-        if boundary_smoothing > 0.0:
-            self._fit['radius_bdry'] = splrep(b.angle.to_numpy(), b.radius.to_numpy(), k=3, s=boundary_smoothing, per=True, quiet=1)
-            newradius = splev(newtheta, self._fit['radius_bdry'])
-        else:
-            newradius = interp(newtheta, b.angle.to_numpy(), b.radius.to_numpy())
-        newb = xr.Dataset(coords={'angle': newtheta}, data_vars={'radius': (['angle'], newradius)})
-
-        # FINELY SPACED BOUNDARY POINTS ON SMOOTHED BOUNDARY
-        rbs = (newb.radius.to_numpy() * np.cos(newb.angle.to_numpy()) + rb0)[::-1]
-        zbs = (newb.radius.to_numpy() * np.sin(newb.angle.to_numpy()) + zb0)[::-1]
-
-        # GET CURVE LENGTH TO DISTRIBUTE NEW BOUNDARY POINTS IN EQUAL LENGTH INTERVALS
-        dl = np.concatenate([
-            [0.0],
-            np.sqrt(np.square(rbs[1:] - rbs[:-1]) + np.square(zbs[1:] - zbs[:-1])),
-        ])
-        length = np.cumulative_sum(dl)
-
-        # theta AS A FUNCTION OF CURVE LENGTH
-        t = xr.Dataset(coords={'length': length}, data_vars={'angle': (['length'], newtheta)})
-
-        # theta FOR NEW BOUNDARY POINTS EQUALLY SPACED IN LENGTH
-        newlength = np.linspace(length[0], length[-1], n_boundary)
-        self._fit['arclen_bdry'] = splrep(t.length.to_numpy(), t.angle.to_numpy(), k=3, quiet=1)
-        finaltheta = splev(newlength, self._fit['arclen_bdry'])
-
-        # NEW BOUNDARY POINTS
-        finalradius = np.ones_like(finaltheta)
-        if 'radius_bdry' in self._fit:
-            finalradius = splev(finaltheta, self._fit['radius_bdry'])
-        else:
-            finalradius= interp(finaltheta, b.angle.to_numpy(), b.radius.to_numpy())
-        self._data['rbdry'] = (finalradius * np.cos(finaltheta) + rb0)[::-1]
-        self._data['zbdry'] = (finalradius * np.sin(finaltheta) + zb0)[::-1]
+    def initialize_psi(self):
+        '''Initialize psi. Use if no geqdsk is read.'''
+        flat_psi = np.zeros((self._data['nrz'], ), dtype=float)
+        r0 = 0.5 * (self._data['rbdry'].max() + self._data['rbdry'].min())
+        z0 = 0.5 * (self._data['zbdry'].max() + self._data['zbdry'].min())
+        rb = self._data['rbdry'] - x0
+        zb = self._data['zbdry'] - y0
+        rp = self._data['rbdry'] - x0
+        zp = self._data['zbdry'] - y0
+        drb = rb[1:] - rb[:-1]
+        dzb = zb[1:] - zb[:-1]
+        drzb = rb[:-1] * dzb - zb[:-1] * drb
+        tcur = 0.0
+        for k in self._data['ijin']:
+            j = k // self._data['nr']
+            i = k - j * self._data['nr']
+            det = rp[i] * dzb - zp[j] * drb
+            det = np.where(det==0.0, 1.e-10, det)
+            rr = rp[i] * drzb / det
+            zz = zp[j] * drzb / det
+            xin = np.logical_or(
+                np.logical_and(rr - rb[1:] <=  1.e-11, rr - rb[:-1] >= -1.e-11),
+                np.logical_and(rr - rb[1:] >= -1.e-11, rr - rb[:-1] <=  1.e-11),
+            )
+            yin = np.logical_or(
+                np.logical_and(zz - zb[1:] <=  1.e-11, zz - zb[:-1] >= -1.e-11),
+                np.logical_and(zz - zb[1:] >= -1.e-11, zz - zb[:-1] <=  1.e-11),
+            )
+            rzin = np.logical_and(yin, xin)
+            rc = rr.compress(rzin)
+            zc = zz.compress(rzin)
+            if rc.size == 0 or zc.size == 0:
+                rho = 0.0
+            else:
+                db = rc[0] ** 2 + zc[0] ** 2 if (rc[0] * rp[i] + zc[0] * zp[j]) > 0 else rc[-1] ** 2 + zc[-1] ** 2
+                rho = np.nanmin(np.sqrt((rp[i] ** 2 + zp[j] ** 2) / db), 1.0)
+            flat_psi[k] = (1.0 - (rho ** 2)) ** 1.2   # Why 1.2?
+        self._data['psi'] = flat_psi.reshape(self._data['nr'], self._data['nz'])
+        self.find_magnetic_axis()
+        self.newj(1.0)
 
 
-    def optimize_grid(self, nr, nz):
-        # FIT GRID TO BOUNDARY
-        e = 3.5
-        m = float(nr - 1)
-        g = 1.0 / ((m - e)**2 - e**2)
-        x0 = self._data['rbdry'].min()
-        x1 = self._data['zbdry'].max()
-        rmax = m * g * (x1 * (m - e) - x0 * e)
-        rmin = m * g * (x0 * (m - e) - x1 * e)
-        m = float(nz - 1)
-        g = 1.0 / ((m - e)**2 - e**2)
-        y0 = self._data['rbdry'].min()
-        y1 = self._data['zbdry'].max()
-        zmax = m * g * (y1 * (m - e) - y0 * e)
-        zmin = m * g * (y0 * (m - e) - y1 * e)
-        if zmax > -zmin:
-            zmin = -zmax
-        elif zmax < -zmin:
-            zmax = -zmin
-        return rmin, rmax, zmin, zmax
+    def define_pressure_profile(self, pressure, psinorm=None, smooth=True):
+        if isinstance(pressure, np.ndarray) and len(pressure) > 0:
+            if 'pres' in self._data and 'pres_orig' not in self._data:
+                self._data['pres_orig'] = self._data['pres'].copy()
+            if 'pprime' in self._data and 'pprime_orig' not in self._data:
+                self._data['pprime_orig'] = self._data['pprime'].copy()
+            w = 100.0 / pressure if smooth else None
+            psin = np.linspace(0.0, 1.0, len(pressure))
+            if isinstance(psinorm, np.ndarray) and len(psinorm) == len(pressure):
+                psin = psinorm.copy()
+            psin_mirror = -psin[::-1]
+            pressure_mirror = pressure[::-1]
+            w_mirror = w[::-1] if w is not None else None
+            if np.isclose(psin[0], psin_mirror[-1]):
+                psin_mirror = psin_mirror[:-1]
+                pressure_mirror = pressure_mirror[:-1]
+                w_mirror = w_mirror[:-1] if w_mirror is not None else None
+            psin_fit = np.concatenate([psin_mirror, psin])
+            pressure_fit = np.concatenate([pressure_mirror, pressure])
+            w_fit = np.concatenate([w_mirror, w]) if w is not None else None
+            self._fit['pres_fs'] = splrep(psin_fit, pressure_fit, w_fit, xb=-1.0, xe=1.0, k=3, quiet=1)
+            self._data['pres'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['pres_fs'])
+            self._data['pprime'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['pres_fs'], der=1)
 
 
-    def setup(self, solver=True):
+    def define_f_profile(self, f, psinorm=None, smooth=True):
+        if isinstance(f, np.ndarray) and len(f) > 0:
+            if 'fpol' in self._data and 'pres_orig' not in self._data:
+                self._data['fpol_orig'] = self._data['fpol'].copy()
+            if 'ffprime' in self._data and 'ffprime_orig' not in self._data:
+                self._data['ffprime_orig'] = self._data['ffprime'].copy()
+            w = 100.0 / f if smooth else None
+            psin = np.linspace(0.0, 1.0, len(f))
+            if isinstance(psinorm, np.ndarray) and len(psinorm) == len(f):
+                psin = psinorm.copy()
+            psin_mirror = -psin[::-1]
+            f_mirror = f[::-1]
+            w_mirror = w[::-1] if w is not None else None
+            if np.isclose(psin[0], psin_mirror[-1]):
+                psin_mirror = psin_mirror[:-1]
+                f_mirror = f_mirror[:-1]
+                w_mirror = w_mirror[:-1] if w_mirror is not None else None
+            psin_fit = np.concatenate([psin_mirror, psin])
+            f_fit = np.concatenate([f_mirror, f])
+            w_fit = np.concatenate([w_mirror, w]) if w is not None else None
+            self._fit['fpol_fs'] = splrep(psin_fit, f_fit, w_fit, xb=-1.0, xe=1.0, k=3, quiet=1)
+            self._data['fpol'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['fpol_fs'])
+            self._data['ffprime'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['fpol_fs'], der=1) * self._data['fpol']
+
+
+    def setup(self):
         '''Setup the grid and compute the differences matrix.'''
 
         # SETUP GRID
@@ -296,18 +292,15 @@ class FixedBoundaryEquilibrium():
 
         ss1 = np.ones((self._data['nrz'], ))
         ss1.put(ijin, 2.0 * (self._data['hrm2'] + self._data['hzm2']))
-
         ss2 = np.zeros((self._data['nrz'], ))
         ss2.put(ijin, self._data['hrm2'])
         ss3 = ss2.copy()
         rxx = np.where(inout, (0.5 * self._data['hrm1']) / self._data['rpsi'].ravel(), 0.0)
         ss2 += rxx
         ss3 -= rxx
-
         ss4 = np.zeros((self._data['nrz'], ))
         ss4.put(ijin, self._data['hzm2'])
         ss5 = ss4.copy()
-
         ss6 = np.where(inout, self.mu0 * self._data['rpsi'].ravel(), 0.0)
         
         self._data['a1'] = np.ones((self._data['nrz'], ))
@@ -324,9 +317,6 @@ class FixedBoundaryEquilibrium():
         zmask = (dl.real != 0.0)
         dlz  = dl.real.compress(zmask)
 
-        #n = self._data['rbdry'].size - 1
-        #s = (self._data['rbdry'][1:] - self._data['rbdry'][:n]) / (self._data['zbdry'][1:] - self._data['zbdry'][:n])
-        #s = (r1 - r0) / (z1 - z0)
         s = np.diff(self._data['rbdry']) / np.diff(self._data['zbdry'])
         # LOOP OVER EDGE POINTS
         for ij in ijedge:
@@ -398,144 +388,9 @@ class FixedBoundaryEquilibrium():
         #self._data['b1'] = self._data['b1'].take(ijedge)
         #self._data['b2'] = self._data['b2'].take(ijedge)
 
-        if solver:
-            self.make_solver()
-
-
-    def regrid(
-        self,
-        nr=513,
-        nz=513,
-        rmin=None,
-        rmax=None,
-        zmin=None,
-        zmax=None,
-        optimal=False,
-    ):
-        '''Setup a new grid and map psi from an existing grid.'''
-
-        # SAVE OLD GRID
-        if 'nr_orig' not in self._data:
-            self._data['nr_orig'] = self._data['nr']
-        if 'nz_orig' not in self._data:
-            self._data['nz_orig'] = self._data['nz']
-        if 'rleft_orig' not in self._data:
-            self._data['rleft_orig'] = self._data['rleft']
-        if 'rdim_orig' not in self._data:
-            self._data['rdim_orig'] = self._data['rdim']
-        if 'zmid_orig' not in self._data:
-            self._data['zmid_orig'] = self._data['zmid']
-        if 'zdim_orig' not in self._data:
-            self._data['zdim_orig'] = self._data['zdim']
-        if 'rvec_orig' not in self._data:
-            self._data['rvec_orig'] = self._data['rvec'].copy()
-        if 'zvec_orig' not in self._data:
-            self._data['zvec_orig'] = self._data['zvec'].copy()
-        if 'psi_orig' not in self._data:
-            self._data['psi_orig'] = self._data['psi'].copy()
-
-        # LINEAR INTERPOLATING FUNCTION FOR PSI
-        #meshes = np.meshgrid(self._data['rvec_orig'], self._data['zvec_orig'])
-        psi_func = RegularGridInterpolator((self._data['rvec_orig'], self._data['zvec_orig']), self._data['psi_orig'])
-
-        # SETUP NEW GRID
-        if optimal:
-            rmin, rmax, zmin, zmax = self.optimize_grid(nr, nz)
-            self._data['rleft'] = rmin
-            self._data['rdim'] = rmax - rmin
-            self._data['zmid'] = (zmax + zmin) / 2.0
-            self._data['zdim'] = zmax - zmin
-
-        self._data['nr'] = nr
-        self._data['nz'] = nz
-        self.setup(solver=True)
-
-        # INTERPOLATE PSI ONTO NEW GRID
-        newpsi = np.zeros((self._data['nrz'], ), dtype=float)
-        for j in range(self._data['jmin'], self._data['jmax'] + 1):
-            i0 = self._data['imin'][j]
-            i1 = self._data['imax'][j] + 1
-            ip0 = j * self._data['nr'] + i0
-            ip1 = j * self._data['nr'] + i1
-            segment = np.stack([self._data['rpsi'][j, i0:i1].flatten(), self._data['zpsi'][j, i0:i1].flatten()], axis=-1)
-            newpsi[ip0:ip1] = psi_func(segment).ravel()
-        self._data['psi'] = newpsi.reshape(self._data['nr'], self._data['nz'])
-        self.find_magnetic_axis()
-
 
     def make_solver(self):
         self.solver = factorized(self.A.tocsc())
-
-
-    def init_psi(self):
-        '''Initialize psi. Used if no geqdsk is read.'''
-
-        flat_psi = np.zeros((self._data['nrz'], ), dtype=float)
-
-        r0 = 0.5 * (self._data['rbdry'].max() + self._data['rbdry'].min())
-        z0 = 0.5 * (self._data['zbdry'].max() + self._data['zbdry'].min())
-        rb = self._data['rbdry'] - x0
-        zb = self._data['zbdry'] - y0
-        rp = self._data['rbdry'] - x0
-        zp = self._data['zbdry'] - y0
-        drb = rb[1:] - rb[:-1]
-        dzb = zb[1:] - zb[:-1]
-        drzb = rb[:-1] * dzb - zb[:-1] * drb
-        tcur = 0.0
-        for k in self._data['ijin']:
-            j = k // self._data['nr']
-            i = k - j * self._data['nr']
-            det = rp[i] * dzb - zp[j] * drb
-            det = np.where(det==0.0, 1.e-10, det)
-            rr = rp[i] * drzb / det
-            zz = zp[j] * drzb / det
-            xin = np.logical_or(
-                np.logical_and(rr - rb[1:] <=  1.e-11, rr - rb[:-1] >= -1.e-11),
-                np.logical_and(rr - rb[1:] >= -1.e-11, rr - rb[:-1] <=  1.e-11),
-            )
-            yin = np.logical_or(
-                np.logical_and(zz - zb[1:] <=  1.e-11, zz - zb[:-1] >= -1.e-11),
-                np.logical_and(zz - zb[1:] >= -1.e-11, zz - zb[:-1] <=  1.e-11),
-            )
-            rzin = np.logical_and(yin, xin)
-            rc = rr.compress(rzin)
-            zc = zz.compress(rzin)
-            if rc.size == 0 or zc.size == 0:
-                rho = 0.0
-            else:
-                db = rc[0] ** 2 + zc[0] ** 2 if (rc[0] * rp[i] + zc[0] * zp[j]) > 0 else rc[-1] ** 2 + zc[-1] ** 2
-                rho = np.nanmin(np.sqrt((rp[i] ** 2 + zp[j] ** 2) / db), 1.0)
-            flat_psi[k] = (1.0 - (rho ** 2)) ** 1.2   # Why 1.2?
-
-        self._data['psi'] = flat_psi.reshape(self._data['nr'], self._data['nz'])
-        self.find_magnetic_axis()
-        self.newj(1.0)
-
-
-    def jtor(self, rmaj, psinorm):
-        '''Function to compute current density from R and psiN'''
-        ff = self._data['ffprime'].copy()
-        pp = self._data['pprime'].copy()
-        if 'ffprime' in self._fit:
-            ff = splev(psinorm, self._fit['ffprime'])
-        else:
-            ff = np.interp(psinorm, np.linspace(0.0, 1.0, ff.size), ff)
-        if 'pprime' in self._fit:
-            pp = splev(psinorm, self._fit['pprime'])
-        else:
-            pp = np.interp(psinorm, np.linspace(0.0, 1.0, pp.size), pp)
-        return -np.sign(self._data['cpasma']) * (ff / (self.mu0 * rmaj) + rmaj * pp)
-
-
-    def newj(self, relax=1.0):
-        '''Compute current density over grid. Scale to Ip'''
-        if relax != 1.0:
-            curold = self._data['cpasma'].copy()
-            curnew = np.where(self._data['inout'] == 0, 0.0, self.jtor(self._data['rpsi'], self._data['xpsi']).ravel())
-            self._data['cur'] = curold + relax * (curnew - curold)
-        else:
-            self._data['cur'] = np.where(self._data['inout'] == 0, 0.0, self.jtor(self._data['rpsi'], self._data['xpsi']).ravel())
-        self._data['cur'] *= self._data['cpasma'] / (self._data['cur'].sum() * self._data['hrz'])
 
 
     def find_magnetic_axis(self):
@@ -584,7 +439,152 @@ class FixedBoundaryEquilibrium():
         self._data['zmagx'] = ymax + self._data['zvec'][j]
 
 
-    def extend_psi_beyond_boundary(self, tol=1.0e-6):
+    def find_xpoints(self):
+        # X-POINT LOCATION
+        if 'gradr_bdry' not in self._fit or 'gradz_bdry' not in self._fit:
+            self.compute_boundary_gradients()
+        abdry = np.linspace(0.0, 2.0 * np.pi, 5000)
+        mag_grad_psi = splev(abdry, self._fit['gradr_bdry']) ** 2 + splev(abdry, self._fit['gradz_bdry']) ** 2
+        axs = []
+        for i, magnitude in enumerate(mag_grad_psi):
+            if magnitude < 1.0e-2:
+                axs.append(abdry[i])
+        self._data['theta_xpoint'] = np.array(axs)
+
+
+    def regrid(
+        self,
+        nr=513,
+        nz=513,
+        rmin=None,
+        rmax=None,
+        zmin=None,
+        zmax=None,
+        optimal=False,
+    ):
+        '''Setup a new grid and map psi from an existing grid.'''
+
+        # SAVE OLD GRID
+        if 'nr_orig' not in self._data:
+            self._data['nr_orig'] = self._data['nr']
+        if 'nz_orig' not in self._data:
+            self._data['nz_orig'] = self._data['nz']
+        if 'rleft_orig' not in self._data:
+            self._data['rleft_orig'] = self._data['rleft']
+        if 'rdim_orig' not in self._data:
+            self._data['rdim_orig'] = self._data['rdim']
+        if 'zmid_orig' not in self._data:
+            self._data['zmid_orig'] = self._data['zmid']
+        if 'zdim_orig' not in self._data:
+            self._data['zdim_orig'] = self._data['zdim']
+        if 'rvec_orig' not in self._data:
+            self._data['rvec_orig'] = self._data['rvec'].copy()
+        if 'zvec_orig' not in self._data:
+            self._data['zvec_orig'] = self._data['zvec'].copy()
+        if 'psi_orig' not in self._data:
+            self._data['psi_orig'] = self._data['psi'].copy()
+
+        # FUNCTION TO FIT GRID TO BOUNDARY
+        def _optimize_grid(nr, nz, rbdry, zbdry):
+            e = 3.5
+            m = float(nr - 1)
+            g = 1.0 / ((m - e)**2 - e**2)
+            x0 = np.nanmin(rbdry)
+            x1 = np.nanmax(rbdry)
+            rmax = m * g * (x1 * (m - e) - x0 * e)
+            rmin = m * g * (x0 * (m - e) - x1 * e)
+            m = float(nz - 1)
+            g = 1.0 / ((m - e)**2 - e**2)
+            y0 = np.nanmin(zbdry)
+            y1 = np.nanmax(zbdry)
+            zmax = m * g * (y1 * (m - e) - y0 * e)
+            zmin = m * g * (y0 * (m - e) - y1 * e)
+            if zmax > -zmin:
+                zmin = -zmax
+            elif zmax < -zmin:
+                zmax = -zmin
+            return rmin, rmax, zmin, zmax
+
+        # LINEAR INTERPOLATING FUNCTION FOR PSI
+        psi_func = RegularGridInterpolator((self._data['rvec_orig'], self._data['zvec_orig']), self._data['psi_orig'])
+
+        # SETUP NEW GRID
+        if optimal:
+            rmin, rmax, zmin, zmax = _optimize_grid(nr, nz, self._data['rbdry'], self._data['zbdry'])
+            self._data['rleft'] = rmin
+            self._data['rdim'] = rmax - rmin
+            self._data['zmid'] = (zmax + zmin) / 2.0
+            self._data['zdim'] = zmax - zmin
+
+        self._data['nr'] = nr
+        self._data['nz'] = nz
+        self.setup()
+        self.make_solver()
+
+        # INTERPOLATE PSI ONTO NEW GRID
+        newpsi = np.zeros((self._data['nrz'], ), dtype=float)
+        for j in range(self._data['jmin'], self._data['jmax'] + 1):
+            i0 = self._data['imin'][j]
+            i1 = self._data['imax'][j] + 1
+            ip0 = j * self._data['nr'] + i0
+            ip1 = j * self._data['nr'] + i1
+            segment = np.stack([self._data['rpsi'][j, i0:i1].flatten(), self._data['zpsi'][j, i0:i1].flatten()], axis=-1)
+            newpsi[ip0:ip1] = psi_func(segment).ravel()
+        self._data['psi'] = newpsi.reshape(self._data['nr'], self._data['nz'])
+        self.find_magnetic_axis()
+        self.recompute_pressure_profile()
+        self.recompute_f_profile()
+        self.recompute_q_profile()
+
+
+    def jtor(self, rmaj, psinorm):
+        '''Function to compute current density from R and psiN'''
+        ff = self._data['ffprime'].copy()
+        pp = self._data['pprime'].copy()
+        if 'ffprime' in self._fit:
+            ff = splev(psinorm, self._fit['ffprime'])
+        else:
+            ff = np.interp(psinorm, np.linspace(0.0, 1.0, ff.size), ff)
+        if 'pprime' in self._fit:
+            pp = splev(psinorm, self._fit['pprime'])
+        else:
+            pp = np.interp(psinorm, np.linspace(0.0, 1.0, pp.size), pp)
+        return -np.sign(self._data['cpasma']) * (ff / (self.mu0 * rmaj) + rmaj * pp)
+
+
+    def newj(self, relax=1.0):
+        '''Compute current density over grid. Scale to Ip'''
+        if relax != 1.0:
+            curold = self._data['cpasma'].copy()
+            curnew = np.where(self._data['inout'] == 0, 0.0, self.jtor(self._data['rpsi'], self._data['xpsi']).ravel())
+            self._data['cur'] = curold + relax * (curnew - curold)
+        else:
+            self._data['cur'] = np.where(self._data['inout'] == 0, 0.0, self.jtor(self._data['rpsi'], self._data['xpsi']).ravel())
+        self._data['curscale'] = self._data['cpasma'] / (self._data['cur'].sum() * self._data['hrz'])
+        self._data['cur'] *= self._data['curscale']
+
+
+    def rescale_kinetic_profiles(self):
+        if 'curscale' in self._data:
+            if 'ffprime' in self._data:
+                if 'ffprime_orig' not in self._data:
+                    self._data['ffprime_orig'] = self._data['ffprime'].copy()
+                self._data['ffprime'] *= self._data['curscale']
+            if 'pprime' in self._data:
+                if 'pprime_orig' not in self._data:
+                    self._data['pprime_orig'] = self._data['pprime'].copy()
+                self._data['pprime'] *= self._data['curscale']
+            if 'fpol' in self._data:
+                if 'fpol_orig' not in self._data:
+                    self._data['fpol_orig'] = self._data['fpol'].copy()
+                self._data['fpol'] *= np.sqrt(self._data['curscale'])
+            if 'pres' in self._data:
+                if 'pres_orig' not in self._data:
+                    self._data['pres_orig'] = self._data['pres'].copy()
+                self._data['pres'] *= self._data['curscale']
+
+
+    def compute_boundary_gradients(self, tol=1.0e-6):
 
         vgradr = []
         gradr = []
@@ -670,6 +670,7 @@ class FixedBoundaryEquilibrium():
         agradz = gz['angle'].to_numpy()
         lgradz = gz['length'].to_numpy()
         gradz = gz['gradient'].to_numpy()
+        self._data['lmin'] = np.nanmin(np.concatenate([np.abs(vgradr), np.abs(vgradz)])) - np.abs(self._data['hr'] + 1.0j * self._data['hz'])
 
         self._fit['gradr_bdry'] = splrep(agradr, gradr, k=3, quiet=1)
         if np.abs(agradr[0] + np.pi) < tol:
@@ -712,6 +713,123 @@ class FixedBoundaryEquilibrium():
             agradz = np.concatenate((agradz, [np.pi]))
             gradz = np.concatenate((gradz, [yy]))
         self._fit['gradz_bdry'] = splrep(agradz, gradz, k=3, quiet=1)
+
+
+    def refine_boundary(self, n_boundary=300, boundary_smoothing=1.0e-4):
+        #TODO: Needs work
+        pass
+
+        if 'rbdry_orig' not in self._data:
+            self._data['rbdry_orig'] = self._data['rbdry'].copy()
+        if 'zbdry_orig' not in self._data:
+            self._data['zbdry_orig'] = self._data['zbdry'].copy()
+
+        n_boundary_orig = self._data['rbdry'].size
+        if n_boundary <= 0:
+            n_boundary = self._data['rbdry'].size
+
+        rb0 = 0.5 * (self._data['rbdry'].max() + self._data['rbdry'].min())
+        zb0 = 0.5 * (self._data['zbdry'].max() + self._data['zbdry'].min())
+
+        # ORIGINAL BOUNDARY in r,theta
+        complex_b = (self._data['rbdry'] - rb0) + 1.0j * (self._data['zbdry'] - zb0)
+        theta = np.angle(complex_b)
+        theta = np.where(theta < 0.0, 2.0 * np.pi + theta, theta)
+        radius = np.abs(complex_b)
+
+        zero_split = None
+        if 'ixpoint' not in self._data:
+            self.find_xpoints()
+        for ixpoint in self._data['ixpoint']:
+            zero_split = int(ixpoint) if int(ixpoint) in [0, n_boundary_orig - 1] else None
+        if zero_split is not None:
+            if zero_split == 0 and theta[0] != theta[-1]:
+                theta = np.concatenate([theta, [theta[0]]])
+                radius = np.concatenate([radius, [radius[0]]])
+            if zero_split > 0 and theta[0] != theta[-1]:
+                theta = np.concatenate([[theta[-1]], theta])
+                radius = np.concatenate([[radius[-1]], radius])
+
+        segments = []
+        for ix, ixpoint in enumerate(self._data['ixpoint']):
+            istart = int(self._data['ixpoint'][ix-1]) if ix != 0 else None
+            iend = int(ixpoint) + 1
+            segments.append({'angle': theta[istart:iend], 'radius': radius[istart:iend]})
+            if ix + 1 == len(self._data['ixpoint']):
+                segments.append({'angle': theta[int(ixpoint):], 'radius': radius[int(ixpoint):]})
+        if zero_split is None:
+            last_segment = segments.pop()
+            segments[0] = {
+                'angle': np.concatenate([last_segment['angle'], segments[0]['angle']]),
+                'radius': np.concatenate([last_segment['radius'], segments[0]['angle']]),
+            }
+
+        b = xr.Dataset(coords={'angle': theta}, data_vars={'radius': (['angle'], radius)})
+        b = b.sortby('angle')
+        _, mask = b.angle.to_numpy().unique(return_index=True)
+        b = b.isel(angle=mask)
+        if b.angle[0] == 0.0:
+            b = xr.concat([
+                xr.Dataset(coords={'angle': [2.0 * np.pi]}, data_vars={'radius': [b.radius[0].to_numpy()]}),
+                b,
+            ], dim='angle')
+        elif b.angle[-1] == 2.0 * np.pi:
+            b = xr.concat([
+                b,
+                xr.Dataset(coords={'angle': [0.0]}, data_vars={'radius': [b.radius[-1].to_numpy()]})
+            ], dim='angle')
+        else:
+            rezero = b.isel(angle=[0, -1]).radius.mean().to_numpy()
+            b = xr.concat([
+                xr.Dataset(coords={'angle': [2.0 * np.pi]}, data_vars={'radius': [rezero]}),
+                b,
+                xr.Dataset(coords={'angle': [0.0]}, data_vars={'radius': [rezero]}),
+            ], dim='angle')
+
+        newtheta = np.linspace(0.0, 2.0 * np.pi, 5000)
+        newradius = np.ones_like(newtheta)
+        if boundary_smoothing > 0.0:
+            self._fit['radius_bdry'] = splrep(b.angle.to_numpy(), b.radius.to_numpy(), k=3, s=boundary_smoothing, per=True, quiet=1)
+            newradius = splev(newtheta, self._fit['radius_bdry'])
+        else:
+            newradius = interp(newtheta, b.angle.to_numpy(), b.radius.to_numpy())
+        newb = xr.Dataset(coords={'angle': newtheta}, data_vars={'radius': (['angle'], newradius)})
+
+        # FINELY SPACED BOUNDARY POINTS ON SMOOTHED BOUNDARY
+        rbs = (newb.radius.to_numpy() * np.cos(newb.angle.to_numpy()) + rb0)[::-1]
+        zbs = (newb.radius.to_numpy() * np.sin(newb.angle.to_numpy()) + zb0)[::-1]
+
+        # GET CURVE LENGTH TO DISTRIBUTE NEW BOUNDARY POINTS IN EQUAL LENGTH INTERVALS
+        dl = np.concatenate([
+            [0.0],
+            np.sqrt(np.square(rbs[1:] - rbs[:-1]) + np.square(zbs[1:] - zbs[:-1])),
+        ])
+        length = np.cumulative_sum(dl)
+
+        # theta AS A FUNCTION OF CURVE LENGTH
+        t = xr.Dataset(coords={'length': length}, data_vars={'angle': (['length'], newtheta)})
+
+        # theta FOR NEW BOUNDARY POINTS EQUALLY SPACED IN LENGTH
+        newlength = np.linspace(length[0], length[-1], n_boundary)
+        self._fit['arclen_bdry'] = splrep(t.length.to_numpy(), t.angle.to_numpy(), k=3, quiet=1)
+        finaltheta = splev(newlength, self._fit['arclen_bdry'])
+
+        # NEW BOUNDARY POINTS
+        finalradius = np.ones_like(finaltheta)
+        if 'radius_bdry' in self._fit:
+            finalradius = splev(finaltheta, self._fit['radius_bdry'])
+        else:
+            finalradius= interp(finaltheta, b.angle.to_numpy(), b.radius.to_numpy())
+        self._data['rbdry'] = (finalradius * np.cos(finaltheta) + rb0)[::-1]
+        self._data['zbdry'] = (finalradius * np.sin(finaltheta) + zb0)[::-1]
+
+
+    def extend_psi_beyond_boundary(self):
+
+        if 'gradr_bdry' not in self._fit or 'gradz_bdry' not in self._fit:
+            self.compute_boundary_gradients()
+
+        vmagx = self._data['rmagx'] + 1.0j * self._data['zmagx']
 
         # VECTORS TO AND BETWEEN BOUNDARY POINTS
         vbdry = self._data['rbdry'] + 1.0j * self._data['zbdry']
@@ -764,11 +882,117 @@ class FixedBoundaryEquilibrium():
 
         self._data['psi'].ravel().put(self._data['ijout'], psiout)
 
-        # X-POINT LOCATION
-        #abdry = np.angle(vbdry - vmagx)
-        #self._data['ixpoint'] = np.argmin(splev(abdry, self._fit['gradr_bdry']) ** 2 + splev(abdry, self._fit['gradz_bdry']) ** 2)
-        #self._data['vxpoint'] = vbdry[self._data['ixpoint']]
-        #del abdry
+
+    def trace_rough_flux_surfaces(self):
+        axis = [float(self._data['rmagx']), float(self._data['zmagx'])]
+        check = Point(axis)
+        psin = np.linspace(0.0, 1.0, self._data['nr'])
+        psin[-1] = 0.9999
+        psin = np.delete(psin, 0, axis=0)
+        levels = psin * (self._data['sibdry'] - self._data['simagx']) + self._data['simagx']
+        rmesh, zmesh = np.meshgrid(self._data['rvec'], self._data['zvec'])
+        cg_psi = contourpy.contour_generator(rmesh, zmesh, self._data['psi'])
+        contours = {}
+        for level in levels:
+            vertices = cg_psi.create_contour(level)
+            for i in range(len(vertices)):
+                if vertices[i] is not None:
+                    polygon = Polygon(np.array(vertices[i]))
+                    if polygon.contains(check):
+                        contours[float(level)] = vertices[i].copy()
+                        break
+        return contours
+
+
+    def trace_fine_flux_surfaces(self, maxpoints=501):
+
+        def _polar_to_complex(length, angle, origin):
+            c = length * np.exp(1.0j * angle) + origin
+            return c.real, c.imag
+
+        def _polar_to_delta_psi(length, angle, origin, psifunc, psi_target):
+            cr, cz = _polar_to_complex(length, angle, origin)
+            return psifunc(cr, cz, grid=False) - psi_target 
+
+        contours = self.trace_rough_flux_surfaces()
+        psisign = np.sign(self._data['sibdry'] - self._data['simagx'])
+        last_level = np.nanmax(psisign * np.array(list(contours.keys())))
+        last_clength = np.sum(np.sqrt(np.sum(np.power(np.diff(contours[psisign * last_level], axis=0), 2.0), axis=1)))
+        psi = RectBivariateSpline(self._data['rvec'], self._data['zvec'], psisign * self._data['psi'])
+        dpsidr = psi.partial_derivative(1, 0)
+        dpsidz = psi.partial_derivative(0, 1)
+        fine_contours = {}
+        fine_contours[float(self._data['simagx'])] = {
+            'r': np.array([self._data['rmagx']]).flatten(),
+            'z': np.array([self._data['zmagx']]).flatten(),
+            'fpol': np.array([self._data['fpol'][0]]).flatten(),
+            'bpol': np.array([0.0]).flatten(),
+            'btor': np.array([self._data['fpol'][0] / self._data['rmagx']]).flatten(),
+            'gradr_psi': np.array([0.0]).flatten(),
+            'gradz_psi': np.array([0.0]).flatten(),
+        }
+        for level, rough_vertices in contours.items():
+            fp = splev(level * (self._data['sibdry'] - self._data['simagx']) + self._data['simagx'], self._fit['fpol_fs'])
+            if np.all(rough_vertices[0] != rough_vertices[-1]):
+                rough_vertices = np.concatenate([rough_vertices, np.atleast_2d(rough_vertices[0])], axis=0)
+            clength = np.sum(np.sqrt(np.sum(np.power(np.diff(rough_vertices, axis=0), 2.0), axis=1)))
+            npoints = int(np.rint(float(maxpoints) * clength / last_clength))
+            axis = self._data['rmagx'] + 1.0j * self._data['zmagx']
+            angles = np.linspace(0.0, 2.0 * np.pi, npoints)
+            rc = []
+            zc = []
+            for ang in angles[:-1]:
+                lc = fsolve(_polar_to_delta_psi, self._data['lmin'] * clength / last_clength, args=(ang, axis, psi, level),  xtol=1.0e-4)
+                r, z = _polar_to_complex(lc, ang, axis)
+                rc.append(r)
+                zc.append(z)
+            if len(rc) > 2:
+                rc = np.array(rc + [rc[0]]).flatten()
+                zc = np.array(zc + [zc[0]]).flatten()
+                grpc = dpsidr(rc, zc, grid=False)
+                gzpc = dpsidz(rc, zc, grid=False)
+                bpc = np.sqrt(np.power(grpc, 2.0) + np.power(gzpc, 2.0)) / rc
+                btc = fp / rc
+                fine_contours[float(level)] = {
+                    'r': rc.copy(),
+                    'z': zc.copy(),
+                    'fpol': np.array([fp]).flatten(),
+                    'bpol': bpc.copy(),
+                    'btor': btc.copy(),
+                    'gradr_psi': grpc.copy(),
+                    'gradz_psi': gzpc.copy(),
+                }
+        return fine_contours
+
+
+    def recompute_pressure_profile(self):
+        self.define_pressure_profile(self._data['pres'])
+
+
+    def recompute_f_profile(self):
+        self.define_f_profile(self._data['fpol'])
+
+
+    def recompute_q_profile(self):
+        if self._data['psi'][0, 0] == self._data['psi'][-1, -1] and self._data['psi'][0, -1] == self._data['psi'][-1, 0]:
+            self.extend_psi_beyond_boundary()
+        if 'qpsi' in self._data and 'qpsi_orig' not in self._data:
+            self._data['qpsi_orig'] = self._data['qpsi'].copy()
+        self._fs = self.trace_fine_flux_surfaces()
+        qpsi = np.zeros((len(self._fs), ), dtype=float)
+        for i, (level, contour) in enumerate(self._fs.items()):
+            if contour['r'].size > 1:
+                dl = np.sqrt(np.square(np.diff(contour['r'])) + np.square(np.diff(contour['z']))).flatten()
+                rcm = 0.5 * (contour['r'][1:] + contour['r'][:-1]).flatten()
+                zcm = 0.5 * (contour['z'][1:] + contour['z'][:-1]).flatten()
+                bpm = 0.5 * (contour['bpol'][1:] + contour['bpol'][:-1]).flatten()
+                btm = 0.5 * (contour['btor'][1:] + contour['btor'][:-1]).flatten()
+                dl_over_bp = dl / bpm
+                vp = np.sum(dl_over_bp)
+                rm2 = np.sum(dl_over_bp / np.square(rcm)) / vp
+                qpsi[i] = contour['fpol'].item() * vp * rm2 / (2.0 * np.pi)
+        qpsi[0] = 2.0 * qpsi[1] - qpsi[2]  # Linear interpolation to axis
+        self._data['qpsi'] = qpsi
 
 
     def renormalize_psi(self, simagx=None, sibdry=None):
@@ -811,9 +1035,9 @@ class FixedBoundaryEquilibrium():
             self.find_magnetic_axis()
             #if self.nxiter < 0:
             #    print('max(psiNew-psiOld)/max(psiNew) = %8.2e'%(error))
-            if psierror <= self._options['erreq']:
-                break
+            if psierror <= self._options['erreq']: break
             self.newj(self._options['relaxj'])
+        self.rescale_kinetic_profiles()
 
         self.error = psierror
         if n + 1 == self._options['nxiter']:
