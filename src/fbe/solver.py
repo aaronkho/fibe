@@ -5,7 +5,7 @@ import xarray as xr
 from scipy.interpolate import splrep, splev, RectBivariateSpline, RegularGridInterpolator, make_interp_spline
 from scipy.sparse import spdiags
 from scipy.sparse.linalg import factorized
-from scipy.optimize import fsolve
+from scipy.optimize import fsolve, brentq
 import contourpy
 from shapely import Point, Polygon
 
@@ -63,6 +63,7 @@ class FixedBoundaryEquilibrium():
             'relax': 1.0,
             'relaxj': 1.0,
         }
+        self._fs = None
         if isinstance(eqdsk, (str, Path)):
             self._data.update(read_eqdsk_file(eqdsk))
 
@@ -398,8 +399,6 @@ class FixedBoundaryEquilibrium():
 
         if 'simagx_orig' not in self._data:
             self._data['simagx_orig'] = self._data['simagx']
-        if 'sibdry_orig' not in self._data:
-            self._data['sibdry_orig'] = self._data['sibdry']
         if 'rmagx_orig' not in self._data:
             self._data['rmagx_orig'] = self._data['rmagx']
         if 'zmagx_orig' not in self._data:
@@ -429,7 +428,6 @@ class FixedBoundaryEquilibrium():
             0.5 * axx * xmax**2 + 0.5 * ayy * ymax**2 + 
             axy * xmax * ymax
         )
-        self._data['sibdry'] = 0.0
         self._data['xpsi'] = np.abs((self._data['simagx'] - self._data['psi']) / (self._data['simagx'] - self._data['sibdry']))
 
         # MAGNETIC AXIS LOCATION
@@ -437,6 +435,12 @@ class FixedBoundaryEquilibrium():
         i = k - j * nr
         self._data['rmagx'] = xmax + self._data['rvec'][i]
         self._data['zmagx'] = ymax + self._data['zvec'][j]
+
+
+    def zero_magnetic_boundary(self):
+        if 'sibdry_orig' not in self._data:
+            self._data['sibdry_orig'] = self._data['sibdry']
+        self._data['sibdry'] = 0.0
 
 
     def find_xpoints(self):
@@ -477,10 +481,6 @@ class FixedBoundaryEquilibrium():
             self._data['zmid_orig'] = self._data['zmid']
         if 'zdim_orig' not in self._data:
             self._data['zdim_orig'] = self._data['zdim']
-        if 'rvec_orig' not in self._data:
-            self._data['rvec_orig'] = self._data['rvec'].copy()
-        if 'zvec_orig' not in self._data:
-            self._data['zvec_orig'] = self._data['zvec'].copy()
         if 'psi_orig' not in self._data:
             self._data['psi_orig'] = self._data['psi'].copy()
 
@@ -506,7 +506,13 @@ class FixedBoundaryEquilibrium():
             return rmin, rmax, zmin, zmax
 
         # LINEAR INTERPOLATING FUNCTION FOR PSI
-        psi_func = RegularGridInterpolator((self._data['rvec_orig'], self._data['zvec_orig']), self._data['psi_orig'])
+        rmin = self._data['rleft_orig']
+        rmax = self._data['rleft_orig'] + self._data['rdim_orig']
+        zmin = self._data['zmid_orig'] - 0.5 * self._data['zdim_orig']
+        zmax = self._data['zmid_orig'] + 0.5 * self._data['zdim_orig']
+        rvec_orig = rmin + np.linspace(0.0, 1.0, self._data['nr_orig']) * (rmax - rmin)
+        zvec_orig = zmin + np.linspace(0.0, 1.0, self._data['nz_orig']) * (zmax - zmin)
+        psi_func = RegularGridInterpolator((rvec_orig, zvec_orig), self._data['psi_orig'].T)
 
         # SETUP NEW GRID
         if optimal:
@@ -530,7 +536,7 @@ class FixedBoundaryEquilibrium():
             ip1 = j * self._data['nr'] + i1
             segment = np.stack([self._data['rpsi'][j, i0:i1].flatten(), self._data['zpsi'][j, i0:i1].flatten()], axis=-1)
             newpsi[ip0:ip1] = psi_func(segment).ravel()
-        self._data['psi'] = newpsi.reshape(self._data['nr'], self._data['nz'])
+        self._data['psi'] = newpsi.reshape(self._data['nz'], self._data['nr'])
         self.find_magnetic_axis()
         self.recompute_pressure_profile()
         self.recompute_f_profile()
@@ -884,21 +890,20 @@ class FixedBoundaryEquilibrium():
 
 
     def trace_rough_flux_surfaces(self):
-        axis = [float(self._data['rmagx']), float(self._data['zmagx'])]
-        check = Point(axis)
+        axis = Point([float(self._data['rmagx']), float(self._data['zmagx'])])
         psin = np.linspace(0.0, 1.0, self._data['nr'])
         psin[-1] = 0.9999
         psin = np.delete(psin, 0, axis=0)
         levels = psin * (self._data['sibdry'] - self._data['simagx']) + self._data['simagx']
         rmesh, zmesh = np.meshgrid(self._data['rvec'], self._data['zvec'])
-        cg_psi = contourpy.contour_generator(rmesh, zmesh, self._data['psi'])
+        cg = contourpy.contour_generator(rmesh, zmesh, self._data['psi'])
         contours = {}
         for level in levels:
-            vertices = cg_psi.create_contour(level)
+            vertices = cg.create_contour(level)
             for i in range(len(vertices)):
                 if vertices[i] is not None:
                     polygon = Polygon(np.array(vertices[i]))
-                    if polygon.contains(check):
+                    if polygon.contains(axis):
                         contours[float(level)] = vertices[i].copy()
                         break
         return contours
@@ -906,19 +911,17 @@ class FixedBoundaryEquilibrium():
 
     def trace_fine_flux_surfaces(self, maxpoints=501):
 
-        def _polar_to_complex(length, angle, origin):
-            c = length * np.exp(1.0j * angle) + origin
-            return c.real, c.imag
-
-        def _polar_to_delta_psi(length, angle, origin, psifunc, psi_target):
-            cr, cz = _polar_to_complex(length, angle, origin)
-            return psifunc(cr, cz, grid=False) - psi_target 
+        def _find_psi_root(vector, psifunc, target):
+            return psifunc(vector.real, vector.imag, grid=False) - target
 
         contours = self.trace_rough_flux_surfaces()
         psisign = np.sign(self._data['sibdry'] - self._data['simagx'])
         last_level = np.nanmax(psisign * np.array(list(contours.keys())))
         last_clength = np.sum(np.sqrt(np.sum(np.power(np.diff(contours[psisign * last_level], axis=0), 2.0), axis=1)))
-        psi = RectBivariateSpline(self._data['rvec'], self._data['zvec'], psisign * self._data['psi'])
+        vbdry = self._data['rbdry'][:-1] + 1.0j * self._data['zbdry'][:-1]
+        abdry = np.angle(vbdry)
+        abdry[abdry < 0.0] = abdry[abdry < 0.0] + 2.0 * np.pi
+        psi = RectBivariateSpline(self._data['rvec'], self._data['zvec'], self._data['psi'])
         dpsidr = psi.partial_derivative(1, 0)
         dpsidz = psi.partial_derivative(0, 1)
         fine_contours = {}
@@ -928,11 +931,11 @@ class FixedBoundaryEquilibrium():
             'fpol': np.array([self._data['fpol'][0]]).flatten(),
             'bpol': np.array([0.0]).flatten(),
             'btor': np.array([self._data['fpol'][0] / self._data['rmagx']]).flatten(),
-            'gradr_psi': np.array([0.0]).flatten(),
-            'gradz_psi': np.array([0.0]).flatten(),
+            'dpsidr': np.array([0.0]).flatten(),
+            'dpsidz': np.array([0.0]).flatten(),
         }
         for level, rough_vertices in contours.items():
-            fp = splev(level * (self._data['sibdry'] - self._data['simagx']) + self._data['simagx'], self._fit['fpol_fs'])
+            fp = splev((level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx']), self._fit['fpol_fs'])
             if np.all(rough_vertices[0] != rough_vertices[-1]):
                 rough_vertices = np.concatenate([rough_vertices, np.atleast_2d(rough_vertices[0])], axis=0)
             clength = np.sum(np.sqrt(np.sum(np.power(np.diff(rough_vertices, axis=0), 2.0), axis=1)))
@@ -942,10 +945,14 @@ class FixedBoundaryEquilibrium():
             rc = []
             zc = []
             for ang in angles[:-1]:
-                lc = fsolve(_polar_to_delta_psi, self._data['lmin'] * clength / last_clength, args=(ang, axis, psi, level),  xtol=1.0e-4)
-                r, z = _polar_to_complex(lc, ang, axis)
-                rc.append(r)
-                zc.append(z)
+                i0 = np.argmin(abdry - ang)
+                i1 = i0 + 1 if (i0 + 1) < len(abdry) else 0
+                i1 = i1 if (abdry[i0] - ang) * (abdry[i1] - ang) < 0.0 else i0 - 1
+                lbdry = 1.01 * np.abs(0.5 * (vbdry[i0] + vbdry[i1]))
+                lc = fsolve(lambda l, a, p, t, o: _find_psi_root(l * np.exp(1.0j * a) + o, p, t), lbdry * clength / last_clength, args=(ang, psi, level, axis), xtol=1.0e-4)
+                v = lc * np.exp(1.0j * ang) + axis
+                rc.append(v.real)
+                zc.append(v.imag)
             if len(rc) > 2:
                 rc = np.array(rc + [rc[0]]).flatten()
                 zc = np.array(zc + [zc[0]]).flatten()
@@ -959,21 +966,40 @@ class FixedBoundaryEquilibrium():
                     'fpol': np.array([fp]).flatten(),
                     'bpol': bpc.copy(),
                     'btor': btc.copy(),
-                    'gradr_psi': grpc.copy(),
-                    'gradz_psi': gzpc.copy(),
+                    'dpsidr': grpc.copy(),
+                    'dpsidz': gzpc.copy(),
                 }
         return fine_contours
 
 
     def recompute_pressure_profile(self):
-        self.define_pressure_profile(self._data['pres'])
+        self.define_pressure_profile(self._data['pres'], smooth=False)
 
 
     def recompute_f_profile(self):
-        self.define_f_profile(self._data['fpol'])
+        self.define_f_profile(self._data['fpol'], smooth=False)
 
 
-    def recompute_q_profile(self):
+    def recompute_q_profile(self, smooth=False):
+        if 'qpsi' in self._data and 'qpsi_orig' not in self._data:
+            self._data['qpsi_orig'] = self._data['qpsi'].copy()
+        w = 100.0 / self._data['qpsi'] if smooth else None
+        psin = np.linspace(0.0, 1.0, len(self._data['qpsi']))
+        psin_mirror = -psin[::-1]
+        q_mirror = self._data['qpsi'][::-1]
+        w_mirror = w[::-1] if w is not None else None
+        if np.isclose(psin[0], psin_mirror[-1]):
+            psin_mirror = psin_mirror[:-1]
+            q_mirror = q_mirror[:-1]
+            w_mirror = w_mirror[:-1] if w_mirror is not None else None
+        psin_fit = np.concatenate([psin_mirror, psin])
+        q_fit = np.concatenate([q_mirror, self._data['qpsi']])
+        w_fit = np.concatenate([w_mirror, w]) if w is not None else None
+        self._fit['qpsi_fs'] = splrep(psin_fit, q_fit, w_fit, xb=-1.0, xe=1.0, k=3, quiet=1)
+        self._data['qpsi'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['qpsi_fs'])
+
+
+    def recompute_q_profile_from_scratch(self):
         if self._data['psi'][0, 0] == self._data['psi'][-1, -1] and self._data['psi'][0, -1] == self._data['psi'][-1, 0]:
             self.extend_psi_beyond_boundary()
         if 'qpsi' in self._data and 'qpsi_orig' not in self._data:
@@ -1027,17 +1053,21 @@ class FixedBoundaryEquilibrium():
         # INITIAL CURRENT PROFILE
         self.newj(1.0)
         for n in range(self._options['nxiter']):
-            psinew = self.solver(self._data['s5'] * self._data['cur']).reshape(self._data['nr'], self._data['nz'])
+            psinew = self.solver(self._data['s5'] * self._data['cur']).reshape(self._data['nz'], self._data['nr'])
             if self._options['relax'] != 1.0:
                 psinew = self._data['psi'] + self._options['relax'] * (psinew - self._data['psi'])
             psierror = np.abs(psinew - self._data['psi']).max() / np.abs(psinew).max()
             self._data['psi'] = psinew
             self.find_magnetic_axis()
+            self.zero_magnetic_boundary()
             #if self.nxiter < 0:
             #    print('max(psiNew-psiOld)/max(psiNew) = %8.2e'%(error))
             if psierror <= self._options['erreq']: break
             self.newj(self._options['relaxj'])
         self.rescale_kinetic_profiles()
+        self.extend_psi_beyond_boundary()
+        self.renormalize_psi()
+        self.recompute_q_profile_from_scratch()
 
         self.error = psierror
         if n + 1 == self._options['nxiter']:
@@ -1072,6 +1102,48 @@ class FixedBoundaryEquilibrium():
 
     def to_eqdsk(self, path):
         write_eqdsk_file(path, **{k: v for k, v in self._data.items() if k in self.eqdsk_fields})
+
+
+    def plot_contour(self):
+        if 'psi' in self._data:
+            import matplotlib.pyplot as plt
+            fig = plt.figure(figsize=(8, 6))
+            ax = fig.add_subplot(111)
+            rmin = self._data['rleft']
+            rmax = self._data['rleft'] + self._data['rdim']
+            zmin = self._data['zmid'] - 0.5 * self._data['zdim']
+            zmax = self._data['zmid'] + 0.5 * self._data['zdim']
+            rvec = rmin + np.linspace(0.0, 1.0, self._data['nr']) * (rmax - rmin)
+            zvec = zmin + np.linspace(0.0, 1.0, self._data['nz']) * (zmax - zmin)
+            rmesh, zmesh = np.meshgrid(rvec, zvec)
+            psidiff = self._data['sibdry'] - self._data['simagx']
+            psisign = np.sign(psidiff)
+            lvec = np.array([0.01, 0.04, 0.09, 0.15, 0.22, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999, 1.0, 1.02, 1.05])
+            levels = lvec * psidiff + self._data['simagx']
+            ax.contour(rmesh, zmesh, psisign * self._data['psi'], levels=psisign * levels)
+            if 'rbdry' in self._data and 'zbdry' in self._data:
+                ax.plot(self._data['rbdry'], self._data['zbdry'], c='r', label='Boundary')
+            ax.set_xlabel('R [m]')
+            ax.set_ylabel('Z [m]')
+            fig.tight_layout()
+            plt.show()
+            plt.close(fig)
+
+
+    def plot_flux_surfaces(self):
+        if self._fs is not None:
+            import matplotlib.pyplot as plt
+            fig = plt.figure(figsize=(8, 6))
+            ax = fig.add_subplot(111)
+            for level, contour in self._fs.items():
+                ax.plot(contour['r'], contour['z'], c='k', label=f'{level:.3f}')
+            if 'rbdry' in self._data and 'zbdry' in self._data:
+                ax.plot(self._data['rbdry'], self._data['zbdry'], c='r', label='Boundary')
+            ax.set_xlabel('R [m]')
+            ax.set_ylabel('Z [m]')
+            fig.tight_layout()
+            plt.show()
+            plt.close(fig)
 
 
 
