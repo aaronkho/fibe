@@ -84,6 +84,10 @@ def read_eqdsk_file(fname):
         bbbs = np.hstack(bbbs).reshape((eq['nbdry'], 2))
         eq['rbdry'] = bbbs[:, 0]
         eq['zbdry'] = bbbs[:, 1]
+        if eq['rbdry'][0] != eq['rbdry'][-1] and eq['zbdry'][0] != eq['zbdry'][-1]:
+            eq['nbdry'] += 1
+            eq['rbdry'] = np.concatenate([eq['rbdry'], [eq['rbdry'][0]]])
+            eq['zbdry'] = np.concatenate([eq['zbdry'], [eq['zbdry'][0]]])
     else:
         eq['rbdry'] = None
         eq['zbdry'] = None
@@ -94,6 +98,10 @@ def read_eqdsk_file(fname):
         lim = np.hstack(lim).reshape((eq['nlim'], 2))
         eq['rlim'] = lim[:, 0]
         eq['zlim'] = lim[:, 1]
+        if eq['rlim'][0] != eq['rlim'][-1] and eq['zlim'][0] != eq['zlim'][-1]:
+            eq['nlim'] += 1
+            eq['rlim'] = np.concatenate([eq['rlim'], [eq['rlim'][0]]])
+            eq['zlim'] = np.concatenate([eq['zlim'], [eq['zlim'][0]]])
     else:
         eq['rlim'] = None
         eq['zlim'] = None
@@ -214,7 +222,7 @@ def write_eqdsk_file(
     assert isinstance(pprime, array_types), f'pprime field must be an array. {errmsg}'
     assert isinstance(psi, array_types), f'psi field must be an array. {errmsg}'
     assert isinstance(qpsi, array_types), f'qpsi field must be an array. {errmsg}'
-    if nbry is not None:
+    if nbdry is not None:
         assert isinstance(nbdry, int), f'nbdry field must be an integer or set to None. {errmsg}'
         assert isinstance(rbdry, array_types), f'rbdry field must be an array if nbry is not None. {errmsg}'
         assert isinstance(zbdry, array_types), f'zbdry field must be an array if nbry is not None. {errmsg}'
