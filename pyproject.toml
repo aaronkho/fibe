@@ -30,6 +30,8 @@ dependencies = [
   "netcdf4",
   "tables",
   "scipy",
+  "contourpy",
+  "shapely",
   "ipython",
 ]
 
