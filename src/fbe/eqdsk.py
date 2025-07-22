@@ -68,7 +68,7 @@ def read_eqdsk_file(fname):
 
     # Read psi map
     eq['psi'] = np.hstack(_read_chunk(lines, eq['nr'] * eq['nz']))
-    eq['psi'] = eq['psi'].reshape((eq['nr'], eq['nz']))
+    eq['psi'] = eq['psi'].reshape((eq['nz'], eq['nr']))
 
     # Read q-profile
     eq['qpsi'] = np.hstack(_read_chunk(lines, eq['nr']))
