@@ -1,8 +1,9 @@
 import argparse
 from pathlib import Path
 import numpy as np
+import pandas as pd
 import xarray as xr
-from scipy.interpolate import interp1d, splrep, splev, RectBivariateSpline, RegularGridInterpolator, make_interp_spline
+from scipy.interpolate import interp1d, splrep, splev, bisplrep, bisplev, RectBivariateSpline, RegularGridInterpolator, make_interp_spline
 from scipy.sparse import spdiags
 from scipy.sparse.linalg import factorized
 from scipy.optimize import fsolve, brentq
@@ -66,6 +67,7 @@ class FixedBoundaryEquilibrium():
         self._fs = None
         if isinstance(eqdsk, (str, Path)):
             self._data.update(read_eqdsk_file(eqdsk))
+            self.enforce_boundary_duplicate_at_end()
 
 
     def define_grid(self, nr, nz, rmin, rmax, zmin, zmax):
@@ -184,7 +186,308 @@ class FixedBoundaryEquilibrium():
             self._data['ffprime'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['fpol_fs'], der=1) * self._data['fpol']
 
 
-    def setup(self):
+    def compute_normalized_psi_map(self):
+        if 'xpsi' in self._data and 'xpsi_orig' not in self._data:
+            self._data['xpsi_orig'] = self._data['xpsi'].copy()
+        self._data['xpsi'] = np.abs((self._data['simagx'] - self._data['psi']) / (self._data['simagx'] - self._data['sibdry']))
+
+
+    def generate_psi_bivariate_spline(self):
+        if 'psi_rz' in self._fit and 'psi_rz_orig' not in self._fit:
+            self._fit['psi_rz_orig'] = self._fit['psi_rz']
+        rmin = self._data['rleft']
+        rmax = self._data['rleft'] + self._data['rdim']
+        zmin = self._data['zmid'] - 0.5 * self._data['zdim']
+        zmax = self._data['zmid'] + 0.5 * self._data['zdim']
+        rvec = rmin + np.linspace(0.0, 1.0, self._data['nr']) * (rmax - rmin)
+        zvec = zmin + np.linspace(0.0, 1.0, self._data['nz']) * (zmax - zmin)
+        psi = RectBivariateSpline(rvec, zvec, self._data['psi'].T)
+        #dpsidr = psi.partial_derivative(1, 0)
+        #dpsidz = psi.partial_derivative(0, 1)
+        #tr = psi.get_knots()[0]
+        #tz = psi.get_knots()[1]
+        #c = psi.get_coeffs()
+        #kr = psi.kx
+        #kz = psi.ky
+        tr, tz, c = psi.tck
+        kr, kz = psi.degrees
+        self._fit['psi_rz'] = {'tck': (tr, tz, c, kr, kz)}
+
+
+    def find_magnetic_axis(self):
+
+        if 'simagx' in self._data and 'simagx_orig' not in self._data:
+            self._data['simagx_orig'] = self._data['simagx']
+        if 'rmagx' in self._data and 'rmagx_orig' not in self._data:
+            self._data['rmagx_orig'] = self._data['rmagx']
+        if 'zmagx' in self._data and 'zmagx_orig' not in self._data:
+            self._data['zmagx_orig'] = self._data['zmagx']
+
+        def _magnitude_grad_psi(loc, tck):
+            dpsidr = bisplev(loc[0], loc[1], tck, dx=1)
+            dpsidz = bisplev(loc[0], loc[1], tck, dx=1)
+            return np.abs(dpsidr + 1.0j * dpsidz)
+
+        if 'psi_rz' not in self._fit:
+            self.generate_psi_bivariate_spline()
+
+        rmagx = self._data['rmagx'] if 'rmagx' in self._data else self._data['rleft'] + 0.5 * self._data['rdim']
+        zmagx = self._data['zmagx'] if 'zmagx' in self._data else self._data['zmid']
+        sol = root(_magnitude_grad_psi, [rmagx, zmagx], args=(self._fit['psi_rz']['tck']))
+        if sol.success:
+            r, z = sol.x
+            self._data['rmagx'] = r
+            self._data['zmagx'] = z
+            self._data['simagx'] = bisplev(r, z, self._fit['psi_rz']['tck'])
+
+
+    def find_x_points(self):
+
+        if 'psi_rz' not in self._fit:
+            self.generate_psi_bivariate_spline()
+        if 'rmagx' not in self._data or 'zmagx' not in self._data:
+            self.find_magnetic_axis()
+
+        def _magnitude_grad_psi(loc, tck):
+            dpsidr = bisplev(loc[0], loc[1], tck, dx=1)
+            dpsidz = bisplev(loc[0], loc[1], tck, dx=1)
+            return np.abs(dpsidr + 1.0j * dpsidz)
+
+        vmagx = self._data['rmagx'] + 1.0j * self._data['zmagx']
+        vbdry = self._data['rbdry'] + 1.0j * self._data['zbdry']
+        abdry = np.angle(vbdry - vmagx)
+        if np.any(abdry < 0.0):
+            abdry[abdry < 0.0] = abdry[abdry < 0.0] + 2.0 * np.pi
+        b = xr.Dataset(coords={'angle': abdry}, data_vars={'r': (['angle'], self._data['rbdry']), 'z': (['angle'], self._data['zbdry'])})
+        b = b.drop_duplicates('angle').sortby('angle')
+        orbdry = b['r'].to_numpy()
+        ozbdry = b['z'].to_numpy()
+        oabdry = b['angle'].to_numpy()
+        orbdry = np.concatenate([orbdry, [orbdry[0]]])
+        ozbdry = np.concatenate([ozbdry, [ozbdry[0]]])
+        oabdry = np.concatenate([oabdry, [oabdry[0] + 2.0 * np.pi]])
+        ovbdry = orbdry + 1.0j * ozbdry
+        olbdry = np.abs(ovbdry - vmagx)
+        dpsidr_obdry = np.array([bisplev(r, z, self._fit['psi_rz']['tck'], dx=1) for r, z in zip(orbdry, ozbdry)]).flatten()
+        dpsidz_obdry = np.array([bisplev(r, z, self._fit['psi_rz']['tck'], dy=1) for r, z in zip(orbdry, ozbdry)]).flatten()
+
+        xpoint_candidates = []
+        xpoint_indices = []
+        dpsidr_zero = np.where(dpsidr_obdry == 0.0)[0]
+        dpsidz_zero = np.where(dpsidz_obdry == 0.0)[0]
+        for idr in dpsidr_zero:
+            if idr in dpsidz_zero:
+                xpoint_indices.append(idr)
+                xpoint_candidates.append(np.array([orbdry[idr], ozbdry[idr]]))
+
+        split_indices = []
+        dpsidr_change = np.where(dpsidr_obdry[:-1] * dpsidr_obdry[1:] < 0.0)[0]
+        for idr in dpsidr_change:
+            if idr not in xpoint_indices and idr + 1 not in xpoint_indices:
+                split_indices.append(int(idr))
+        dpsidz_change = np.where(dpsidz_obdry[:-1] * dpsidz_obdry[1:] < 0.0)[0]
+        for idz in dpsidz_change:
+            if idz not in xpoint_indices and idz + 1 not in xpoint_indices:
+                split_indices.append(int(idz))
+        split_indices = sorted(split_indices)
+
+        split_lines = []
+        for i, istart in enumerate(split_indices):
+            ibdry = np.arange(self._data['nbdry'], dtype=int)
+            vbdry_seg = np.array([])
+            mask = (ibdry > istart)
+            if i + 1 < len(split_indices):
+                mask &= (ibdry <= split_indices[i + 1])
+                vbdry_seg = ovbdry.compress(mask)
+            else:
+                mask[-1] = False
+                vbdry_seg = ovbdry.compress(mask)
+                mask2 = (ibdry <= split_indices[0])
+                vbdry_seg = np.concatenate([vbdry_seg, ovbdry.compress(mask2)])
+                mask |= mask2
+            if (len(vbdry_seg) + 1) < len(ibdry):
+                vdbdry = np.diff(vbdry_seg)
+                adbdry = np.angle(vdbdry)
+                if np.any(np.diff(adbdry) > 2.0 * np.pi):
+                    adbdry[adbdry < 0.0] = adbdry[adbdry < 0.0] + 2.0 * np.pi
+                amin = np.nanmin(adbdry)
+                amax = np.nanmax(adbdry)
+                if amax - amin > np.pi:
+                    print('Spline angle error')
+                rotation = np.exp(1.0j * (amax + amin - np.pi) / 2.0)
+                vspline = (vbdry_seg - vmagx) * rotation
+                xspline = vspline.real
+                yspline = vspline.imag
+                if xspline[0] > xspline[-1]:
+                    xspline = xspline[::-1]
+                    yspline = yspline[::-1]
+                spl = make_interp_spline(xspline, yspline, bc_type='natural')
+                l0 = np.array([vbdry_seg[0], vbdry_seg[0] - (1.0 + 1.0j * spl(vspline[0].real, 1)) / rotation])
+                l1 = np.array([vbdry_seg[-1], vbdry_seg[-1] + (1.0 + 1.0j * spl(vspline[-1].real, 1)) / rotation])
+                split_lines.append((l0, l1))
+            else:
+                nchop = vbdry_seg // 3
+                vdbdry = np.diff(vbdry_seg)
+                adbdry = np.angle(vdbdry)
+                if np.any(np.diff(adbdry) > 2.0 * np.pi):
+                    adbdry[adbdry < 0.0] = adbdry[adbdry < 0.0] + 2.0 * np.pi
+                amin0 = np.nanmin(adbdry[:nchop-1])
+                amax0 = np.nanmax(adbdry[:nchop-1])
+                if amax0 - amin0 > np.pi:
+                    print('Spline 0 angle error')
+                rotation0 = np.exp(1.0j * (amax0 + amin0 - np.pi) / 2.0)
+                vspline0 = (vbdry_seg[:nchop] - vmagx) * rotation0
+                xspline0 = vspline0.real
+                yspline0 = vspline0.imag
+                if xspline0[0] > xspline0[-1]:
+                    xspline0 = xspline0[::-1]
+                    yspline0 = yspline0[::-1]
+                spl0 = make_interp_spline(xspline0, yspline0, bc_type='natural')
+                amin1 = np.nanmin(adbdry[-nchop+1:])
+                amax1 = np.nanmax(adbdry[-nchop+1:])
+                if amax1 - amin1 > np.pi:
+                    print('Spline 1 angle error')
+                rotation1 = np.exp(1.0j * (amax1 + amin1 - np.pi) / 2.0)
+                vspline1 = (vbdry_seg[-nchop:] - vmagx) * rotation1
+                xspline1 = vspline1.real
+                yspline1 = vspline1.imag
+                if xspline1[0] > xspline1[-1]:
+                    xspline1 = xspline1[::-1]
+                    yspline1 = yspline1[::-1]
+                spl1 = make_interp_spline(xspline1, yspline1, bc_type='natural')
+                l0 = np.array([vbdry_seg[0], vbdry_seg[0] - (1.0 + 1.0j * spl0(vspline[0].real, 1)) / rotation0])
+                l1 = np.array([vbdry_seg[-1], vbdry_seg[-1] + (1.0 + 1.0j * spl1(vspline[-1].real, 1)) / rotation1])
+                split_lines.append((l0, l1))
+
+        intersections = []
+        for i, lines in enumerate(split_lines):
+            # u = (x1 - x3 + t * (x2 - x1)) / (x4 - x3)
+            # t * (y2 - y1 - (x2 - x1) * (y4 - y3) / (x4 - x3)) = y3 - y1 - (x3 - x1) * (y4 - y3) / (x4 - x3)
+            p1, p2 = lines[-1]
+            p3, p4 = split_lines[i + 1][0] if i + 1 < len(split_lines) else split_lines[0][0]
+            da = p2 - p1
+            db = p4 - p3
+            dx = p3 - p1
+            ta = (dx.imag - dx.real * db.imag / db.real) / (da.imag - da.real * db.imag / db.real)
+            tb = (ta * da.real - dx.real) / db.real
+            px = p1 + ta * da
+            if not np.isclose(np.abs(px - (p3 + tb * db)), 0.0):
+                print('Intersection error')
+            intersections.append(np.array([px.real, px.imag]))
+
+        hr = self._data['hr'] if 'hr' in self._data else self._data['rdim'] / float(self._data['nr'] - 1)
+        hz = self._data['hz'] if 'hz' in self._data else self._data['zdim'] / float(self._data['nz'] - 1)
+        for i, inter in enumerate(intersections):
+            drl = bisplev(inter[0] - hr, inter[1], self._fit['psi_rz']['tck'], dx=1)
+            drr = bisplev(inter[0] + hr, inter[1], self._fit['psi_rz']['tck'], dx=1)
+            dzb = bisplev(inter[0], inter[1] - hz, self._fit['psi_rz']['tck'], dy=1)
+            dza = bisplev(inter[0], inter[1] + hz, self._fit['psi_rz']['tck'], dy=1)
+            if drl * drr <= 0.0 and dzb * dza <= 0.0:
+                xpoint_candidates.append(inter)
+
+        xpoints = []
+        for xpc in xpoint_candidates:
+            sol = root(_magnitude_grad_psi, [xpc[0], xpc[1]], args=(self._fit['psi_rz']['tck']))
+            if sol.success:
+                r, z = sol.x
+                xpoints.append(np.array([r, z]))
+
+        self._data['xpoints'] = xpoints
+
+
+    def generate_boundary_splines(self):
+
+        if 'lseg_abdry' not in self._fit:
+
+            if 'xpoints' not in self._data:
+                self.find_x_points()
+
+            vmagx = self._data['rmagx'] + 1.0j * self._data['zmagx']
+            vbdry = self._data['rbdry'] + 1.0j * self._data['zbdry']
+            abdry = np.angle(vbdry - vmagx)
+            if np.any(abdry < 0.0):
+                abdry[abdry < 0.0] = abdry[abdry < 0.0] + 2.0 * np.pi
+            b = xr.Dataset(coords={'angle': abdry}, data_vars={'r': (['angle'], self._data['rbdry']), 'z': (['angle'], self._data['zbdry'])})
+            b = b.drop_duplicates('angle').sortby('angle')
+            orbdry = b['r'].to_numpy()
+            ozbdry = b['z'].to_numpy()
+            oabdry = b['angle'].to_numpy()
+            orbdry = np.concatenate([orbdry, [orbdry[0]]])
+            ozbdry = np.concatenate([ozbdry, [ozbdry[0]]])
+            oabdry = np.concatenate([oabdry, [oabdry[0] + 2.0 * np.pi]])
+            ovbdry = orbdry + 1.0j * ozbdry
+            olbdry = np.abs(ovbdry - vmagx)
+
+            splines = []
+            for i, xp in enumerate(self._data['xpoints']):
+                vxp0 = xp[0] + 1.0j * xp[-1]
+                lxp0 = np.abs(vxp0 - vmagx)
+                axp0 = np.angle(vxp0 - vmagx)
+                if axp0 < 0.0:
+                    axp0 += 2.0 * np.pi
+                mask = (oabdry >= axp0)
+                olbdry_seg = None
+                oabdry_seg = None
+                if i + 1 < len(xpoints):
+                    vxp1 = xpoints[i + 1][0] + 1.0j * xpoints[i + 1][-1]
+                    lxp1 = np.abs(vxp1 - vmagx)
+                    axp1 = np.angle(vxp1 - vmagx)
+                    if axp1 < 0.0:
+                        axp1 += 2.0 * np.pi
+                    mask &= (oabdry <= axp1)
+                    olbdry_seg = np.concatenate([[lxp0], olbdry.compress(mask), [lxp1]])
+                    oabdry_seg = np.concatenate([[axp0], oabdry.compress(mask), [axp1]])
+                else:
+                    mask[-1] = False
+                    vxp1 = xpoints[0][0] + 1.0j * xpoints[0][-1]
+                    lxp1 = np.abs(vxp1 - vmagx)
+                    axp1 = np.angle(vxp1 - vmagx)
+                    if axp1 < 0.0:
+                        axp1 += 2.0 * np.pi
+                    oabdry_seg = np.concatenate([[lxp0], oabdry.compress(mask)])
+                    olbdry_seg = np.concatenate([[axp0], olbdry.compress(mask)])
+                    oabdry_seg -= 2.0 * np.pi
+                    mask2 = (oabdry <= axp1)
+                    olbdry_seg = np.concatenate([olbdry_seg, olbdry.compress(mask2), [lxp1]])
+                    oabdry_seg = np.concatenate([oabdry_seg, oabdry.compress(mask2), [axp1]])
+                    mask |= mask2
+                spl = make_interp_spline(oabdry_seg, olbdry_seg, bc_type=None)
+                splines.append({'tck': spl.tck, 'bounds': (float(np.nanmin(oabdry_seg)), float(np.nanmax(oabdry_seg)))})
+            if len(splines) == 0:
+                spl = make_interp_spline(oabdry, olbdry, bc_type='periodic')
+                splines.append({'tck': spl.tck, 'bounds': (float(np.nanmin(oabdry)), float(np.nanmax(oabdry)))})
+
+            if len(splines) > 0:
+                self._fit['lseg_abdry'] = splines
+
+
+    def refine_boundary_with_splines(self, nbdry=501):
+
+        if 'nbdry_orig' not in self._data:
+            self._data['nbdry_orig'] = self._data['nbdry']
+        if 'rbdry_orig' not in self._data:
+            self._data['rbdry_orig'] = self._data['rbdry'].copy()
+        if 'zbdry_orig' not in self._data:
+            self._data['zbdry_orig'] = self._data['zbdry'].copy()
+
+        if 'lseg_abdry' not in self._fit:
+            self.generate_boundary_splines()
+
+        boundary = []
+        for i, spline in enumerate(self._fit['lseg_abdry']):
+            vmagx = self._data['rmagx'] + 1.0j * self._data['zmagx']
+            npoints = int(np.rint(nbdry * (spline['bounds'][-1] - spline['bounds'][0]) / (2.0 * np.pi)))
+            angle = np.linspace(spline['bounds'][0], spline['bounds'][-1], npoints)
+            length = splev(angle, spline['tck'])
+            vector = length * np.exp(1.0j * angle) + vmagx
+            boundary.extend([v for v in vector])
+        if len(boundary) > 0:  # May not be exact
+            self._data['nbdry'] = len(boundary)
+            self._data['rbdry'] = np.array(boundary).flatten().real
+            self._data['zbdry'] = np.array(boundary).flatten().imag
+
+
+    def generate_finite_difference_grid(self):
         '''Setup the grid and compute the differences matrix.'''
 
         # SETUP GRID
@@ -394,7 +697,7 @@ class FixedBoundaryEquilibrium():
         self.solver = factorized(self.A.tocsc())
 
 
-    def find_magnetic_axis(self):
+    def find_magnetic_axis_from_grid(self):
         '''Compute magnetic axis location and psi value using second order differences'''
 
         if 'simagx_orig' not in self._data:
@@ -428,7 +731,6 @@ class FixedBoundaryEquilibrium():
             0.5 * axx * xmax**2 + 0.5 * ayy * ymax**2 + 
             axy * xmax * ymax
         )
-        self._data['xpsi'] = np.abs((self._data['simagx'] - self._data['psi']) / (self._data['simagx'] - self._data['sibdry']))
 
         # MAGNETIC AXIS LOCATION
         j = k // nr
@@ -437,13 +739,21 @@ class FixedBoundaryEquilibrium():
         self._data['zmagx'] = ymax + self._data['zvec'][j]
 
 
+    def zero_psi_outside_boundary(self):
+        if 'psi_orig' not in self._data:
+            self._data['psi_orig'] = self._data['psi'].copy()
+        psi = self._data['psi'].copy().ravel()
+        psi.put(self._data['ijout'], np.zeros((len(self._data['ijout']), ), dtype=float))
+        self._data['psi'] = psi.reshape(self._data['nz'], self._data['nr'])
+
+
     def zero_magnetic_boundary(self):
         if 'sibdry_orig' not in self._data:
             self._data['sibdry_orig'] = self._data['sibdry']
         self._data['sibdry'] = 0.0
 
 
-    def find_xpoints(self):
+    def old_find_x_points(self):
         # X-POINT LOCATION
         if 'gradr_bdry' not in self._fit or 'gradz_bdry' not in self._fit:
             self.compute_boundary_gradients()
@@ -505,14 +815,16 @@ class FixedBoundaryEquilibrium():
                 zmax = -zmin
             return rmin, rmax, zmin, zmax
 
+        if 'psi_rz' not in self._fit:
+            self.generate_psi_bivariate_spline()
+        if self._data['nbdry'] < 301:
+            self.refine_boundary_with_splines(nbdry=501)
+
         # LINEAR INTERPOLATING FUNCTION FOR PSI
-        rmin = self._data['rleft_orig']
-        rmax = self._data['rleft_orig'] + self._data['rdim_orig']
-        zmin = self._data['zmid_orig'] - 0.5 * self._data['zdim_orig']
-        zmax = self._data['zmid_orig'] + 0.5 * self._data['zdim_orig']
-        rvec_orig = rmin + np.linspace(0.0, 1.0, self._data['nr_orig']) * (rmax - rmin)
-        zvec_orig = zmin + np.linspace(0.0, 1.0, self._data['nz_orig']) * (zmax - zmin)
-        psi_func = RegularGridInterpolator((rvec_orig, zvec_orig), self._data['psi_orig'].T)
+        rmin = self._data['rleft']
+        rmax = self._data['rleft'] + self._data['rdim']
+        zmin = self._data['zmid'] - 0.5 * self._data['zdim']
+        zmax = self._data['zmid'] + 0.5 * self._data['zdim']
 
         # SETUP NEW GRID
         if optimal:
@@ -524,20 +836,22 @@ class FixedBoundaryEquilibrium():
 
         self._data['nr'] = nr
         self._data['nz'] = nz
-        self.setup()
+        #self.setup()
+        self.generate_finite_difference_grid()
         self.make_solver()
 
         # INTERPOLATE PSI ONTO NEW GRID
-        newpsi = np.zeros((self._data['nrz'], ), dtype=float)
-        for j in range(self._data['jmin'], self._data['jmax'] + 1):
-            i0 = self._data['imin'][j]
-            i1 = self._data['imax'][j] + 1
-            ip0 = j * self._data['nr'] + i0
-            ip1 = j * self._data['nr'] + i1
-            segment = np.stack([self._data['rpsi'][j, i0:i1].flatten(), self._data['zpsi'][j, i0:i1].flatten()], axis=-1)
-            newpsi[ip0:ip1] = psi_func(segment).ravel()
-        self._data['psi'] = newpsi.reshape(self._data['nz'], self._data['nr'])
-        self.find_magnetic_axis()
+        #newpsi = np.zeros((self._data['nrz'], ), dtype=float)
+        #for j in range(self._data['jmin'], self._data['jmax'] + 1):  # Why only inner points?
+        #    i0 = self._data['imin'][j]
+        #    i1 = self._data['imax'][j] + 1
+        #    ip0 = j * self._data['nr'] + i0
+        #    ip1 = j * self._data['nr'] + i1
+        #    segment = np.stack([self._data['rpsi'][j, i0:i1].flatten(), self._data['zpsi'][j, i0:i1].flatten()], axis=-1)
+        #    newpsi[ip0:ip1] = psi_func(segment).ravel()
+        #self._data['psi'] = newpsi.reshape(self._data['nz'], self._data['nr'])
+        self._data['psi'] = bisplev(self._data['rvec'], self._data['zvec'], self._fit['psi_rz']['tck'])
+        #self.find_magnetic_axis()
         self.recompute_pressure_profile()
         self.recompute_f_profile()
         self.recompute_q_profile()
@@ -590,7 +904,7 @@ class FixedBoundaryEquilibrium():
                 self._data['pres'] *= self._data['curscale']
 
 
-    def compute_boundary_gradients(self, tol=1.0e-6):
+    def compute_boundary_gradients_from_grid(self, tol=1.0e-6):
 
         vgradr = []
         gradr = []
@@ -721,7 +1035,7 @@ class FixedBoundaryEquilibrium():
         self._fit['gradz_bdry'] = splrep(agradz, gradz, k=3, quiet=1)
 
 
-    def refine_boundary(self, n_boundary=300, boundary_smoothing=1.0e-4):
+    def old_refine_boundary(self, n_boundary=300, boundary_smoothing=1.0e-4):
         #TODO: Needs work
         pass
 
@@ -916,7 +1230,8 @@ class FixedBoundaryEquilibrium():
         vmagx = self._data['rmagx'] + 1.0j * self._data['zmagx']
         vbdry = self._data['rbdry'][:-1] + 1.0j * self._data['zbdry'][:-1]
         abdry = np.angle(vbdry - vmagx)
-        abdry[abdry < 0.0] = abdry[abdry < 0.0] + 2.0 * np.pi
+        if np.any(abdry < 0.0):
+            abdry[abdry < 0.0] = abdry[abdry < 0.0] + 2.0 * np.pi
         psi = RectBivariateSpline(self._data['rvec'], self._data['zvec'], self._data['psi'].T)
         dpsidr = psi.partial_derivative(1, 0)
         dpsidz = psi.partial_derivative(0, 1)
@@ -942,27 +1257,61 @@ class FixedBoundaryEquilibrium():
             rc = []
             zc = []
             for ang in angles[:-1]:
-                i0 = np.argmin(abdry - ang)
-                i1 = i0 + 1 if (i0 + 1) < len(abdry) else 0
-                i1 = i1 if (abdry[i0] - ang) * (abdry[i1] - ang) < 0.0 else i0 - 1
-                a0 = np.abs((abdry[i0] - ang) / (abdry[i0] - abdry[i1]))
-                a1 = np.abs((abdry[i1] - ang) / (abdry[i0] - abdry[i1]))
-                lbdry = (1.0 + 0.2 * a0 * a1) * np.abs(a0 * (vbdry[i0] - vmagx) + a1 * (vbdry[i1] - vmagx))
-                vscan = np.linspace(0.0, 1.02 * lbdry, 501) * np.exp(1.0j * ang) + vmagx
-                psiscan = psisign * psi(vscan.real, vscan.imag, grid=False)
-                iflipvec = np.where(np.diff(psiscan)[:-1] * np.diff(psiscan)[1:] < 0.0)[0]
-                iflip = iflipvec[0] + 1 if len(iflipvec) > 0 and (iflipvec[0] + 1) < len(psiscan) else None
-                imin = np.argmin(psiscan[:iflip])
-                imax = np.argmax(psiscan[:iflip])
-                lmin = np.abs(vscan[imin] - vmagx)
-                lmax = np.abs(vscan[imax] - vmagx)
-                imaxs = imax + 1 if (imax + 1) < len(vscan) else None
-                psifunc = interp1d(np.abs(vscan[imin:imaxs] - vmagx), psiscan[imin:imaxs], bounds_error=False, fill_value='extrapolate')
-                lc = np.sqrt(ln) * lbdry
-                if (psifunc(lmax) - level) <= 0.0:
-                    lmax = lbdry
-                if (psifunc(lmax) - level) > 0.0:
-                    lc = brentq(lambda l, t: psifunc(l) - t, lmin, lmax, args=(level), xtol=1.0e-4)
+                fang = ang
+                for i, segfit in enumerate(self._fit['lseg_abdry']):
+                    anglb = segfit['bounds'][0]
+                    angub = segfit['bounds'][1]
+                    if anglb < 0.0:
+                        fang -= 2.0 * np.pi
+                    if fang >= anglb and fang <= angub:
+                        break
+                lbdry = splev(fang, self._fit['lseg_abdry'][i]['tck'])
+                #i0 = np.argmin(abdry - ang)
+                #i1 = i0 + 1 if (i0 + 1) < len(abdry) else 0
+                #i1 = i1 if (abdry[i0] - ang) * (abdry[i1] - ang) < 0.0 else i0 - 1
+                #a0 = np.abs((abdry[i0] - ang) / (abdry[i0] - abdry[i1]))
+                #a1 = np.abs((abdry[i1] - ang) / (abdry[i0] - abdry[i1]))
+                #lbdry = (1.0 + 0.2 * a0 * a1) * np.abs(a0 * (vbdry[i0] - vmagx) + a1 * (vbdry[i1] - vmagx))
+                vvec = np.linspace(0.0, lbdry, 501) * np.exp(1.0j * ang) + vmagx
+                vl = []
+                psil = []
+                for v in vvec[250:0:-1]:
+                    psival = psisign * bisplev(v.real, v.imag, self._fit['psi_rz']['tck'])
+                    if len(psil) == 0:
+                        vl.append(v)
+                        psil.append(psival)
+                    elif psival < psil[-1] and psival >= psisign * self._data['simagx']:
+                        vl.append(v)
+                        psil.append(psival)
+                vu = []
+                psiu = []
+                for v in vvec[251:-1]:
+                    psival = psisign * bisplev(v.real, v.imag, self._fit['psi_rz']['tck'])
+                    if len(psiu) == 0:
+                        vu.append(v)
+                        psiu.append(psival)
+                    elif psival > psiu[-1] and psival <= psisign * self._data['sibdry']:
+                        vu.append(v)
+                        psiu.append(psival)
+                vscan = np.concatenate([[vvec[0]], vl[::-1], vu, [vvec[-1]]])
+                psiscan = np.concatenate([[psisign * self._data['simagx']], psil[::-1], psiu, [psisign * self._data['sibdry']]])
+                #iflipvec = np.where(np.diff(psiscan)[:-1] * np.diff(psiscan)[1:] < 0.0)[0]
+                #iflip = iflipvec[0] + 1 if len(iflipvec) > 0 and (iflipvec[0] + 1) < len(psiscan) else None
+                #imin = np.argmin(psiscan[:iflip])
+                #imax = np.argmax(psiscan[:iflip])
+                #lmin = np.abs(vscan[imin] - vmagx)
+                #lmax = np.abs(vscan[imax] - vmagx)
+                #imaxs = imax + 1 if (imax + 1) < len(vscan) else None
+                #psifunc = interp1d(np.abs(vscan[imin:imaxs] - vmagx), psiscan[imin:imaxs], bounds_error=False, fill_value='extrapolate')
+                lmin = np.abs(vscan[0] - vmagx)
+                lmax = np.abs(vscan[-1] - vmagx)
+                psifunc = interp1d(np.abs(vscan - vmagx), psiscan, bounds_error=False, fill_value='extrapolate')
+                #lc = np.sqrt(ln) * lbdry
+                #if (psifunc(lmax) - level) <= 0.0:
+                #    lmax = lbdry
+                #if (psifunc(lmax) - level) > 0.0:
+                #    lc = brentq(lambda l, t: psifunc(l) - t, lmin, lmax, args=(level), xtol=1.0e-4)
+                lc = brentq(lambda l, t: psifunc(l) - t, lmin, lmax, args=(level), xtol=1.0e-4)
                 vroot = lc * np.exp(1.0j * ang) + vmagx
                 rc.append(vroot.real)
                 zc.append(vroot.imag)
@@ -1064,6 +1413,8 @@ class FixedBoundaryEquilibrium():
             self._options['relaxj'] = relaxj
 
         # INITIAL CURRENT PROFILE
+        self.compute_normalized_psi_map()
+        self.zero_psi_outside_boundary()
         self.newj(1.0)
         for n in range(self._options['nxiter']):
             psinew = self.solver(self._data['s5'] * self._data['cur']).reshape(self._data['nz'], self._data['nr'])
@@ -1071,16 +1422,19 @@ class FixedBoundaryEquilibrium():
                 psinew = self._data['psi'] + self._options['relax'] * (psinew - self._data['psi'])
             psierror = np.abs(psinew - self._data['psi']).max() / np.abs(psinew).max()
             self._data['psi'] = psinew
-            self.find_magnetic_axis()
+            self.find_magnetic_axis_from_grid()
             self.zero_magnetic_boundary()
+            self.compute_normalized_psi_map()
             #if self.nxiter < 0:
             #    print('max(psiNew-psiOld)/max(psiNew) = %8.2e'%(error))
             if psierror <= self._options['erreq']: break
             self.newj(self._options['relaxj'])
         self.rescale_kinetic_profiles()
+        self.compute_boundary_gradients_from_grid()
         self.extend_psi_beyond_boundary()
         self.renormalize_psi()
-        self.recompute_q_profile_from_scratch()
+        self.generate_psi_bivariate_spline()
+        #self.recompute_q_profile_from_scratch()
 
         self.error = psierror
         if n + 1 == self._options['nxiter']:
@@ -1106,6 +1460,17 @@ class FixedBoundaryEquilibrium():
         errds  = np.abs(cur - ds).max() / curmax
         #print('max(-Delta*psi-mu0RJ)/max(mu0RJ) = %8.2e'%(errds))
         return errds
+
+
+    def enforce_boundary_duplicate_at_end(self):
+        if 'rbdry' in self._data and 'zbdry' in self._data:
+            df = pd.DataFrame(data={'rbdry': self._data['rbdry'], 'zbdry': self._data['zbdry']}, index=pd.RangeIndex(self._data['nbdry']))
+            df = df.drop_duplicates(subset=['rbdry', 'zbdry'], keep='first').reset_index(drop=True)
+            rbdry = df['rbdry'].to_numpy()
+            zbdry = df['zbdry'].to_numpy()
+            self._data['rbdry'] = np.concatenate([rbdry, [rbdry[0]]])
+            self._data['zbdry'] = np.concatenate([zbdry, [zbdry[0]]])
+            self._data['nbdry'] = len(self._data['rbdry'])
 
 
     @classmethod
