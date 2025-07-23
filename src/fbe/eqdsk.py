@@ -84,10 +84,6 @@ def read_eqdsk_file(fname):
         bbbs = np.hstack(bbbs).reshape((eq['nbdry'], 2))
         eq['rbdry'] = bbbs[:, 0]
         eq['zbdry'] = bbbs[:, 1]
-        if eq['rbdry'][0] != eq['rbdry'][-1] and eq['zbdry'][0] != eq['zbdry'][-1]:
-            eq['nbdry'] += 1
-            eq['rbdry'] = np.concatenate([eq['rbdry'], [eq['rbdry'][0]]])
-            eq['zbdry'] = np.concatenate([eq['zbdry'], [eq['zbdry'][0]]])
     else:
         eq['rbdry'] = None
         eq['zbdry'] = None
@@ -98,10 +94,6 @@ def read_eqdsk_file(fname):
         lim = np.hstack(lim).reshape((eq['nlim'], 2))
         eq['rlim'] = lim[:, 0]
         eq['zlim'] = lim[:, 1]
-        if eq['rlim'][0] != eq['rlim'][-1] and eq['zlim'][0] != eq['zlim'][-1]:
-            eq['nlim'] += 1
-            eq['rlim'] = np.concatenate([eq['rlim'], [eq['rlim'][0]]])
-            eq['zlim'] = np.concatenate([eq['zlim'], [eq['zlim'][0]]])
     else:
         eq['rlim'] = None
         eq['zlim'] = None
