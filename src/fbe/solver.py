@@ -2,7 +2,7 @@ import argparse
 from pathlib import Path
 import numpy as np
 import xarray as xr
-from scipy.interpolate import splrep, splev, RectBivariateSpline, RegularGridInterpolator, make_interp_spline
+from scipy.interpolate import interp1d, splrep, splev, RectBivariateSpline, RegularGridInterpolator, make_interp_spline
 from scipy.sparse import spdiags
 from scipy.sparse.linalg import factorized
 from scipy.optimize import fsolve, brentq
@@ -798,7 +798,7 @@ class FixedBoundaryEquilibrium():
             self._fit['radius_bdry'] = splrep(b.angle.to_numpy(), b.radius.to_numpy(), k=3, s=boundary_smoothing, per=True, quiet=1)
             newradius = splev(newtheta, self._fit['radius_bdry'])
         else:
-            newradius = interp(newtheta, b.angle.to_numpy(), b.radius.to_numpy())
+            newradius = np.interp(newtheta, b.angle.to_numpy(), b.radius.to_numpy())
         newb = xr.Dataset(coords={'angle': newtheta}, data_vars={'radius': (['angle'], newradius)})
 
         # FINELY SPACED BOUNDARY POINTS ON SMOOTHED BOUNDARY
@@ -825,7 +825,7 @@ class FixedBoundaryEquilibrium():
         if 'radius_bdry' in self._fit:
             finalradius = splev(finaltheta, self._fit['radius_bdry'])
         else:
-            finalradius= interp(finaltheta, b.angle.to_numpy(), b.radius.to_numpy())
+            finalradius = np.interp(finaltheta, b.angle.to_numpy(), b.radius.to_numpy())
         self._data['rbdry'] = (finalradius * np.cos(finaltheta) + rb0)[::-1]
         self._data['zbdry'] = (finalradius * np.sin(finaltheta) + zb0)[::-1]
 
@@ -858,7 +858,7 @@ class FixedBoundaryEquilibrium():
             angmax = np.angle(vb1[k] - vmagx)
             angvec = np.angle(vvec - vmagx)
             angmask = np.isfinite(angvec)
-            if (angmin - angmax) > (1.99 * np.pi):
+            if (angmin - angmax) > (2.0 * np.pi):
                 angmask = np.logical_and(
                     angmask,
                     angvec > 0.0
@@ -909,19 +909,15 @@ class FixedBoundaryEquilibrium():
         return contours
 
 
-    def trace_fine_flux_surfaces(self, maxpoints=501):
-
-        def _find_psi_root(vector, psifunc, target):
-            return psifunc(vector.real, vector.imag, grid=False) - target
-
+    def trace_fine_flux_surfaces(self, maxpoints=101):
         contours = self.trace_rough_flux_surfaces()
         psisign = np.sign(self._data['sibdry'] - self._data['simagx'])
-        last_level = np.nanmax(psisign * np.array(list(contours.keys())))
-        last_clength = np.sum(np.sqrt(np.sum(np.power(np.diff(contours[psisign * last_level], axis=0), 2.0), axis=1)))
+        levels = np.sort(psisign * np.array(list(contours.keys())))
+        vmagx = self._data['rmagx'] + 1.0j * self._data['zmagx']
         vbdry = self._data['rbdry'][:-1] + 1.0j * self._data['zbdry'][:-1]
-        abdry = np.angle(vbdry)
+        abdry = np.angle(vbdry - vmagx)
         abdry[abdry < 0.0] = abdry[abdry < 0.0] + 2.0 * np.pi
-        psi = RectBivariateSpline(self._data['rvec'], self._data['zvec'], self._data['psi'])
+        psi = RectBivariateSpline(self._data['rvec'], self._data['zvec'], self._data['psi'].T)
         dpsidr = psi.partial_derivative(1, 0)
         dpsidz = psi.partial_derivative(0, 1)
         fine_contours = {}
@@ -934,13 +930,14 @@ class FixedBoundaryEquilibrium():
             'dpsidr': np.array([0.0]).flatten(),
             'dpsidz': np.array([0.0]).flatten(),
         }
-        for level, rough_vertices in contours.items():
-            fp = splev((level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx']), self._fit['fpol_fs'])
-            if np.all(rough_vertices[0] != rough_vertices[-1]):
-                rough_vertices = np.concatenate([rough_vertices, np.atleast_2d(rough_vertices[0])], axis=0)
-            clength = np.sum(np.sqrt(np.sum(np.power(np.diff(rough_vertices, axis=0), 2.0), axis=1)))
-            npoints = int(np.rint(float(maxpoints) * clength / last_clength))
-            axis = self._data['rmagx'] + 1.0j * self._data['zmagx']
+        for level in levels:
+            ll = psisign * level
+            ln = np.abs((ll - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx']))
+            fp = splev(ln, self._fit['fpol_fs'])
+            vcont = contours[ll][:, 0] + 1.0j * contours[ll][:, 1]
+            vb = np.argmax(np.abs(vbdry - vmagx))
+            vc = np.argmax(np.abs(vcont - vmagx))
+            npoints = max(21, int(np.rint(float(maxpoints) * vc / vb)))
             angles = np.linspace(0.0, 2.0 * np.pi, npoints)
             rc = []
             zc = []
@@ -948,11 +945,27 @@ class FixedBoundaryEquilibrium():
                 i0 = np.argmin(abdry - ang)
                 i1 = i0 + 1 if (i0 + 1) < len(abdry) else 0
                 i1 = i1 if (abdry[i0] - ang) * (abdry[i1] - ang) < 0.0 else i0 - 1
-                lbdry = 1.01 * np.abs(0.5 * (vbdry[i0] + vbdry[i1]))
-                lc = fsolve(lambda l, a, p, t, o: _find_psi_root(l * np.exp(1.0j * a) + o, p, t), lbdry * clength / last_clength, args=(ang, psi, level, axis), xtol=1.0e-4)
-                v = lc * np.exp(1.0j * ang) + axis
-                rc.append(v.real)
-                zc.append(v.imag)
+                a0 = np.abs((abdry[i0] - ang) / (abdry[i0] - abdry[i1]))
+                a1 = np.abs((abdry[i1] - ang) / (abdry[i0] - abdry[i1]))
+                lbdry = (1.0 + 0.2 * a0 * a1) * np.abs(a0 * (vbdry[i0] - vmagx) + a1 * (vbdry[i1] - vmagx))
+                vscan = np.linspace(0.0, 1.02 * lbdry, 501) * np.exp(1.0j * ang) + vmagx
+                psiscan = psisign * psi(vscan.real, vscan.imag, grid=False)
+                iflipvec = np.where(np.diff(psiscan)[:-1] * np.diff(psiscan)[1:] < 0.0)[0]
+                iflip = iflipvec[0] + 1 if len(iflipvec) > 0 and (iflipvec[0] + 1) < len(psiscan) else None
+                imin = np.argmin(psiscan[:iflip])
+                imax = np.argmax(psiscan[:iflip])
+                lmin = np.abs(vscan[imin] - vmagx)
+                lmax = np.abs(vscan[imax] - vmagx)
+                imaxs = imax + 1 if (imax + 1) < len(vscan) else None
+                psifunc = interp1d(np.abs(vscan[imin:imaxs] - vmagx), psiscan[imin:imaxs], bounds_error=False, fill_value='extrapolate')
+                lc = np.sqrt(ln) * lbdry
+                if (psifunc(lmax) - level) <= 0.0:
+                    lmax = lbdry
+                if (psifunc(lmax) - level) > 0.0:
+                    lc = brentq(lambda l, t: psifunc(l) - t, lmin, lmax, args=(level), xtol=1.0e-4)
+                vroot = lc * np.exp(1.0j * ang) + vmagx
+                rc.append(vroot.real)
+                zc.append(vroot.imag)
             if len(rc) > 2:
                 rc = np.array(rc + [rc[0]]).flatten()
                 zc = np.array(zc + [zc[0]]).flatten()
