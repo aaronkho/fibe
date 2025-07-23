@@ -1,16 +1,19 @@
 import argparse
+import copy
 from pathlib import Path
+from typing import Any, Final, Self
+from collections.abc import MutableMapping, Mapping, MutableSequence, Sequence, Iterable
 import numpy as np
 import pandas as pd
 import xarray as xr
 from scipy.interpolate import interp1d, splrep, splev, bisplrep, bisplev, RectBivariateSpline, RegularGridInterpolator, make_interp_spline
 from scipy.sparse import spdiags
 from scipy.sparse.linalg import factorized
-from scipy.optimize import fsolve, brentq
+from scipy.optimize import fsolve, brentq, root
 import contourpy
 from shapely import Point, Polygon
 
-from .eqdsk import read_eqdsk_file, write_eqdsk_file
+from .eqdsk import read_eqdsk_file, write_eqdsk_file, detect_cocos, convert_cocos
 
 
 class FixedBoundaryEquilibrium():
@@ -1341,8 +1344,13 @@ class FixedBoundaryEquilibrium():
         return cls(eqdsk=path)
 
 
-    def to_eqdsk(self, path):
-        write_eqdsk_file(path, **{k: v for k, v in self._data.items() if k in self.eqdsk_fields})
+    def to_eqdsk(self, path, cocos=2):
+        eqdsk = {k: v for k, v in self._data.items() if k in self.eqdsk_fields}
+        eqdsk['gcase'] = 'FBE'
+        eqdsk['gid'] = 42
+        current_cocos = detect_cocos(eqdsk)
+        eqdsk = convert_cocos(eqdsk, current_cocos, cocos)
+        write_eqdsk_file(path, **eqdsk)
 
 
     def plot_contour(self):
