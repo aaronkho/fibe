@@ -156,9 +156,9 @@ class FixedBoundaryEquilibrium():
             psin_fit = np.concatenate([psin_mirror, psin])
             pressure_fit = np.concatenate([pressure_mirror, pressure])
             w_fit = np.concatenate([w_mirror, w]) if w is not None else None
-            self._fit['pres_fs'] = splrep(psin_fit, pressure_fit, w_fit, xb=-1.0, xe=1.0, k=3, quiet=1)
-            self._data['pres'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['pres_fs'])
-            self._data['pprime'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['pres_fs'], der=1)
+            self._fit['pres_fs'] = {'tck': splrep(psin_fit, pressure_fit, w_fit, xb=-1.0, xe=1.0, k=3, quiet=1), 'bounds': (-1.0, 1.0)}
+            self._data['pres'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['pres_fs']['tck'])
+            self._data['pprime'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['pres_fs']['tck'], der=1)
 
 
     def define_f_profile(self, f, psinorm=None, smooth=True):
@@ -181,9 +181,9 @@ class FixedBoundaryEquilibrium():
             psin_fit = np.concatenate([psin_mirror, psin])
             f_fit = np.concatenate([f_mirror, f])
             w_fit = np.concatenate([w_mirror, w]) if w is not None else None
-            self._fit['fpol_fs'] = splrep(psin_fit, f_fit, w_fit, xb=-1.0, xe=1.0, k=3, quiet=1)
-            self._data['fpol'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['fpol_fs'])
-            self._data['ffprime'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['fpol_fs'], der=1) * self._data['fpol']
+            self._fit['fpol_fs'] = {'tck': splrep(psin_fit, f_fit, w_fit, xb=-1.0, xe=1.0, k=3, quiet=1), 'bounds': (-1.0, 1.0)}
+            self._data['fpol'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['fpol_fs']['tck'])
+            self._data['ffprime'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['fpol_fs']['tck'], der=1) * self._data['fpol']
 
 
     def compute_normalized_psi_map(self):
@@ -211,7 +211,7 @@ class FixedBoundaryEquilibrium():
         #kz = psi.ky
         tr, tz, c = psi.tck
         kr, kz = psi.degrees
-        self._fit['psi_rz'] = {'tck': (tr, tz, c, kr, kz)}
+        self._fit['psi_rz'] = {'tck': (tr, tz, c, kr, kz), 'bounds': (rmin, zmin, rmax, zmax)}
 
 
     def find_magnetic_axis(self):
@@ -753,12 +753,12 @@ class FixedBoundaryEquilibrium():
         self._data['sibdry'] = 0.0
 
 
-    def old_find_x_points(self):
+    def find_x_points_from_grid(self):
         # X-POINT LOCATION
         if 'gradr_bdry' not in self._fit or 'gradz_bdry' not in self._fit:
             self.compute_boundary_gradients()
         abdry = np.linspace(0.0, 2.0 * np.pi, 5000)
-        mag_grad_psi = splev(abdry, self._fit['gradr_bdry']) ** 2 + splev(abdry, self._fit['gradz_bdry']) ** 2
+        mag_grad_psi = splev(abdry, self._fit['gradr_bdry']['tck']) ** 2 + splev(abdry, self._fit['gradz_bdry']['tck']) ** 2
         axs = []
         for i, magnitude in enumerate(mag_grad_psi):
             if magnitude < 1.0e-2:
@@ -820,11 +820,14 @@ class FixedBoundaryEquilibrium():
         if self._data['nbdry'] < 301:
             self.refine_boundary_with_splines(nbdry=501)
 
-        # LINEAR INTERPOLATING FUNCTION FOR PSI
-        rmin = self._data['rleft']
-        rmax = self._data['rleft'] + self._data['rdim']
-        zmin = self._data['zmid'] - 0.5 * self._data['zdim']
-        zmax = self._data['zmid'] + 0.5 * self._data['zdim']
+        if rmin is None:
+            rmin = self._data['rleft']
+        if rmax is None:
+            rmax = self._data['rleft'] + self._data['rdim']
+        if zmin is None:
+            zmin = self._data['zmid'] - 0.5 * self._data['zdim']
+        if zmax is None:
+            zmax = self._data['zmid'] + 0.5 * self._data['zdim']
 
         # SETUP NEW GRID
         if optimal:
@@ -836,22 +839,11 @@ class FixedBoundaryEquilibrium():
 
         self._data['nr'] = nr
         self._data['nz'] = nz
-        #self.setup()
         self.generate_finite_difference_grid()
         self.make_solver()
 
         # INTERPOLATE PSI ONTO NEW GRID
-        #newpsi = np.zeros((self._data['nrz'], ), dtype=float)
-        #for j in range(self._data['jmin'], self._data['jmax'] + 1):  # Why only inner points?
-        #    i0 = self._data['imin'][j]
-        #    i1 = self._data['imax'][j] + 1
-        #    ip0 = j * self._data['nr'] + i0
-        #    ip1 = j * self._data['nr'] + i1
-        #    segment = np.stack([self._data['rpsi'][j, i0:i1].flatten(), self._data['zpsi'][j, i0:i1].flatten()], axis=-1)
-        #    newpsi[ip0:ip1] = psi_func(segment).ravel()
-        #self._data['psi'] = newpsi.reshape(self._data['nz'], self._data['nr'])
         self._data['psi'] = bisplev(self._data['rvec'], self._data['zvec'], self._fit['psi_rz']['tck'])
-        #self.find_magnetic_axis()
         self.recompute_pressure_profile()
         self.recompute_f_profile()
         self.recompute_q_profile()
@@ -862,11 +854,11 @@ class FixedBoundaryEquilibrium():
         ff = self._data['ffprime'].copy()
         pp = self._data['pprime'].copy()
         if 'ffprime' in self._fit:
-            ff = splev(psinorm, self._fit['ffprime'])
+            ff = splev(psinorm, self._fit['ffprime']['tck'])
         else:
             ff = np.interp(psinorm, np.linspace(0.0, 1.0, ff.size), ff)
         if 'pprime' in self._fit:
-            pp = splev(psinorm, self._fit['pprime'])
+            pp = splev(psinorm, self._fit['pprime']['tck'])
         else:
             pp = np.interp(psinorm, np.linspace(0.0, 1.0, pp.size), pp)
         return -np.sign(self._data['cpasma']) * (ff / (self.mu0 * rmaj) + rmaj * pp)
@@ -992,7 +984,7 @@ class FixedBoundaryEquilibrium():
         gradz = gz['gradient'].to_numpy()
         self._data['lmin'] = np.nanmin(np.concatenate([np.abs(vgradr), np.abs(vgradz)])) - np.abs(self._data['hr'] + 1.0j * self._data['hz'])
 
-        self._fit['gradr_bdry'] = splrep(agradr, gradr, k=3, quiet=1)
+        self._fit['gradr_bdry'] = {'tck': splrep(agradr, gradr, k=3, quiet=1), 'bounds': (float(np.nanmin(agradr)), float(np.nanmax(agradr)))}
         if np.abs(agradr[0] + np.pi) < tol:
             agradr[0] = -np.pi
         if np.abs(agradr[-1] - np.pi) < tol:
@@ -1005,15 +997,15 @@ class FixedBoundaryEquilibrium():
         if agradr[0] > -np.pi:
             if yy is None:
                 xx = agradr[0]
-                yy = splev(xx, self._fit['gradr_bdry']) - (np.pi + xx) * splev(xx, self._fit['gradr_bdry'], der=1)  # Why the derivative?
+                yy = splev(xx, self._fit['gradr_bdry']['tck']) - (np.pi + xx) * splev(xx, self._fit['gradr_bdry']['tck'], der=1)  # Why the derivative?
             agradr = np.concatenate(([-np.pi], agradr))
             gradr = np.concatenate(([yy], gradr))
         if agradr[-1] < np.pi:
             agradr = np.concatenate((agradr, [np.pi]))
             gradr = np.concatenate((gradr, [yy]))
-        self._fit['gradr_bdry'] = splrep(agradr, gradr, k=3, quiet=1)
+        self._fit['gradr_bdry'] = {'tck': splrep(agradr, gradr, k=3, quiet=1), 'bounds': (float(np.nanmin(agradr)), float(np.nanmax(agradr)))}
 
-        self._fit['gradz_bdry'] = splrep(agradz, gradz, k=3, quiet=1)
+        self._fit['gradz_bdry'] = {'tck': splrep(agradz, gradz, k=3, quiet=1), 'bounds': (float(np.nanmin(agradz)), float(np.nanmax(agradz)))}
         if np.abs(agradz[0] + np.pi) < tol:
             agradz[0] = -np.pi
         if np.abs(agradz[-1] - np.pi) < tol:
@@ -1026,128 +1018,19 @@ class FixedBoundaryEquilibrium():
         if agradz[0] > -np.pi:
             if yy is None:
                 xx = agradz[0]
-                yy = splev(xx, self._fit['gradz_bdry']) - (np.pi + xx) * splev(xx, self._fit['gradz_bdry'], der=1)  # Why the derivative?
+                yy = splev(xx, self._fit['gradz_bdry']['tck']) - (np.pi + xx) * splev(xx, self._fit['gradz_bdry']['tck'], der=1)  # Why the derivative?
             agradz = np.concatenate(([-np.pi], agradz))
             gradz = np.concatenate(([yy], gradz))
         if agradz[-1] < np.pi:
             agradz = np.concatenate((agradz, [np.pi]))
             gradz = np.concatenate((gradz, [yy]))
-        self._fit['gradz_bdry'] = splrep(agradz, gradz, k=3, quiet=1)
-
-
-    def old_refine_boundary(self, n_boundary=300, boundary_smoothing=1.0e-4):
-        #TODO: Needs work
-        pass
-
-        if 'rbdry_orig' not in self._data:
-            self._data['rbdry_orig'] = self._data['rbdry'].copy()
-        if 'zbdry_orig' not in self._data:
-            self._data['zbdry_orig'] = self._data['zbdry'].copy()
-
-        n_boundary_orig = self._data['rbdry'].size
-        if n_boundary <= 0:
-            n_boundary = self._data['rbdry'].size
-
-        rb0 = 0.5 * (self._data['rbdry'].max() + self._data['rbdry'].min())
-        zb0 = 0.5 * (self._data['zbdry'].max() + self._data['zbdry'].min())
-
-        # ORIGINAL BOUNDARY in r,theta
-        complex_b = (self._data['rbdry'] - rb0) + 1.0j * (self._data['zbdry'] - zb0)
-        theta = np.angle(complex_b)
-        theta = np.where(theta < 0.0, 2.0 * np.pi + theta, theta)
-        radius = np.abs(complex_b)
-
-        zero_split = None
-        if 'ixpoint' not in self._data:
-            self.find_xpoints()
-        for ixpoint in self._data['ixpoint']:
-            zero_split = int(ixpoint) if int(ixpoint) in [0, n_boundary_orig - 1] else None
-        if zero_split is not None:
-            if zero_split == 0 and theta[0] != theta[-1]:
-                theta = np.concatenate([theta, [theta[0]]])
-                radius = np.concatenate([radius, [radius[0]]])
-            if zero_split > 0 and theta[0] != theta[-1]:
-                theta = np.concatenate([[theta[-1]], theta])
-                radius = np.concatenate([[radius[-1]], radius])
-
-        segments = []
-        for ix, ixpoint in enumerate(self._data['ixpoint']):
-            istart = int(self._data['ixpoint'][ix-1]) if ix != 0 else None
-            iend = int(ixpoint) + 1
-            segments.append({'angle': theta[istart:iend], 'radius': radius[istart:iend]})
-            if ix + 1 == len(self._data['ixpoint']):
-                segments.append({'angle': theta[int(ixpoint):], 'radius': radius[int(ixpoint):]})
-        if zero_split is None:
-            last_segment = segments.pop()
-            segments[0] = {
-                'angle': np.concatenate([last_segment['angle'], segments[0]['angle']]),
-                'radius': np.concatenate([last_segment['radius'], segments[0]['angle']]),
-            }
-
-        b = xr.Dataset(coords={'angle': theta}, data_vars={'radius': (['angle'], radius)})
-        b = b.sortby('angle')
-        _, mask = b.angle.to_numpy().unique(return_index=True)
-        b = b.isel(angle=mask)
-        if b.angle[0] == 0.0:
-            b = xr.concat([
-                xr.Dataset(coords={'angle': [2.0 * np.pi]}, data_vars={'radius': [b.radius[0].to_numpy()]}),
-                b,
-            ], dim='angle')
-        elif b.angle[-1] == 2.0 * np.pi:
-            b = xr.concat([
-                b,
-                xr.Dataset(coords={'angle': [0.0]}, data_vars={'radius': [b.radius[-1].to_numpy()]})
-            ], dim='angle')
-        else:
-            rezero = b.isel(angle=[0, -1]).radius.mean().to_numpy()
-            b = xr.concat([
-                xr.Dataset(coords={'angle': [2.0 * np.pi]}, data_vars={'radius': [rezero]}),
-                b,
-                xr.Dataset(coords={'angle': [0.0]}, data_vars={'radius': [rezero]}),
-            ], dim='angle')
-
-        newtheta = np.linspace(0.0, 2.0 * np.pi, 5000)
-        newradius = np.ones_like(newtheta)
-        if boundary_smoothing > 0.0:
-            self._fit['radius_bdry'] = splrep(b.angle.to_numpy(), b.radius.to_numpy(), k=3, s=boundary_smoothing, per=True, quiet=1)
-            newradius = splev(newtheta, self._fit['radius_bdry'])
-        else:
-            newradius = np.interp(newtheta, b.angle.to_numpy(), b.radius.to_numpy())
-        newb = xr.Dataset(coords={'angle': newtheta}, data_vars={'radius': (['angle'], newradius)})
-
-        # FINELY SPACED BOUNDARY POINTS ON SMOOTHED BOUNDARY
-        rbs = (newb.radius.to_numpy() * np.cos(newb.angle.to_numpy()) + rb0)[::-1]
-        zbs = (newb.radius.to_numpy() * np.sin(newb.angle.to_numpy()) + zb0)[::-1]
-
-        # GET CURVE LENGTH TO DISTRIBUTE NEW BOUNDARY POINTS IN EQUAL LENGTH INTERVALS
-        dl = np.concatenate([
-            [0.0],
-            np.sqrt(np.square(rbs[1:] - rbs[:-1]) + np.square(zbs[1:] - zbs[:-1])),
-        ])
-        length = np.cumulative_sum(dl)
-
-        # theta AS A FUNCTION OF CURVE LENGTH
-        t = xr.Dataset(coords={'length': length}, data_vars={'angle': (['length'], newtheta)})
-
-        # theta FOR NEW BOUNDARY POINTS EQUALLY SPACED IN LENGTH
-        newlength = np.linspace(length[0], length[-1], n_boundary)
-        self._fit['arclen_bdry'] = splrep(t.length.to_numpy(), t.angle.to_numpy(), k=3, quiet=1)
-        finaltheta = splev(newlength, self._fit['arclen_bdry'])
-
-        # NEW BOUNDARY POINTS
-        finalradius = np.ones_like(finaltheta)
-        if 'radius_bdry' in self._fit:
-            finalradius = splev(finaltheta, self._fit['radius_bdry'])
-        else:
-            finalradius = np.interp(finaltheta, b.angle.to_numpy(), b.radius.to_numpy())
-        self._data['rbdry'] = (finalradius * np.cos(finaltheta) + rb0)[::-1]
-        self._data['zbdry'] = (finalradius * np.sin(finaltheta) + zb0)[::-1]
+        self._fit['gradz_bdry'] = {'tck': splrep(agradz, gradz, k=3, quiet=1), 'bounds': (float(np.nanmin(agradz)), float(np.nanmax(agradz)))}
 
 
     def extend_psi_beyond_boundary(self):
 
         if 'gradr_bdry' not in self._fit or 'gradz_bdry' not in self._fit:
-            self.compute_boundary_gradients()
+            self.compute_boundary_gradients_from_grid()
 
         vmagx = self._data['rmagx'] + 1.0j * self._data['zmagx']
 
@@ -1193,7 +1076,7 @@ class FixedBoundaryEquilibrium():
             if ang.size > 0:
                 dvvecc = vvecc - vmagx
                 dv = dvvecc * (1.0 - numer.imag / (dvvecc * np.conj(dvb[k])).imag)
-                vgradc = splev(ang, self._fit['gradr_bdry']) + 1.0j * splev(ang, self._fit['gradz_bdry'])
+                vgradc = splev(ang, self._fit['gradr_bdry']['tck']) + 1.0j * splev(ang, self._fit['gradz_bdry']['tck'])
                 psie = (vgradc * np.conj(dv)).real
                 psiout.put(ivvecc, psie)
                 vvec = vvec.compress(np.logical_not(mask))
@@ -1248,7 +1131,7 @@ class FixedBoundaryEquilibrium():
         for level in levels:
             ll = psisign * level
             ln = np.abs((ll - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx']))
-            fp = splev(ln, self._fit['fpol_fs'])
+            fp = splev(ln, self._fit['fpol_fs']['tck'])
             vcont = contours[ll][:, 0] + 1.0j * contours[ll][:, 1]
             vb = np.argmax(np.abs(vbdry - vmagx))
             vc = np.argmax(np.abs(vcont - vmagx))
@@ -1266,12 +1149,6 @@ class FixedBoundaryEquilibrium():
                     if fang >= anglb and fang <= angub:
                         break
                 lbdry = splev(fang, self._fit['lseg_abdry'][i]['tck'])
-                #i0 = np.argmin(abdry - ang)
-                #i1 = i0 + 1 if (i0 + 1) < len(abdry) else 0
-                #i1 = i1 if (abdry[i0] - ang) * (abdry[i1] - ang) < 0.0 else i0 - 1
-                #a0 = np.abs((abdry[i0] - ang) / (abdry[i0] - abdry[i1]))
-                #a1 = np.abs((abdry[i1] - ang) / (abdry[i0] - abdry[i1]))
-                #lbdry = (1.0 + 0.2 * a0 * a1) * np.abs(a0 * (vbdry[i0] - vmagx) + a1 * (vbdry[i1] - vmagx))
                 vvec = np.linspace(0.0, lbdry, 501) * np.exp(1.0j * ang) + vmagx
                 vl = []
                 psil = []
@@ -1295,22 +1172,9 @@ class FixedBoundaryEquilibrium():
                         psiu.append(psival)
                 vscan = np.concatenate([[vvec[0]], vl[::-1], vu, [vvec[-1]]])
                 psiscan = np.concatenate([[psisign * self._data['simagx']], psil[::-1], psiu, [psisign * self._data['sibdry']]])
-                #iflipvec = np.where(np.diff(psiscan)[:-1] * np.diff(psiscan)[1:] < 0.0)[0]
-                #iflip = iflipvec[0] + 1 if len(iflipvec) > 0 and (iflipvec[0] + 1) < len(psiscan) else None
-                #imin = np.argmin(psiscan[:iflip])
-                #imax = np.argmax(psiscan[:iflip])
-                #lmin = np.abs(vscan[imin] - vmagx)
-                #lmax = np.abs(vscan[imax] - vmagx)
-                #imaxs = imax + 1 if (imax + 1) < len(vscan) else None
-                #psifunc = interp1d(np.abs(vscan[imin:imaxs] - vmagx), psiscan[imin:imaxs], bounds_error=False, fill_value='extrapolate')
                 lmin = np.abs(vscan[0] - vmagx)
                 lmax = np.abs(vscan[-1] - vmagx)
                 psifunc = interp1d(np.abs(vscan - vmagx), psiscan, bounds_error=False, fill_value='extrapolate')
-                #lc = np.sqrt(ln) * lbdry
-                #if (psifunc(lmax) - level) <= 0.0:
-                #    lmax = lbdry
-                #if (psifunc(lmax) - level) > 0.0:
-                #    lc = brentq(lambda l, t: psifunc(l) - t, lmin, lmax, args=(level), xtol=1.0e-4)
                 lc = brentq(lambda l, t: psifunc(l) - t, lmin, lmax, args=(level), xtol=1.0e-4)
                 vroot = lc * np.exp(1.0j * ang) + vmagx
                 rc.append(vroot.real)
@@ -1357,8 +1221,8 @@ class FixedBoundaryEquilibrium():
         psin_fit = np.concatenate([psin_mirror, psin])
         q_fit = np.concatenate([q_mirror, self._data['qpsi']])
         w_fit = np.concatenate([w_mirror, w]) if w is not None else None
-        self._fit['qpsi_fs'] = splrep(psin_fit, q_fit, w_fit, xb=-1.0, xe=1.0, k=3, quiet=1)
-        self._data['qpsi'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['qpsi_fs'])
+        self._fit['qpsi_fs'] = {'tck': splrep(psin_fit, q_fit, w_fit, xb=-1.0, xe=1.0, k=3, quiet=1), 'bounds': (-1.0, 1.0)}
+        self._data['qpsi'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['qpsi_fs']['tck'])
 
 
     def recompute_q_profile_from_scratch(self):
@@ -1430,11 +1294,10 @@ class FixedBoundaryEquilibrium():
             if psierror <= self._options['erreq']: break
             self.newj(self._options['relaxj'])
         self.rescale_kinetic_profiles()
-        self.compute_boundary_gradients_from_grid()
         self.extend_psi_beyond_boundary()
         self.renormalize_psi()
         self.generate_psi_bivariate_spline()
-        #self.recompute_q_profile_from_scratch()
+        self.recompute_q_profile_from_scratch()
 
         self.error = psierror
         if n + 1 == self._options['nxiter']:
@@ -1551,12 +1414,8 @@ def main():
         ipath = Path(args.ifile)
         if ipath.is_file():
             eq = FixedBoundaryEquilibrium.from_eqdsk(ipath)
-            eq.setup(solver=False)
             eq.regrid(args.nr, args.nz, optimal=args.optimize)
             eq.run(args.niter, args.err, args.relax, args.relaxj)
-            eq.extend_psi_beyond_boundary()
-            if args.keep_psi_scale:
-                eq.renormalize_psi()
             if args.ofile is not None:
                 opath = Path(args.ofile)
                 if not opath.exists():
