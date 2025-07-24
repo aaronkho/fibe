@@ -226,17 +226,17 @@ class FixedBoundaryEquilibrium():
         if 'zmagx' in self._data and 'zmagx_orig' not in self._data:
             self._data['zmagx_orig'] = self._data['zmagx']
 
-        def _magnitude_grad_psi(loc, tck):
+        def _grad_psi_vector(loc, tck):
             dpsidr = bisplev(loc[0], loc[1], tck, dx=1)
             dpsidz = bisplev(loc[0], loc[1], tck, dx=1)
-            return np.abs(dpsidr + 1.0j * dpsidz)
+            return np.array([dpsidr, dpsidz]).flatten()
 
         if 'psi_rz' not in self._fit:
             self.generate_psi_bivariate_spline()
 
         rmagx = self._data['rmagx'] if 'rmagx' in self._data else self._data['rleft'] + 0.5 * self._data['rdim']
         zmagx = self._data['zmagx'] if 'zmagx' in self._data else self._data['zmid']
-        sol = root(_magnitude_grad_psi, [rmagx, zmagx], args=(self._fit['psi_rz']['tck']))
+        sol = root(lambda x: _grad_psi_vector(x, self._fit['psi_rz']['tck']), np.array([rmagx, zmagx]).flatten())
         if sol.success:
             r, z = sol.x
             self._data['rmagx'] = r
@@ -251,10 +251,10 @@ class FixedBoundaryEquilibrium():
         if 'rmagx' not in self._data or 'zmagx' not in self._data:
             self.find_magnetic_axis()
 
-        def _magnitude_grad_psi(loc, tck):
+        def _grad_psi_vector(loc, tck):
             dpsidr = bisplev(loc[0], loc[1], tck, dx=1)
             dpsidz = bisplev(loc[0], loc[1], tck, dx=1)
-            return np.abs(dpsidr + 1.0j * dpsidz)
+            return np.array([dpsidr, dpsidz]).flatten()
 
         vmagx = self._data['rmagx'] + 1.0j * self._data['zmagx']
         vbdry = self._data['rbdry'] + 1.0j * self._data['zbdry']
@@ -390,7 +390,7 @@ class FixedBoundaryEquilibrium():
 
         xpoints = []
         for xpc in xpoint_candidates:
-            sol = root(_magnitude_grad_psi, [xpc[0], xpc[1]], args=(self._fit['psi_rz']['tck']))
+            sol = root(lambda x: _grad_psi_vector(x, self._fit['psi_rz']['tck']), np.array([xpc[0], xpc[1]]).flatten())
             if sol.success:
                 r, z = sol.x
                 xpoints.append(np.array([r, z]))
@@ -431,8 +431,8 @@ class FixedBoundaryEquilibrium():
                 mask = (oabdry >= axp0)
                 olbdry_seg = None
                 oabdry_seg = None
-                if i + 1 < len(xpoints):
-                    vxp1 = xpoints[i + 1][0] + 1.0j * xpoints[i + 1][-1]
+                if i + 1 < len(self._data['xpoints']):
+                    vxp1 = self._data['xpoints'][i + 1][0] + 1.0j * self._data['xpoints'][i + 1][-1]
                     lxp1 = np.abs(vxp1 - vmagx)
                     axp1 = np.angle(vxp1 - vmagx)
                     if axp1 < 0.0:
@@ -442,7 +442,7 @@ class FixedBoundaryEquilibrium():
                     oabdry_seg = np.concatenate([[axp0], oabdry.compress(mask), [axp1]])
                 else:
                     mask[-1] = False
-                    vxp1 = xpoints[0][0] + 1.0j * xpoints[0][-1]
+                    vxp1 = self._data['xpoints'][0][0] + 1.0j * self._data['xpoints'][0][-1]
                     lxp1 = np.abs(vxp1 - vmagx)
                     axp1 = np.angle(vxp1 - vmagx)
                     if axp1 < 0.0:
@@ -650,19 +650,23 @@ class FixedBoundaryEquilibrium():
             # XM,YM = LOCATION OF ADJACENT OUTSIDE POINTS AS A FRACTION OF GRID SPACING
             if inout[ij] & 0b10:
                 # POINT TO THE LEFT IS OUTSIDE
-                a1 = -(drc.compress(drc <= 0).max())
+                if np.any(drc <= 0):
+                    a1 = -(drc.compress(drc <= 0).max())
                 self._data['a1'][ij] = a1
             if inout[ij] & 0b100:
                 # POINT TO THE RIGHT IS OUTSIDE
-                a2 = drc.compress(drc >= 0).min()
+                if np.any(drc >= 0):
+                    a2 = drc.compress(drc >= 0).min()
                 self._data['a2'][ij] = a2
             if inout[ij] & 0b1000:
                 # POINT BELOW IS OUTSIDE
-                b1 = -(dzc.compress(dzc <= 0).max())
+                if np.any(dzc <= 0):
+                    b1 = -(dzc.compress(dzc <= 0).max())
                 self._data['b1'][ij] = b1
             if inout[ij] & 0b10000:
                 # POINT ABOVE IS OUTSIDE
-                b2 = dzc.compress(dzc >= 0).min()
+                if np.any(dzc >= 0):
+                    b2 = dzc.compress(dzc >= 0).min()
                 self._data['b2'][ij] = b2
 
             # MODIFIED DIFFERENCE EQUATION QUANTITIES
