@@ -381,10 +381,11 @@ class FixedBoundaryEquilibrium():
         hr = self._data['hr'] if 'hr' in self._data else self._data['rdim'] / float(self._data['nr'] - 1)
         hz = self._data['hz'] if 'hz' in self._data else self._data['zdim'] / float(self._data['nz'] - 1)
         for i, inter in enumerate(intersections):
-            drl = bisplev(inter[0] - hr, inter[1], self._fit['psi_rz']['tck'], dx=1)
-            drr = bisplev(inter[0] + hr, inter[1], self._fit['psi_rz']['tck'], dx=1)
-            dzb = bisplev(inter[0], inter[1] - hz, self._fit['psi_rz']['tck'], dy=1)
-            dza = bisplev(inter[0], inter[1] + hz, self._fit['psi_rz']['tck'], dy=1)
+            drl = bisplev(inter[0] - 0.1 * float(self._data['nr']) * hr, inter[1], self._fit['psi_rz']['tck'], dx=1)
+            drr = bisplev(inter[0] + 0.1 * float(self._data['nr']) * hr, inter[1], self._fit['psi_rz']['tck'], dx=1)
+            dzb = bisplev(inter[0], inter[1] - 0.1 * float(self._data['nz']) * hz, self._fit['psi_rz']['tck'], dy=1)
+            dza = bisplev(inter[0], inter[1] + 0.1 * float(self._data['nz']) * hz, self._fit['psi_rz']['tck'], dy=1)
+            #print(inter, drl, drr, dzb, dza)
             if drl * drr <= 0.0 and dzb * dza <= 0.0:
                 xpoint_candidates.append(inter)
 
@@ -437,19 +438,22 @@ class FixedBoundaryEquilibrium():
                     axp1 = np.angle(vxp1 - vmagx)
                     if axp1 < 0.0:
                         axp1 += 2.0 * np.pi
-                    mask &= (oabdry <= axp1)
+                    if axp1 <= 2.0 * np.pi:
+                        mask &= (oabdry <= axp1)
+                    else:
+                        mask |= (oabdry <= (axp1 - 2.0 * np.pi))
                     olbdry_seg = np.concatenate([[lxp0], olbdry.compress(mask), [lxp1]])
                     oabdry_seg = np.concatenate([[axp0], oabdry.compress(mask), [axp1]])
                 else:
                     mask[-1] = False
+                    olbdry_seg = np.concatenate([[lxp0], olbdry.compress(mask)])
+                    oabdry_seg = np.concatenate([[axp0], oabdry.compress(mask)])
+                    oabdry_seg = oabdry_seg - 2.0 * np.pi
                     vxp1 = self._data['xpoints'][0][0] + 1.0j * self._data['xpoints'][0][-1]
                     lxp1 = np.abs(vxp1 - vmagx)
                     axp1 = np.angle(vxp1 - vmagx)
                     if axp1 < 0.0:
                         axp1 += 2.0 * np.pi
-                    oabdry_seg = np.concatenate([[lxp0], oabdry.compress(mask)])
-                    olbdry_seg = np.concatenate([[axp0], olbdry.compress(mask)])
-                    oabdry_seg -= 2.0 * np.pi
                     mask2 = (oabdry <= axp1)
                     olbdry_seg = np.concatenate([olbdry_seg, olbdry.compress(mask2), [lxp1]])
                     oabdry_seg = np.concatenate([oabdry_seg, oabdry.compress(mask2), [axp1]])
@@ -461,6 +465,7 @@ class FixedBoundaryEquilibrium():
                 splines.append({'tck': spl.tck, 'bounds': (float(np.nanmin(oabdry)), float(np.nanmax(oabdry)))})
 
             if len(splines) > 0:
+                print(splines)
                 self._fit['lseg_abdry'] = splines
 
 
@@ -850,7 +855,7 @@ class FixedBoundaryEquilibrium():
         self.make_solver()
 
         # INTERPOLATE PSI ONTO NEW GRID
-        self._data['psi'] = bisplev(self._data['rvec'], self._data['zvec'], self._fit['psi_rz']['tck'])
+        self._data['psi'] = bisplev(self._data['rvec'], self._data['zvec'], self._fit['psi_rz']['tck']).T
         self.recompute_pressure_profile()
         self.recompute_f_profile()
         self.recompute_q_profile()
