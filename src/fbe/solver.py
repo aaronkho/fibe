@@ -1129,6 +1129,8 @@ class FixedBoundaryEquilibrium():
         levels = np.sort(psisign * np.array(list(contours.keys())))
         vmagx = self._data['rmagx'] + 1.0j * self._data['zmagx']
         vbdry = self._data['rbdry'][:-1] + 1.0j * self._data['zbdry'][:-1]
+        if not np.all(np.isfinite(vbdry)):
+            vbdry = vbdry[np.isfinite(vbdry)]
         abdry = np.angle(vbdry - vmagx)
         if np.any(abdry < 0.0):
             abdry[abdry < 0.0] = abdry[abdry < 0.0] + 2.0 * np.pi
@@ -1150,9 +1152,11 @@ class FixedBoundaryEquilibrium():
             ln = np.abs((ll - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx']))
             fp = splev(ln, self._fit['fpol_fs']['tck'])
             vcont = contours[ll][:, 0] + 1.0j * contours[ll][:, 1]
-            vb = np.argmax(np.abs(vbdry - vmagx))
-            vc = np.argmax(np.abs(vcont - vmagx))
-            npoints = min(maxpoints, max(21, int(np.rint(1.2 * float(maxpoints) * vc / vb))))
+            if not np.all(np.isfinite(vcont)):
+                vcont = vcont[np.isfinite(vcont)]
+            lbmax = np.nanmax(np.abs(vbdry - vmagx))
+            lcmax = np.nanmax(np.abs(vcont - vmagx))
+            npoints = min(maxpoints, max(21, int(np.rint(1.2 * float(maxpoints) * lcmax / lbmax))))
             angles = np.linspace(0.0, 2.0 * np.pi, npoints)
             rc = []
             zc = []
@@ -1317,6 +1321,7 @@ class FixedBoundaryEquilibrium():
         self.extend_psi_beyond_boundary()
         self.renormalize_psi()
         self.generate_psi_bivariate_spline()
+        self.find_magnetic_axis()
         self.recompute_q_profile_from_scratch()
 
         self.error = psierror
@@ -1373,7 +1378,7 @@ class FixedBoundaryEquilibrium():
     def plot_contour(self):
         if 'psi' in self._data:
             import matplotlib.pyplot as plt
-            fig = plt.figure(figsize=(8, 6))
+            fig = plt.figure(figsize=(6, 8))
             ax = fig.add_subplot(111)
             rmin = self._data['rleft']
             rmax = self._data['rleft'] + self._data['rdim']
@@ -1402,10 +1407,29 @@ class FixedBoundaryEquilibrium():
             plt.close(fig)
 
 
+    def plot_grid_splitting(self):
+        if 'inout' in self._data:
+            import matplotlib.pyplot as plt
+            fig = plt.figure(figsize=(6, 8))
+            ax = fig.add_subplot(111)
+            rmesh = self._data['rpsi'].copy().ravel()
+            zmesh = self._data['zpsi'].copy().ravel()
+            mask = self._data['inout'] == 0
+            ax.scatter(rmesh[~mask], zmesh[~mask], c='g', marker='.', s=0.1)
+            ax.scatter(rmesh[mask], zmesh[mask], c='k', marker='x')
+            if 'rbdry' in self._data and 'zbdry' in self._data:
+                ax.plot(self._data['rbdry'], self._data['zbdry'], c='r')
+            ax.set_xlabel('R [m]')
+            ax.set_ylabel('Z [m]')
+            fig.tight_layout()
+            plt.show()
+            plt.close(fig)
+
+
     def plot_flux_surfaces(self):
         if self._fs is not None:
             import matplotlib.pyplot as plt
-            fig = plt.figure(figsize=(8, 6))
+            fig = plt.figure(figsize=(6, 8))
             ax = fig.add_subplot(111)
             for level, contour in self._fs.items():
                 ax.plot(contour['r'], contour['z'], c='k', label=f'{level:.3f}')
