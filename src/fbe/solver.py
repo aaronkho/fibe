@@ -381,11 +381,12 @@ class FixedBoundaryEquilibrium():
         hr = self._data['hr'] if 'hr' in self._data else self._data['rdim'] / float(self._data['nr'] - 1)
         hz = self._data['hz'] if 'hz' in self._data else self._data['zdim'] / float(self._data['nz'] - 1)
         for i, inter in enumerate(intersections):
-            drl = bisplev(inter[0] - 0.1 * float(self._data['nr']) * hr, inter[1], self._fit['psi_rz']['tck'], dx=1)
-            drr = bisplev(inter[0] + 0.1 * float(self._data['nr']) * hr, inter[1], self._fit['psi_rz']['tck'], dx=1)
-            dzb = bisplev(inter[0], inter[1] - 0.1 * float(self._data['nz']) * hz, self._fit['psi_rz']['tck'], dy=1)
-            dza = bisplev(inter[0], inter[1] + 0.1 * float(self._data['nz']) * hz, self._fit['psi_rz']['tck'], dy=1)
-            #print(inter, drl, drr, dzb, dza)
+            ddr = 0.03 * float(self._data['nr']) * hr
+            ddz = 0.03 * float(self._data['nz']) * hz
+            drl = bisplev(inter[0] - ddr, inter[1], self._fit['psi_rz']['tck'], dx=1)
+            drr = bisplev(inter[0] + ddr, inter[1], self._fit['psi_rz']['tck'], dx=1)
+            dzb = bisplev(inter[0], inter[1] - ddz, self._fit['psi_rz']['tck'], dy=1)
+            dza = bisplev(inter[0], inter[1] + ddz, self._fit['psi_rz']['tck'], dy=1)
             if drl * drr <= 0.0 and dzb * dza <= 0.0:
                 xpoint_candidates.append(inter)
 
@@ -465,7 +466,6 @@ class FixedBoundaryEquilibrium():
                 splines.append({'tck': spl.tck, 'bounds': (float(np.nanmin(oabdry)), float(np.nanmax(oabdry)))})
 
             if len(splines) > 0:
-                print(splines)
                 self._fit['lseg_abdry'] = splines
 
 
@@ -629,7 +629,7 @@ class FixedBoundaryEquilibrium():
         zmask = (dl.real != 0.0)
         dlz  = dl.real.compress(zmask)
 
-        s = np.diff(self._data['rbdry']) / np.diff(self._data['zbdry'])
+        #s = np.diff(self._data['rbdry']) / np.diff(self._data['zbdry'])
         # LOOP OVER EDGE POINTS
         for ij in ijedge:
 
@@ -1118,7 +1118,7 @@ class FixedBoundaryEquilibrium():
         return contours
 
 
-    def trace_fine_flux_surfaces(self, maxpoints=101):
+    def trace_fine_flux_surfaces(self, maxpoints=51):
         contours = self.trace_rough_flux_surfaces()
         psisign = np.sign(self._data['sibdry'] - self._data['simagx'])
         levels = np.sort(psisign * np.array(list(contours.keys())))
@@ -1147,10 +1147,13 @@ class FixedBoundaryEquilibrium():
             vcont = contours[ll][:, 0] + 1.0j * contours[ll][:, 1]
             vb = np.argmax(np.abs(vbdry - vmagx))
             vc = np.argmax(np.abs(vcont - vmagx))
-            npoints = max(21, int(np.rint(float(maxpoints) * vc / vb)))
+            npoints = min(maxpoints, max(21, int(np.rint(1.2 * float(maxpoints) * vc / vb))))
             angles = np.linspace(0.0, 2.0 * np.pi, npoints)
             rc = []
             zc = []
+            nvec = 251
+            nvecl = nvec // 2
+            nvecu = nvecl + 1
             for ang in angles[:-1]:
                 fang = ang
                 for i, segfit in enumerate(self._fit['lseg_abdry']):
@@ -1161,10 +1164,10 @@ class FixedBoundaryEquilibrium():
                     if fang >= anglb and fang <= angub:
                         break
                 lbdry = splev(fang, self._fit['lseg_abdry'][i]['tck'])
-                vvec = np.linspace(0.0, lbdry, 501) * np.exp(1.0j * ang) + vmagx
+                vvec = np.linspace(0.0, lbdry, nvec) * np.exp(1.0j * ang) + vmagx
                 vl = []
                 psil = []
-                for v in vvec[250:0:-1]:
+                for v in vvec[nvecl:0:-1]:
                     psival = psisign * bisplev(v.real, v.imag, self._fit['psi_rz']['tck'])
                     if len(psil) == 0:
                         vl.append(v)
@@ -1174,7 +1177,7 @@ class FixedBoundaryEquilibrium():
                         psil.append(psival)
                 vu = []
                 psiu = []
-                for v in vvec[251:-1]:
+                for v in vvec[nvecu:-1]:
                     psival = psisign * bisplev(v.real, v.imag, self._fit['psi_rz']['tck'])
                     if len(psiu) == 0:
                         vu.append(v)
