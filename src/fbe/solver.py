@@ -253,7 +253,7 @@ class FixedBoundaryEquilibrium():
 
         def _grad_psi_vector(loc, tck):
             dpsidr = bisplev(loc[0], loc[1], tck, dx=1)
-            dpsidz = bisplev(loc[0], loc[1], tck, dx=1)
+            dpsidz = bisplev(loc[0], loc[1], tck, dy=1)
             return np.array([dpsidr, dpsidz]).flatten()
 
         vmagx = self._data['rmagx'] + 1.0j * self._data['zmagx']
@@ -388,14 +388,19 @@ class FixedBoundaryEquilibrium():
             dzb = bisplev(inter[0], inter[1] - ddz, self._fit['psi_rz']['tck'], dy=1)
             dza = bisplev(inter[0], inter[1] + ddz, self._fit['psi_rz']['tck'], dy=1)
             if drl * drr <= 0.0 and dzb * dza <= 0.0:
+                #rxp = inter[0] - ddr - drl * (2.0 * ddr) / (drl - drr)
+                #zxp = inter[1] - ddz - dzb * (2.0 * ddz) / (dzb - dza)
+                #xp = np.array([rxp, zxp])
+                #xpoint_candidates.append(xp)
                 xpoint_candidates.append(inter)
 
         xpoints = []
         for xpc in xpoint_candidates:
-            sol = root(lambda x: _grad_psi_vector(x, self._fit['psi_rz']['tck']), np.array([xpc[0], xpc[1]]).flatten())
+            sol = root(lambda x: _grad_psi_vector(x, self._fit['psi_rz']['tck']), xpc)
             if sol.success:
                 r, z = sol.x
-                xpoints.append(np.array([r, z]))
+                xp = np.array([r, z])
+                xpoints.append(xp)
 
         self._data['xpoints'] = xpoints
 
@@ -1384,8 +1389,14 @@ class FixedBoundaryEquilibrium():
             ax.contour(rmesh, zmesh, psisign * self._data['psi'], levels=psisign * levels)
             if 'rbdry' in self._data and 'zbdry' in self._data:
                 ax.plot(self._data['rbdry'], self._data['zbdry'], c='r', label='Boundary')
+            if 'rmagx' in self._data and 'zmagx' in self._data:
+                ax.scatter(self._data['rmagx'], self._data['zmagx'], marker='o', facecolors='none', edgecolors='r', label='O-points')
+            if 'xpoints' in self._data:
+                xparr = np.atleast_2d(self._data['xpoints'])
+                ax.scatter(xparr[:, 0], xparr[:, 1], marker='x', facecolors='r', label='X-points')
             ax.set_xlabel('R [m]')
             ax.set_ylabel('Z [m]')
+            ax.legend(loc='best')
             fig.tight_layout()
             plt.show()
             plt.close(fig)
