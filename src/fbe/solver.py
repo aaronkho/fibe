@@ -244,7 +244,7 @@ class FixedBoundaryEquilibrium():
             self._data['simagx'] = bisplev(r, z, self._fit['psi_rz']['tck'])
 
 
-    def find_x_points(self):
+    def find_x_points(self, sanitize=True):
 
         if 'psi_rz' not in self._fit:
             self.generate_psi_bivariate_spline()
@@ -284,6 +284,7 @@ class FixedBoundaryEquilibrium():
                 xpoint_candidates.append(np.array([orbdry[idr], ozbdry[idr]]))
 
         split_indices = []
+        split_cut_indices = []
         dpsidr_change = np.where(dpsidr_obdry[:-1] * dpsidr_obdry[1:] < 0.0)[0]
         for idr in dpsidr_change:
             if idr not in xpoint_indices and idr + 1 not in xpoint_indices:
@@ -293,14 +294,20 @@ class FixedBoundaryEquilibrium():
             if idz not in xpoint_indices and idz + 1 not in xpoint_indices:
                 split_indices.append(int(idz))
         split_indices = sorted(split_indices)
+        for index in split_indices:
+            if index + 1 in split_indices:
+                split_cut_indices.append(index)
+            if index == len(dpsidr_obdry) - 2 and 0 in split_indices:
+                split_cut_indices.append(index)
 
         split_lines = []
         for i, istart in enumerate(split_indices):
             ibdry = np.arange(self._data['nbdry'], dtype=int)
             vbdry_seg = np.array([])
             mask = (ibdry > istart)
-            if i + 1 < len(split_indices):
-                mask &= (ibdry <= split_indices[i + 1])
+            next_i = i + 1 if istart not in split_cut_indices else i + 2
+            if next_i < len(split_indices):
+                mask &= (ibdry >= split_indices[next_i - 1]) & (ibdry <= split_indices[next_i])
                 vbdry_seg = ovbdry.compress(mask)
             else:
                 mask[-1] = False
@@ -371,8 +378,9 @@ class FixedBoundaryEquilibrium():
             da = p2 - p1
             db = p4 - p3
             dx = p3 - p1
-            ta = (dx.imag - dx.real * db.imag / db.real) / (da.imag - da.real * db.imag / db.real)
-            tb = (ta * da.real - dx.real) / db.real
+            ta = (dx.imag * db.real - dx.real * db.imag) / (da.imag * db.real - da.real * db.imag)
+            tb = (dx.imag * da.real - dx.real * da.imag) / (da.imag * db.real - da.real * db.imag)
+            #tb = (ta * da.real - dx.real) / db.real
             px = p1 + ta * da
             if not np.isclose(np.abs(px - (p3 + tb * db)), 0.0):
                 print('Intersection error')
@@ -401,11 +409,49 @@ class FixedBoundaryEquilibrium():
                 r, z = sol.x
                 xp = np.array([r, z])
                 xpoints.append(xp)
+        if sanitize:
+            for i, xp in enumerate(xpoints):
+                rxp = xp[0]
+                zxp = xp[-1]
+                vxp = rxp + 1.0j * zxp
+                axp = np.angle(vxp - vmagx)
+                if axp < 0.0:
+                    axp += 2.0 * np.pi
+                daxp = oabdry - axp
+                vbase = 0.5 * (rxp + np.nanmin(self._data['rbdry'])) + 1.0j * self._data['zmagx']
+                iangle = np.argmin(np.abs(daxp))
+                jangle = iangle
+                sangle = np.where(daxp[:-1] * daxp[1:] <= 0.0)[0]
+                if len(sangle) == 0:
+                    if daxp[0] >= 0.0:
+                        iangle = -1
+                    else:
+                        jangle = 0
+                else:
+                    if sangle[0] >= iangle:
+                        jangle = sangle[0] + 1 if (sangle[0] + 2) < len(daxp) else -1
+                    else:
+                        iangle = sangle[0]
+                da = vxp - vbase
+                i0 = orbdry[iangle - 1] + 1.0j * ozbdry[iangle - 1]
+                i1 = orbdry[iangle] + 1.0j * ozbdry[iangle]
+                dbi = i1 - i0
+                dxi = i0 - vbase
+                tai = (dxi.imag * dbi.real - dxi.real * dbi.imag) / (da.imag * dbi.real - da.real * dbi.imag)
+                j0 = orbdry[jangle + 1] + 1.0j * ozbdry[jangle + 1]
+                j1 = orbdry[jangle] + 1.0j * ozbdry[jangle]
+                dbj = j1 - j0
+                dxj = j0 - vbase
+                taj = (dxj.imag * dbj.real - dxj.real * dbj.imag) / (da.imag * dbj.real - da.real * dbj.imag)
+                ta = np.nanmin([tai, taj])
+                if ta < 1.0:
+                    newxp = vbase + 0.99 * ta * da
+                    xpoints[i] = np.array([newxp.real, newxp.imag])
 
         self._data['xpoints'] = xpoints
 
 
-    def generate_boundary_splines(self):
+    def generate_boundary_splines(self, enforce_concave=False):
 
         if 'lseg_abdry' not in self._fit:
 
@@ -414,10 +460,26 @@ class FixedBoundaryEquilibrium():
 
             vmagx = self._data['rmagx'] + 1.0j * self._data['zmagx']
             vbdry = self._data['rbdry'] + 1.0j * self._data['zbdry']
+            lbdry = np.abs(vbdry - vmagx)
             abdry = np.angle(vbdry - vmagx)
             if np.any(abdry < 0.0):
                 abdry[abdry < 0.0] = abdry[abdry < 0.0] + 2.0 * np.pi
-            b = xr.Dataset(coords={'angle': abdry}, data_vars={'r': (['angle'], self._data['rbdry']), 'z': (['angle'], self._data['zbdry'])})
+            rmask = np.isfinite(abdry)
+            for i, xp in enumerate(self._data['xpoints']):
+                rxp = xp[0]
+                zxp = xp[-1]
+                vxp = rxp + 1.0j * zxp
+                lxp = np.abs(vxp - vmagx)
+                axp = np.angle(vxp - vmagx)
+                if axp < 0.0:
+                    axp += 2.0 * np.pi
+                daxp = np.abs(abdry - axp)
+                rmask &= ~((daxp < (np.pi / 6.0)) & (lbdry > (0.99 * lxp)))
+                if daxp[0] < (np.pi / 6.0):
+                    rmask &= ~((np.abs(abdry - 2.0 * np.pi - axp) < (np.pi / 6.0)) & (lbdry > (0.99 * lxp)))
+                if daxp[-1] < (np.pi / 6.0):
+                    rmask &= ~((np.abs(abdry + 2.0 * np.pi - axp) < (np.pi / 6.0)) & (lbdry > (0.99 * lxp)))
+            b = xr.Dataset(coords={'angle': abdry[rmask]}, data_vars={'r': (['angle'], self._data['rbdry'][rmask]), 'z': (['angle'], self._data['zbdry'][rmask])})
             b = b.drop_duplicates('angle').sortby('angle')
             orbdry = b['r'].to_numpy()
             ozbdry = b['z'].to_numpy()
@@ -430,16 +492,22 @@ class FixedBoundaryEquilibrium():
 
             splines = []
             for i, xp in enumerate(self._data['xpoints']):
-                vxp0 = xp[0] + 1.0j * xp[-1]
+                rxp0 = xp[0]
+                zxp0 = xp[-1]
+                vxp0 = rxp0 + 1.0j * zxp0
                 lxp0 = np.abs(vxp0 - vmagx)
                 axp0 = np.angle(vxp0 - vmagx)
                 if axp0 < 0.0:
                     axp0 += 2.0 * np.pi
                 mask = (oabdry >= axp0)
+                orbdry_seg = None
+                ozbdry_seg = None
                 olbdry_seg = None
                 oabdry_seg = None
                 if i + 1 < len(self._data['xpoints']):
-                    vxp1 = self._data['xpoints'][i + 1][0] + 1.0j * self._data['xpoints'][i + 1][-1]
+                    rxp1 = self._data['xpoints'][i + 1][0]
+                    zxp1 = self._data['xpoints'][i + 1][-1]
+                    vxp1 = rxp1 + 1.0j * zxp1
                     lxp1 = np.abs(vxp1 - vmagx)
                     axp1 = np.angle(vxp1 - vmagx)
                     if axp1 < 0.0:
@@ -448,22 +516,52 @@ class FixedBoundaryEquilibrium():
                         mask &= (oabdry <= axp1)
                     else:
                         mask |= (oabdry <= (axp1 - 2.0 * np.pi))
+                    orbdry_seg = np.concatenate([[rxp0], orbdry.compress(mask), [rxp1]])
+                    ozbdry_seg = np.concatenate([[zxp0], ozbdry.compress(mask), [zxp1]])
                     olbdry_seg = np.concatenate([[lxp0], olbdry.compress(mask), [lxp1]])
                     oabdry_seg = np.concatenate([[axp0], oabdry.compress(mask), [axp1]])
                 else:
                     mask[-1] = False
+                    orbdry_seg = np.concatenate([[rxp0], orbdry.compress(mask)])
+                    ozbdry_seg = np.concatenate([[zxp0], ozbdry.compress(mask)])
                     olbdry_seg = np.concatenate([[lxp0], olbdry.compress(mask)])
                     oabdry_seg = np.concatenate([[axp0], oabdry.compress(mask)])
                     oabdry_seg = oabdry_seg - 2.0 * np.pi
-                    vxp1 = self._data['xpoints'][0][0] + 1.0j * self._data['xpoints'][0][-1]
+                    rxp1 = self._data['xpoints'][0][0]
+                    zxp1 = self._data['xpoints'][0][-1]
+                    vxp1 = rxp1 + 1.0j * zxp1
                     lxp1 = np.abs(vxp1 - vmagx)
                     axp1 = np.angle(vxp1 - vmagx)
                     if axp1 < 0.0:
                         axp1 += 2.0 * np.pi
                     mask2 = (oabdry <= axp1)
+                    orbdry_seg = np.concatenate([orbdry_seg, orbdry.compress(mask2), [rxp1]])
+                    ozbdry_seg = np.concatenate([ozbdry_seg, ozbdry.compress(mask2), [zxp1]])
                     olbdry_seg = np.concatenate([olbdry_seg, olbdry.compress(mask2), [lxp1]])
                     oabdry_seg = np.concatenate([oabdry_seg, oabdry.compress(mask2), [axp1]])
                     mask |= mask2
+                if enforce_concave:
+                    for j in range(2, len(orbdry_seg)):
+                        p1 = orbdry_seg[j - 2] + 1.0j * ozbdry_seg[j - 2]
+                        p2 = orbdry_seg[j] + 1.0j * ozbdry_seg[j]
+                        p3 = vmagx
+                        p4 = orbdry_seg[j - 1] + 1.0j * ozbdry_seg[j - 1]
+                        da = p2 - p1
+                        db = p4 - p3
+                        dx = p3 - p1
+                        ta = (dx.imag * db.real - dx.real * db.imag) / (da.imag * db.real - da.real * db.imag)
+                        tb = (dx.imag * da.real - dx.real * da.imag) / (da.imag * db.real - da.real * db.imag)
+                        #tb = (ta * da.real - dx.real) / db.real
+                        if tb > 1.0:
+                            newp = p3 + tb * db / 0.99
+                            orbdry_seg[j - 1] = newp.real
+                            ozbdry_seg[j - 1] = newp.imag
+                            olbdry_seg[j - 1] = np.abs(newp - vmagx)
+                        if tb < 0.96:
+                            newp = p3 + tb * db / 0.97
+                            orbdry_seg[j - 1] = newp.real
+                            ozbdry_seg[j - 1] = newp.imag
+                            olbdry_seg[j - 1] = np.abs(newp - vmagx)
                 spl = make_interp_spline(oabdry_seg, olbdry_seg, bc_type=None)
                 splines.append({'tck': spl.tck, 'bounds': (float(np.nanmin(oabdry_seg)), float(np.nanmax(oabdry_seg)))})
             if len(splines) == 0:
