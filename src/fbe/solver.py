@@ -408,7 +408,10 @@ class FixedBoundaryEquilibrium():
             if sol.success:
                 r, z = sol.x
                 xp = np.array([r, z])
-                xpoints.append(xp)
+                psixp = bisplev(r, z, self._fit['psi_rz']['tck'])
+                dpsixp = np.abs((self._data['sibdry'] - psixp) / (self._data['sibdry'] - self._data['simagx']))
+                if dpsixp < 0.001:
+                    xpoints.append(xp)
         if sanitize:
             for i, xp in enumerate(xpoints):
                 rxp = xp[0]
