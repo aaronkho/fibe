@@ -1495,11 +1495,15 @@ class FixedBoundaryEquilibrium():
             ax.contour(rmesh, zmesh, psisign * self._data['psi'], levels=psisign * levels)
             if 'rbdry' in self._data and 'zbdry' in self._data:
                 ax.plot(self._data['rbdry'], self._data['zbdry'], c='r', label='Boundary')
+            if 'rlim' in self._data and 'zlim' in self._data:
+                ax.plot(self._data['rlim'], self._data['zlim'], c='k', label='Limiter')
             if 'rmagx' in self._data and 'zmagx' in self._data:
                 ax.scatter(self._data['rmagx'], self._data['zmagx'], marker='o', facecolors='none', edgecolors='r', label='O-points')
             if 'xpoints' in self._data:
                 xparr = np.atleast_2d(self._data['xpoints'])
                 ax.scatter(xparr[:, 0], xparr[:, 1], marker='x', facecolors='r', label='X-points')
+            ax.set_xlim(rmin, rmax)
+            ax.set_ylim(zmin, zmax)
             ax.set_xlabel('R [m]')
             ax.set_ylabel('Z [m]')
             ax.legend(loc='best')
@@ -1519,7 +1523,11 @@ class FixedBoundaryEquilibrium():
             ax.scatter(rmesh[~mask], zmesh[~mask], c='g', marker='.', s=0.1)
             ax.scatter(rmesh[mask], zmesh[mask], c='k', marker='x')
             if 'rbdry' in self._data and 'zbdry' in self._data:
-                ax.plot(self._data['rbdry'], self._data['zbdry'], c='r')
+                ax.plot(self._data['rbdry'], self._data['zbdry'], c='r', label='Boundary')
+            if 'rlim' in self._data and 'zlim' in self._data:
+                ax.plot(self._data['rlim'], self._data['zlim'], c='k', label='Limiter')
+            ax.set_xlim(rmin, rmax)
+            ax.set_ylim(zmin, zmax)
             ax.set_xlabel('R [m]')
             ax.set_ylabel('Z [m]')
             fig.tight_layout()
@@ -1533,9 +1541,13 @@ class FixedBoundaryEquilibrium():
             fig = plt.figure(figsize=(6, 8))
             ax = fig.add_subplot(111)
             for level, contour in self._fs.items():
-                ax.plot(contour['r'], contour['z'], c='k', label=f'{level:.3f}')
+                ax.plot(contour['r'], contour['z'], c='b', label=f'{level:.3f}', alpha=0.5)
             if 'rbdry' in self._data and 'zbdry' in self._data:
                 ax.plot(self._data['rbdry'], self._data['zbdry'], c='r', label='Boundary')
+            if 'rlim' in self._data and 'zlim' in self._data:
+                ax.plot(self._data['rlim'], self._data['zlim'], c='k', label='Limiter')
+            ax.set_xlim(rmin, rmax)
+            ax.set_ylim(zmin, zmax)
             ax.set_xlabel('R [m]')
             ax.set_ylabel('Z [m]')
             fig.tight_layout()
