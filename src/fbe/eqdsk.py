@@ -404,6 +404,10 @@ def convert_cocos(eqdsk: MutableMapping[str, Any], cocos_in: int, cocos_out: int
         'zmagx': eqdsk.get('zmagx', None),
         'cpasma': eqdsk.get('cpasma', None),
     }
+    if 'gcase' in eqdsk:
+        out['gcase'] = eqdsk['gcase']
+    if 'gid' in eqdsk:
+        out['gid'] = eqdsk['gid']
     sign_dict = define_cocos_converter(cocos_in, cocos_out)
     sIp = sign_dict['scyl']
     sBt = sign_dict['scyl']
@@ -434,9 +438,11 @@ def convert_cocos(eqdsk: MutableMapping[str, Any], cocos_in: int, cocos_out: int
     if 'qpsi' in eqdsk:
         out['qpsi'] = copy.deepcopy(eqdsk['qpsi']) * sign_dict['spol'] * sIp * sBt
     if 'rlim' in eqdsk and 'zlim' in eqdsk:
+        out['nlim'] = copy.deepcopy(eqdsk['nlim'])
         out['rlim'] = copy.deepcopy(eqdsk['rlim'])
         out['zlim'] = copy.deepcopy(eqdsk['zlim'])
     if 'rbdry' in eqdsk and 'zbdry' in eqdsk:
+        out['nbdry'] = copy.deepcopy(eqdsk['nbdry'])
         out['rbdry'] = copy.deepcopy(eqdsk['rbdry'])
         out['zbdry'] = copy.deepcopy(eqdsk['zbdry'])
     return out
