@@ -180,21 +180,6 @@ class FixedBoundaryEquilibrium():
     def define_pressure_profile(self, pressure, psinorm=None, smooth=True):
         if isinstance(pressure, np.ndarray) and len(pressure) > 0:
             self.save_original_data(['pres', 'pprime'])
-            #w = 100.0 / pressure if smooth else None
-            #psin = np.linspace(0.0, 1.0, len(pressure))
-            #if isinstance(psinorm, np.ndarray) and len(psinorm) == len(pressure):
-            #    psin = psinorm.copy()
-            #psin_mirror = -psin[::-1]
-            #pressure_mirror = pressure[::-1]
-            #w_mirror = w[::-1] if w is not None else None
-            #if np.isclose(psin[0], psin_mirror[-1]):
-            #    psin_mirror = psin_mirror[:-1]
-            #    pressure_mirror = pressure_mirror[:-1]
-            #    w_mirror = w_mirror[:-1] if w_mirror is not None else None
-            #psin_fit = np.concatenate([psin_mirror, psin])
-            #pressure_fit = np.concatenate([pressure_mirror, pressure])
-            #w_fit = np.concatenate([w_mirror, w]) if w is not None else None
-            #self._fit['pres_fs'] = {'tck': splrep(psin_fit, pressure_fit, w_fit, xb=-1.0, xe=1.0, k=3, quiet=1), 'bounds': (-1.0, 1.0)}
             self._fit['pres_fs'] = generate_bounded_1d_spline(pressure, xnorm=psinorm, symmetrical=True, smooth=smooth)
             self._data['pres'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['pres_fs']['tck'])
             self._data['pprime'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['pres_fs']['tck'], der=1)
@@ -203,21 +188,6 @@ class FixedBoundaryEquilibrium():
     def define_f_profile(self, f, psinorm=None, smooth=True):
         if isinstance(f, np.ndarray) and len(f) > 0:
             self.save_original_data(['fpol', 'ffprime'])
-            #w = 100.0 / f if smooth else None
-            #psin = np.linspace(0.0, 1.0, len(f))
-            #if isinstance(psinorm, np.ndarray) and len(psinorm) == len(f):
-            #    psin = psinorm.copy()
-            #psin_mirror = -psin[::-1]
-            #f_mirror = f[::-1]
-            #w_mirror = w[::-1] if w is not None else None
-            #if np.isclose(psin[0], psin_mirror[-1]):
-            #    psin_mirror = psin_mirror[:-1]
-            #    f_mirror = f_mirror[:-1]
-            #    w_mirror = w_mirror[:-1] if w_mirror is not None else None
-            #psin_fit = np.concatenate([psin_mirror, psin])
-            #f_fit = np.concatenate([f_mirror, f])
-            #w_fit = np.concatenate([w_mirror, w]) if w is not None else None
-            #self._fit['fpol_fs'] = {'tck': splrep(psin_fit, f_fit, w_fit, xb=-1.0, xe=1.0, k=3, quiet=1), 'bounds': (-1.0, 1.0)}
             self._fit['fpol_fs'] = generate_bounded_1d_spline(f, xnorm=psinorm, symmetrical=True, smooth=smooth)
             self._data['fpol'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['fpol_fs']['tck'])
             self._data['ffprime'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['fpol_fs']['tck'], der=1) * self._data['fpol']
@@ -231,23 +201,6 @@ class FixedBoundaryEquilibrium():
     def generate_psi_bivariate_spline(self):
         self.save_original_fit(['psi_rz'])
         self.create_grid_basis_vectors()
-        #rmin = self._data['rleft']
-        #rmax = self._data['rleft'] + self._data['rdim']
-        #zmin = self._data['zmid'] - 0.5 * self._data['zdim']
-        #zmax = self._data['zmid'] + 0.5 * self._data['zdim']
-        #rvec = rmin + np.linspace(0.0, 1.0, self._data['nr']) * (rmax - rmin)
-        #zvec = zmin + np.linspace(0.0, 1.0, self._data['nz']) * (zmax - zmin)
-        #psi = RectBivariateSpline(rvec, zvec, self._data['psi'].T)
-        ##dpsidr = psi.partial_derivative(1, 0)
-        ##dpsidz = psi.partial_derivative(0, 1)
-        ##tr = psi.get_knots()[0]
-        ##tz = psi.get_knots()[1]
-        ##c = psi.get_coeffs()
-        ##kr = psi.kx
-        ##kz = psi.ky
-        #tr, tz, c = psi.tck
-        #kr, kz = psi.degrees
-        #self._fit['psi_rz'] = {'tck': (tr, tz, c, kr, kz), 'bounds': (rmin, zmin, rmax, zmax)}
         self._fit['psi_rz'] = generate_2d_spline(self._data['rvec'], self._data['zvec'], self._data['psi'].T)
 
 
@@ -398,6 +351,7 @@ class FixedBoundaryEquilibrium():
 
 
     def find_x_points_from_grid(self):
+        # Not currently used
         self.save_original_fit(['gradr_bdry', 'gradz_bdry'])
         self.create_boundary_gradient_splines()
         abdry = np.linspace(0.0, 2.0 * np.pi, 5000)
@@ -536,7 +490,6 @@ class FixedBoundaryEquilibrium():
 
 
     def trace_fine_flux_surfaces(self, maxpoints=51, minpoints=21):
-        # Tracing fails in a sector, probably due to enforced angle convention when making lseg_abdry (solved maybe?)
         if 'psi_rz' not in self._fit:
             self.generate_psi_bivariate_spline()
         if 'fpol_fs' not in self._fit:
@@ -544,9 +497,6 @@ class FixedBoundaryEquilibrium():
         contours = self.trace_rough_flux_surfaces()
         psisign = np.sign(self._data['sibdry'] - self._data['simagx'])
         levels = np.sort(psisign * np.array(list(contours.keys())))
-        #psi = RectBivariateSpline(self._data['rvec'], self._data['zvec'], self._data['psi'].T)
-        #dpsidr = psi.partial_derivative(1, 0)
-        #dpsidz = psi.partial_derivative(0, 1)
         fine_contours = {}
         fine_contours[float(self._data['simagx'])] = compute_flux_surface_quantities(
             0.0,
@@ -575,7 +525,7 @@ class FixedBoundaryEquilibrium():
                 self._data['zmagx'],
                 self._data['simagx'],
                 self._data['sibdry'],
-                self._fit['psi_rz'],
+                self._fit['psi_rz']['tck'],
                 self._fit['lseg_abdry'],
                 resolution=251
             )
@@ -602,18 +552,6 @@ class FixedBoundaryEquilibrium():
     def recompute_q_profile(self, smooth=False):
         self.save_original_data(['qpsi'])
         psinorm = np.linspace(0.0, 1.0, len(self._data['qpsi']))
-        #psin_mirror = -psin[::-1]
-        #q_mirror = self._data['qpsi'][::-1]
-        #w = 100.0 / self._data['qpsi'] if smooth else None
-        #w_mirror = w[::-1] if w is not None else None
-        #if np.isclose(psin[0], psin_mirror[-1]):
-        #    psin_mirror = psin_mirror[:-1]
-        #    q_mirror = q_mirror[:-1]
-        #    w_mirror = w_mirror[:-1] if w_mirror is not None else None
-        #psin_fit = np.concatenate([psin_mirror, psin])
-        #q_fit = np.concatenate([q_mirror, self._data['qpsi']])
-        #w_fit = np.concatenate([w_mirror, w]) if w is not None else None
-        #self._fit['qpsi_fs'] = {'tck': splrep(psin_fit, q_fit, w_fit, xb=-1.0, xe=1.0, k=3, quiet=1), 'bounds': (-1.0, 1.0)}
         self._fit['qpsi_fs'] = generate_bounded_1d_spline(self._data['qpsi'], xnorm=psinorm, symmetrical=True, smooth=smooth)
         self._data['qpsi'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['qpsi_fs']['tck'])
 
@@ -623,10 +561,13 @@ class FixedBoundaryEquilibrium():
         if self._data['psi'][0, 0] == self._data['psi'][-1, -1] and self._data['psi'][0, -1] == self._data['psi'][-1, 0]:
             self.extend_psi_beyond_boundary()
         self._fs = self.trace_fine_flux_surfaces()
+        psinorm = np.zeros((len(self._fs), ), dtype=float)
         qpsi = np.zeros((len(self._fs), ), dtype=float)
         for i, (level, contour) in enumerate(self._fs.items()):
+            psinorm[i] = (level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
             qpsi[i] = compute_safety_factor_contour_integral(contour)
         qpsi[0] = 2.0 * qpsi[1] - qpsi[2]  # Linear interpolation to axis
+        self._fit['qpsi_fs'] = generate_bounded_1d_spline(self._data['qpsi'], xnorm=psinorm, symmetrical=True, smooth=False)
         self._data['qpsi'] = qpsi
 
 
@@ -636,6 +577,11 @@ class FixedBoundaryEquilibrium():
             self._data['psi'] = ((sibdry - simagx) * (self._data['psi'] - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])) + simagx
             self._data['simagx'] = simagx
             self._data['sibdry'] = sibdry
+
+
+    def normalize_psi_to_original(self):
+        if 'simagx_orig' in self._data and 'sibdry_orig' in self._data:
+            self.renormalize_psi(self._data['simagx_orig'], self._data['sibdry_orig'])
 
 
     def solve_psi(
@@ -689,7 +635,7 @@ class FixedBoundaryEquilibrium():
             if psi_error <= self._options['erreq']: break
         self.rescale_kinetic_profiles()
         self.extend_psi_beyond_boundary()
-        self.renormalize_psi()
+        self.normalize_psi_to_original()
         self.generate_psi_bivariate_spline()
         self.find_magnetic_axis()
         self.recompute_q_profile_from_scratch()
@@ -840,7 +786,7 @@ class FixedBoundaryEquilibrium():
             zmin = np.nanmin(self._data['zvec'])
             zmax = np.nanmax(self._data['zvec'])
             for level, contour in self._fs.items():
-                ax.plot(contour['r'], contour['z'], c='b', label=f'{level:.3f}', alpha=0.5)
+                ax.plot(contour['r'], contour['z'], c='b', label=f'{level:.3f}', alpha=0.4)
             if 'rbdry' in self._data and 'zbdry' in self._data:
                 ax.plot(self._data['rbdry'], self._data['zbdry'], c='r', label='Boundary')
             if 'rlim' in self._data and 'zlim' in self._data:

@@ -984,7 +984,7 @@ def trace_contours_with_contourpy(rvec, zvec, dmap, levels, rcheck, zcheck):
     return contours
 
 
-def trace_contour_with_splines(dmap, level, npoints, rmagx, zmagx, psimagx, psibdry, psi_spline, boundary_splines, resolution=251):
+def trace_contour_with_splines(dmap, level, npoints, rmagx, zmagx, psimagx, psibdry, psi_tck, boundary_splines, resolution=251):
     rc = []
     zc = []
     nvecl = resolution // 2
@@ -1006,7 +1006,7 @@ def trace_contour_with_splines(dmap, level, npoints, rmagx, zmagx, psimagx, psib
         vl = []
         psil = []
         for v in vvec[nvecl:0:-1]:
-            psival = psisign * bisplev(v.real, v.imag, psi_spline['tck'])
+            psival = psisign * bisplev(v.real, v.imag, psi_tck)
             if len(psil) == 0:
                 vl.append(v)
                 psil.append(psival)
@@ -1016,7 +1016,7 @@ def trace_contour_with_splines(dmap, level, npoints, rmagx, zmagx, psimagx, psib
         vu = []
         psiu = []
         for v in vvec[nvecu:-1]:
-            psival = psisign * bisplev(v.real, v.imag, psi_spline['tck'])
+            psival = psisign * bisplev(v.real, v.imag, psi_tck)
             if len(psiu) == 0:
                 vu.append(v)
                 psiu.append(psival)
@@ -1027,7 +1027,7 @@ def trace_contour_with_splines(dmap, level, npoints, rmagx, zmagx, psimagx, psib
         psiscan = np.concatenate([[psisign * psimagx], psil[::-1], psiu, [psisign * psibdry]])
         lmin = np.abs(vscan[0] - vmagx)
         lmax = np.abs(vscan[-1] - vmagx)
-        psifunc = interp1d(np.abs(vscan - vmagx), psiscan, bounds_error=False, fill_value='extrapolate')
+        psifunc = interp1d(np.abs(vscan - vmagx), psisign * psiscan, bounds_error=False, fill_value='extrapolate')
         lc = brentq(lambda l, t: psifunc(l) - t, lmin, lmax, args=(level), xtol=1.0e-4)
         vroot = lc * np.exp(1.0j * ang) + vmagx
         rc.append(vroot.real)
