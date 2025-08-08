@@ -440,3 +440,25 @@ def convert_cocos(eqdsk: MutableMapping[str, Any], cocos_in: int, cocos_out: int
         out['rbdry'] = copy.deepcopy(eqdsk['rbdry'])
         out['zbdry'] = copy.deepcopy(eqdsk['zbdry'])
     return out
+
+
+def contours_from_mxh_coefficients(mxh):
+    r0 = (np.max(mxh['r'][:-1])+np.min(mxh['r'][:-1]))/2
+    z0 = (np.max(mxh['z'][:-1])+np.min(mxh['z'][:-1]))/2
+    r = (np.max(self.fs['R'][:-1])-np.min(self.fs['R'][:-1]))/2
+    kappa = ((np.max(self.fs['Z'][:-1])-np.min(self.fs['Z'][:-1]))/2)/r
+    shape[:4] = [self.R0,self.Z0,r,kappa]
+    c_0 = shape[4]
+    theta_R = theta + c_0
+    total_n = int((len(shape)-5)/2)
+    for n in range(total_n):
+        c_n = shape[5 + n*2]
+        s_n = shape[6 + n*2]
+        theta_R += c_n * np.cos(n * theta) + s_n * np.sin(n * theta)
+    R_param = self.R0 + r * np.cos(theta_R)
+    Z_param = self.Z0 + kappa * r * np.sin(theta)
+    theta_ref = arctan2pi(Z_param-self.Z0,R_param-self.R0)
+    if norm:
+        R_param-=self.R0
+        Z_param-=self.Z0
+    return R_param, Z_param, theta_ref
