@@ -160,13 +160,13 @@ class FixedBoundaryEquilibrium():
             self.enforce_boundary_duplicate_at_end()
 
 
-    def define_boundary_with_mxh(self, r0, z0, r, kappa, cos_coeffs, sin_coeffs, nbdry=201):
+    def define_boundary_with_mxh(self, rgeo, zgeo, rminor, kappa, cos_coeffs, sin_coeffs, nbdry=201):
         if 'nbdry' not in self._data and 'rbdry' not in self._data and 'zbdry' not in self._data:
             theta = np.linspace(0.0, 2.0 * np.pi, nbdry) if isinstance(nbdry, int) else np.linspace(0.0, 2.0 * np.pi, 201)
             mxh = {
-                'r0': np.array([r0]).flatten(),
-                'z0': np.array([z0]).flatten(),
-                'r': np.array([r]).flatten(),
+                'r0': np.array([rgeo]).flatten(),
+                'z0': np.array([zgeo]).flatten(),
+                'r': np.array([rminor]).flatten(),
                 'kappa': np.array([kappa]).flatten(),
                 'cos_coeffs': np.atleast_2d(np.array([cos_coeffs]).flatten()),
                 'sin_coeffs': np.atleast_2d(np.array([sin_coeffs]).flatten()),
@@ -218,6 +218,11 @@ class FixedBoundaryEquilibrium():
             self._fit['fpol_fs'] = generate_bounded_1d_spline(f_new, xnorm=psinorm, symmetrical=True, smooth=smooth)
             self._data['fpol'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['fpol_fs']['tck'])
             self._data['ffprime'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['fpol_fs']['tck'], der=1) * self._data['fpol']
+
+
+    def define_f_and_pressure_profiles(self, f, pressure, psinorm=None, smooth=True):
+        self.define_f_profile(f, psinorm=psinorm, smooth=smooth)
+        self.define_pressure_profile(pressure, psinorm=psinorm, smooth=smooth)
 
 
     def compute_normalized_psi_map(self):
