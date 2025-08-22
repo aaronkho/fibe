@@ -299,12 +299,12 @@ def generate_finite_difference_grid(rvec, zvec, rbdry, zbdry):
     return out
 
 
-def compute_jtor(inout, rpsi, fpol, pressure, flat_current_old, relax=1.0):
+def compute_jtor(inout, rpsi, fpol, pressure, flat_current_old=None, relax=1.0):
     '''Compute current density over grid. Scale to Ip'''
     mu0 = 4.0e-7 * np.pi
     jtor = -1.0 * (fpol / (mu0 * rpsi) + rpsi * pressure)
     flat_current_new = np.where(inout == 0, 0.0, jtor.ravel())
-    if relax != 1.0:
+    if flat_current_old is not None and relax != 1.0:
         flat_current_new = flat_current_old + relax * (flat_current_new - flat_current_old)
     return flat_current_new
 
@@ -330,14 +330,14 @@ def generate_initial_psi(rvec, zvec, rbdry, zbdry, ijin):
     flat_psi = np.zeros((nr * nz, ), dtype=float)
     r0 = 0.5 * (np.nanmax(rbdry) + np.nanmin(rbdry))
     z0 = 0.5 * (np.nanmax(zbdry) + np.nanmin(zbdry))
-    rb = rbdry - x0
-    zb = zbdry - y0
-    rp = rbdry - x0
-    zp = zbdry - y0
+    rb = rbdry - r0
+    zb = zbdry - z0
+    rp = rvec - r0
+    zp = zvec - z0
     drb = rb[1:] - rb[:-1]
     dzb = zb[1:] - zb[:-1]
     drzb = rb[:-1] * dzb - zb[:-1] * drb
-    tcur = 0.0
+    #tcur = 0.0
     for k in ijin:
         j = k // nr
         i = k - j * nr
@@ -360,9 +360,9 @@ def generate_initial_psi(rvec, zvec, rbdry, zbdry, ijin):
             rho = 0.0
         else:
             db = rc[0] ** 2 + zc[0] ** 2 if (rc[0] * rp[i] + zc[0] * zp[j]) > 0 else rc[-1] ** 2 + zc[-1] ** 2
-            rho = np.nanmin(np.sqrt((rp[i] ** 2 + zp[j] ** 2) / db), 1.0)
+            rho = np.nanmin([np.sqrt((rp[i] ** 2 + zp[j] ** 2) / db), 1.0])
         flat_psi[k] = (1.0 - (rho ** 2)) ** 1.2   # Why 1.2?
-    return flat_psi.reshape(nr, nz)
+    return flat_psi.reshape(nz, nr)
 
 
 def compute_grad_psi_vector_from_2d_spline(point, spline_tck):
