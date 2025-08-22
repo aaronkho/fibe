@@ -1,2 +1,2 @@
-# fixed_boundary_equilibrium_solver
-Fixed boundary tokamak equilibrium solver in pure Python
+# fibe
+FIxed Boundary Equilibrium (FIBE) solver for tokamak plasma geometries in pure Python
