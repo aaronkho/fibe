@@ -448,23 +448,30 @@ def convert_cocos(eqdsk: MutableMapping[str, Any], cocos_in: int, cocos_out: int
     return out
 
 
-def contours_from_mxh_coefficients(mxh):
-    r0 = (np.max(mxh['r'][:-1])+np.min(mxh['r'][:-1]))/2
-    z0 = (np.max(mxh['z'][:-1])+np.min(mxh['z'][:-1]))/2
-    r = (np.max(self.fs['R'][:-1])-np.min(self.fs['R'][:-1]))/2
-    kappa = ((np.max(self.fs['Z'][:-1])-np.min(self.fs['Z'][:-1]))/2)/r
-    shape[:4] = [self.R0,self.Z0,r,kappa]
-    c_0 = shape[4]
-    theta_R = theta + c_0
-    total_n = int((len(shape)-5)/2)
-    for n in range(total_n):
-        c_n = shape[5 + n*2]
-        s_n = shape[6 + n*2]
-        theta_R += c_n * np.cos(n * theta) + s_n * np.sin(n * theta)
-    R_param = self.R0 + r * np.cos(theta_R)
-    Z_param = self.Z0 + kappa * r * np.sin(theta)
-    theta_ref = arctan2pi(Z_param-self.Z0,R_param-self.R0)
-    if norm:
-        R_param-=self.R0
-        Z_param-=self.Z0
-    return R_param, Z_param, theta_ref
+def mxh_coefficients_from_contours(fs):
+    r0 = (np.max(fs['r'][:-1]) + np.min(fs['r'][:-1])) / 2
+    z0 = (np.max(fs['z'][:-1]) + np.min(fs['z'][:-1])) / 2
+    r = (np.max(fs['r'][:-1]) - np.min(fs['r'][:-1])) / 2
+    kappa = ((np.max(fs['z'][:-1]) - np.min(fs['z'][:-1])) / 2) / r
+    shape[:4] = [r0, z0, r, kappa]
+
+
+def contours_from_mxh_coefficients(mxh, theta):
+    r0 = mxh['r0']
+    z0 = mxh['z0']
+    r = mxh['r']
+    kappa = mxh['kappa']
+    cosc = mxh['cos_coeffs']
+    sinc = mxh['sin_coeffs']
+    if sinc.shape[-1] == (cosc.shape[-1] - 1):
+        sinc = np.concatenate([np.atleast_2d(np.zeros(r0.shape)).T, sinc], axis=-1)
+    theta_ex = np.repeat(np.atleast_2d(theta), r0.shape[0], axis=0)
+    theta_R = copy.deepcopy(theta_ex)
+    for n in range(cosc.shape[-1]):
+        cos_R = cosc[:, n] * np.cos(float(n) * theta_ex)
+        sin_R = sinc[:, n] * np.sin(float(n) * theta_ex)
+        theta_R += cos_R + sin_R
+    r_contour = r0 + r * np.cos(theta_R)
+    z_contour = z0 + kappa * r * np.sin(theta_ex)
+    #theta_ref = arctan2pi(z_contour - z0, r_contour - r0)
+    return {'r': r_contour, 'z': z_contour}
