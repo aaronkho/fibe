@@ -740,8 +740,8 @@ class FixedBoundaryEquilibrium():
     #    mxh
 
 
-    def plot_contour(self):
-        if 'psi' in self._data:
+    def plot_contour(self, save=None):
+        if 'rleft' in self._data and 'rdim' in self._data and 'zmid' in self._data and 'zdim' in self._data:
             import matplotlib.pyplot as plt
             fig = plt.figure(figsize=(6, 8))
             ax = fig.add_subplot(111)
@@ -751,19 +751,20 @@ class FixedBoundaryEquilibrium():
             zmax = self._data['zmid'] + 0.5 * self._data['zdim']
             rvec = rmin + np.linspace(0.0, 1.0, self._data['nr']) * (rmax - rmin)
             zvec = zmin + np.linspace(0.0, 1.0, self._data['nz']) * (zmax - zmin)
-            rmesh, zmesh = np.meshgrid(rvec, zvec)
-            psidiff = self._data['sibdry'] - self._data['simagx']
-            psisign = np.sign(psidiff)
-            lvec = np.array([0.01, 0.04, 0.09, 0.15, 0.22, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999, 1.0, 1.02, 1.05])
-            levels = lvec * psidiff + self._data['simagx']
-            ax.contour(rmesh, zmesh, psisign * self._data['psi'], levels=psisign * levels)
+            if 'psi' in self._data:
+                rmesh, zmesh = np.meshgrid(rvec, zvec)
+                psidiff = self._data['sibdry'] - self._data['simagx']
+                psisign = np.sign(psidiff)
+                lvec = np.array([0.01, 0.04, 0.09, 0.15, 0.22, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999, 1.0, 1.02, 1.05])
+                levels = lvec * psidiff + self._data['simagx']
+                ax.contour(rmesh, zmesh, psisign * self._data['psi'], levels=psisign * levels)
             if 'rbdry' in self._data and 'zbdry' in self._data:
                 ax.plot(self._data['rbdry'], self._data['zbdry'], c='r', label='Boundary')
             if 'rlim' in self._data and 'zlim' in self._data:
                 ax.plot(self._data['rlim'], self._data['zlim'], c='k', label='Limiter')
             if 'rmagx' in self._data and 'zmagx' in self._data:
                 ax.scatter(self._data['rmagx'], self._data['zmagx'], marker='o', facecolors='none', edgecolors='r', label='O-points')
-            if 'xpoints' in self._data:
+            if 'xpoints' in self._data and len(self._data['xpoints']) > 0:
                 xparr = np.atleast_2d(self._data['xpoints'])
                 ax.scatter(xparr[:, 0], xparr[:, 1], marker='x', facecolors='r', label='X-points')
             ax.set_xlim(rmin, rmax)
@@ -772,11 +773,13 @@ class FixedBoundaryEquilibrium():
             ax.set_ylabel('Z [m]')
             ax.legend(loc='best')
             fig.tight_layout()
+            if isinstance(save, (str, Path)):
+                fig.savefig(save, dpi=100)
             plt.show()
             plt.close(fig)
 
 
-    def plot_grid_splitting(self):
+    def plot_grid_splitting(self, save=None):
         if 'inout' in self._data:
             import matplotlib.pyplot as plt
             fig = plt.figure(figsize=(6, 8))
@@ -799,11 +802,13 @@ class FixedBoundaryEquilibrium():
             ax.set_xlabel('R [m]')
             ax.set_ylabel('Z [m]')
             fig.tight_layout()
+            if isinstance(save, (str, Path)):
+                fig.savefig(save, dpi=100)
             plt.show()
             plt.close(fig)
 
 
-    def plot_flux_surfaces(self):
+    def plot_flux_surfaces(self, save=None):
         if self._fs is not None:
             import matplotlib.pyplot as plt
             fig = plt.figure(figsize=(6, 8))
@@ -823,6 +828,8 @@ class FixedBoundaryEquilibrium():
             ax.set_xlabel('R [m]')
             ax.set_ylabel('Z [m]')
             fig.tight_layout()
+            if isinstance(save, (str, Path)):
+                fig.savefig(save, dpi=100)
             plt.show()
             plt.close(fig)
 
