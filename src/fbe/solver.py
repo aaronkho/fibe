@@ -43,7 +43,8 @@ from .eqdsk import (
     read_eqdsk_file,
     write_eqdsk_file,
     detect_cocos,
-    convert_cocos
+    convert_cocos,
+    contours_from_mxh_coefficients,
 )
 
 logger = logging.getLogger('fbe')
@@ -159,36 +160,62 @@ class FixedBoundaryEquilibrium():
             self.enforce_boundary_duplicate_at_end()
 
 
+    def define_boundary_with_mxh(self, r0, z0, r, kappa, cos_coeffs, sin_coeffs, nbdry=201):
+        if 'nbdry' not in self._data and 'rbdry' not in self._data and 'zbdry' not in self._data:
+            theta = np.linspace(0.0, 2.0 * np.pi, nbdry) if isinstance(nbdry, int) else np.linspace(0.0, 2.0 * np.pi, 201)
+            mxh = {
+                'r0': np.array([r0]).flatten(),
+                'z0': np.array([z0]).flatten(),
+                'r': np.array([r]).flatten(),
+                'kappa': np.array([kappa]).flatten(),
+                'cos_coeffs': np.atleast_2d(np.array([cos_coeffs]).flatten()),
+                'sin_coeffs': np.atleast_2d(np.array([sin_coeffs]).flatten()),
+            }
+            boundary = contours_from_mxh_coefficients(mxh, theta)
+            self._data['nbdry'] = nbdry
+            self._data['rbdry'] = copy.deepcopy(boundary['r'].flatten())
+            self._data['zbdry'] = copy.deepcopy(boundary['z'].flatten())
+            #self.enforce_boundary_duplicate_at_end()
+
+
     def initialize_psi(self):
         '''Initialize psi. Use if no geqdsk is read.'''
         self.create_finite_difference_grid()
-        self._data['psi'] = generate_initial_psi(self._data['nr'], self._data['nz'], self._data['rbdry'], self._data['zbdry'])
+        self.make_solver()
+        self._data['psi'] = generate_initial_psi(self._data['rvec'], self._data['zvec'], self._data['rbdry'], self._data['zbdry'], self._data['ijin'])
+        self._data['simagx'] = 1.0
+        self._data['sibdry'] = 0.0
         self.find_magnetic_axis()
+        self.compute_normalized_psi_map()
         ff, pp = self.compute_f_and_p_grid(self._data['xpsi'])
         self._data['cur'] = compute_jtor(
             self._data['inout'],
             self._data['rpsi'].ravel(),
             ff.ravel(),
-            pp.ravel(),
-            self._data['cur'],
-            relax=1.0
-        ) * np.sign(self._data['cpasma'])
-        self._data['curscale'] = self._data['cpasma'] / (np.sum(self._data['cur']) * self._data['hrz'])
-        self._data['cur'] *= self._data['curscale']
+            pp.ravel()
+        )
+        #self._data['curscale'] = self._data['cpasma'] / (np.sum(self._data['cur']) * self._data['hrz'])
+        self._data['curscale'] = 1.0
+        self._data['cpasma'] = float(np.sum(self._data['cur']) * self._data['hrz'])
+        #self._data['cur'] *= self._data['curscale']
+        self.create_boundary_splines()
+        #self.recompute_q_profile_from_scratch()
 
 
     def define_pressure_profile(self, pressure, psinorm=None, smooth=True):
-        if isinstance(pressure, np.ndarray) and len(pressure) > 0:
+        if isinstance(pressure, (list, tuple, np.ndarray)) and len(pressure) > 0:
             self.save_original_data(['pres', 'pprime'])
-            self._fit['pres_fs'] = generate_bounded_1d_spline(pressure, xnorm=psinorm, symmetrical=True, smooth=smooth)
+            pressure_new = np.array(pressure).flatten()
+            self._fit['pres_fs'] = generate_bounded_1d_spline(pressure_new, xnorm=psinorm, symmetrical=True, smooth=smooth)
             self._data['pres'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['pres_fs']['tck'])
             self._data['pprime'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['pres_fs']['tck'], der=1)
 
 
     def define_f_profile(self, f, psinorm=None, smooth=True):
-        if isinstance(f, np.ndarray) and len(f) > 0:
+        if isinstance(f, (list, tuple, np.ndarray)) and len(f) > 0:
             self.save_original_data(['fpol', 'ffprime'])
-            self._fit['fpol_fs'] = generate_bounded_1d_spline(f, xnorm=psinorm, symmetrical=True, smooth=smooth)
+            f_new = np.array(f).flatten()
+            self._fit['fpol_fs'] = generate_bounded_1d_spline(f_new, xnorm=psinorm, symmetrical=True, smooth=smooth)
             self._data['fpol'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['fpol_fs']['tck'])
             self._data['ffprime'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['fpol_fs']['tck'], der=1) * self._data['fpol']
 
@@ -567,7 +594,7 @@ class FixedBoundaryEquilibrium():
             psinorm[i] = (level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
             qpsi[i] = compute_safety_factor_contour_integral(contour)
         qpsi[0] = 2.0 * qpsi[1] - qpsi[2]  # Linear interpolation to axis
-        self._fit['qpsi_fs'] = generate_bounded_1d_spline(self._data['qpsi'], xnorm=psinorm, symmetrical=True, smooth=False)
+        self._fit['qpsi_fs'] = generate_bounded_1d_spline(qpsi, xnorm=psinorm, symmetrical=True, smooth=False)
         self._data['qpsi'] = qpsi
 
 
