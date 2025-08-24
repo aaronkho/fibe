@@ -254,6 +254,8 @@ class FixedBoundaryEquilibrium():
 
     def find_x_points(self, sanitize=True):
 
+        self.save_original_data(['xpoints'])
+
         if 'psi_rz' not in self._fit:
             self.generate_psi_bivariate_spline()
         if 'rmagx' not in self._data or 'zmagx' not in self._data:
@@ -624,6 +626,8 @@ class FixedBoundaryEquilibrium():
     ):
         '''RUN THE EQ SOLVER'''
 
+        self.save_original_data(['gcase', 'gid', 'psi'])
+
         if isinstance(nxiter, int):
             self._options['nxiter'] = abs(nxiter)
         if isinstance(erreq, float):
@@ -759,6 +763,7 @@ class FixedBoundaryEquilibrium():
 
     def plot_contour(self, save=None):
         if 'rleft' in self._data and 'rdim' in self._data and 'zmid' in self._data and 'zdim' in self._data:
+            lvec = np.array([0.01, 0.04, 0.09, 0.15, 0.22, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999, 1.0, 1.02, 1.05])
             import matplotlib.pyplot as plt
             fig = plt.figure(figsize=(6, 8))
             ax = fig.add_subplot(111)
@@ -772,7 +777,6 @@ class FixedBoundaryEquilibrium():
                 rmesh, zmesh = np.meshgrid(rvec, zvec)
                 psidiff = self._data['sibdry'] - self._data['simagx']
                 psisign = np.sign(psidiff)
-                lvec = np.array([0.01, 0.04, 0.09, 0.15, 0.22, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999, 1.0, 1.02, 1.05])
                 levels = lvec * psidiff + self._data['simagx']
                 ax.contour(rmesh, zmesh, psisign * self._data['psi'], levels=psisign * levels)
             if 'rbdry' in self._data and 'zbdry' in self._data:
@@ -786,6 +790,87 @@ class FixedBoundaryEquilibrium():
                 ax.scatter(xparr[:, 0], xparr[:, 1], marker='x', facecolors='r', label='X-points')
             ax.set_xlim(rmin, rmax)
             ax.set_ylim(zmin, zmax)
+            ax.set_xlabel('R [m]')
+            ax.set_ylabel('Z [m]')
+            ax.legend(loc='best')
+            fig.tight_layout()
+            if isinstance(save, (str, Path)):
+                fig.savefig(save, dpi=100)
+            plt.show()
+            plt.close(fig)
+
+
+    def plot_comparison_to_original(self, save=None):
+        if 'psi' in self._data and 'psi_orig' in self._data:
+            lvec = np.array([0.01, 0.04, 0.09, 0.15, 0.22, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999, 1.0, 1.02, 1.05])
+            import matplotlib.pyplot as plt
+            fig = plt.figure(figsize=(6, 8))
+            ax = fig.add_subplot(111)
+            nr_new = self._data['nr']
+            nz_new = self._data['nz']
+            rleft_new = self._data['rleft']
+            rdim_new = self._data['rdim']
+            zmid_new = self._data['zmid']
+            zdim_new = self._data['zdim']
+            simagx_new = self._data['simagx']
+            sibdry_new = self._data['sibdry']
+            nr_old = self._data['nr_orig'] if 'nr_orig' in self._data else copy.deepcopy(nr_new)
+            nz_old = self._data['nz_orig'] if 'nz_orig' in self._data else copy.deepcopy(nz_new)
+            rleft_old = self._data['rleft_orig'] if 'rleft_orig' in self._data else copy.deepcopy(rleft_new)
+            rdim_old = self._data['rdim_orig'] if 'rdim_orig' in self._data else copy.deepcopy(rdim_new)
+            zmid_old = self._data['zmid_orig'] if 'zmid_orig' in self._data else copy.deepcopy(zmid_new)
+            zdim_old = self._data['zdim_orig'] if 'zdim_orig' in self._data else copy.deepcopy(zdim_new)
+            simagx_old = self._data['simagx_orig'] if 'simagx_orig' in self._data else copy.deepcopy(simagx_new)
+            sibdry_old = self._data['sibdry_orig'] if 'sibdry_orig' in self._data else copy.deepcopy(sibdry_new)
+            rmin_old = rleft_old
+            rmax_old = rleft_old + rdim_old
+            zmin_old = zmid_old - 0.5 * zdim_old
+            zmax_old = zmid_old + 0.5 * zdim_old
+            rvec_old = rmin_old + np.linspace(0.0, 1.0, nr_old) * (rmax_old - rmin_old)
+            zvec_old = zmin_old + np.linspace(0.0, 1.0, nz_old) * (zmax_old - zmin_old)
+            rmesh_old, zmesh_old = np.meshgrid(rvec_old, zvec_old)
+            psidiff_old = sibdry_old - simagx_old
+            psisign_old = np.sign(psidiff_old)
+            levels_old = lvec * psidiff_old + simagx_old
+            ax.contour(rmesh_old, zmesh_old, psisign_old * self._data['psi_orig'], levels=psisign_old * levels_old, colors='r', alpha=0.6)
+            if 'rbdry_orig' in self._data and 'zbdry_orig' in self._data:
+                ax.plot(self._data['rbdry_orig'], self._data['zbdry_orig'], c='r', label='Boundary (old)')
+            elif 'rbdry' in self._data and 'zbdry' in self._data:
+                ax.plot(self._data['rbdry'], self._data['zbdry'], c='r', label='Boundary (old)')
+            if 'rmagx_orig' in self._data and 'zmagx_orig' in self._data:
+                ax.scatter(self._data['rmagx_orig'], self._data['zmagx_orig'], marker='o', facecolors='none', edgecolors='r', label='O-points (old)')
+            elif 'rmagx' in self._data and 'zmagx' in self._data:
+                ax.scatter(self._data['rmagx'], self._data['zmagx'], marker='o', facecolors='none', edgecolors='r', label='O-points (old)')
+            if 'xpoints_orig' in self._data and len(self._data['xpoints_orig']) > 0:
+                xparr = np.atleast_2d(self._data['xpoints_orig'])
+                ax.scatter(xparr[:, 0], xparr[:, 1], marker='x', facecolors='r', label='X-points (old)')
+            #elif 'xpoints' in self._data and len(self._data['xpoints']) > 0:
+            #    xparr = np.atleast_2d(self._data['xpoints'])
+            #    ax.scatter(xparr[:, 0], xparr[:, 1], marker='x', facecolors='r', label='X-points (old)')
+            rmin_new = rleft_new
+            rmax_new = rleft_new + rdim_new
+            zmin_new = zmid_new - 0.5 * zdim_new
+            zmax_new = zmid_new + 0.5 * zdim_new
+            rvec_new = rmin_new + np.linspace(0.0, 1.0, nr_new) * (rmax_new - rmin_new)
+            zvec_new = zmin_new + np.linspace(0.0, 1.0, nz_new) * (zmax_new - zmin_new)
+            rmesh_new, zmesh_new = np.meshgrid(rvec_new, zvec_new)
+            psidiff_new = sibdry_new - simagx_new
+            psisign_new = np.sign(psidiff_new)
+            levels_new = lvec * psidiff_new + simagx_new
+            ax.contour(rmesh_new, zmesh_new, psisign_new * self._data['psi'], levels=psisign_new * levels_new, colors='b', alpha=0.6)
+            if 'rbdry' in self._data and 'zbdry' in self._data:
+                ax.plot(self._data['rbdry'], self._data['zbdry'], c='b', label='Boundary (new)')
+            if 'rmagx' in self._data and 'zmagx' in self._data:
+                ax.scatter(self._data['rmagx'], self._data['zmagx'], marker='o', facecolors='none', edgecolors='b', label='O-points (new)')
+            if 'xpoints' in self._data and len(self._data['xpoints']) > 0:
+                xparr = np.atleast_2d(self._data['xpoints'])
+                ax.scatter(xparr[:, 0], xparr[:, 1], marker='x', facecolors='b', label='X-points (new)')
+            rmin_plot = np.nanmin([rmin_old, rmin_new])
+            rmax_plot = np.nanmax([rmax_old, rmax_new])
+            zmin_plot = np.nanmin([zmin_old, zmin_new])
+            zmax_plot = np.nanmax([zmax_old, zmax_new])
+            ax.set_xlim(rmin_plot, rmax_plot)
+            ax.set_ylim(zmin_plot, zmax_plot)
             ax.set_xlabel('R [m]')
             ax.set_ylabel('Z [m]')
             ax.legend(loc='best')
