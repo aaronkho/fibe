@@ -32,7 +32,7 @@ dependencies = [
   "scipy",
   "contourpy",
   "shapely",
-  "ipython",
+  "eqdsk",
 ]
 
 [project.optional-dependencies]

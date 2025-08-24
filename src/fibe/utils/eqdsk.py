@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Final, Self
 from collections.abc import MutableMapping, Mapping, MutableSequence, Sequence, Iterable
 import numpy as np
+from eqdsk import EQDSKInterface
 
 
 logger = logging.getLogger('fibe')
@@ -12,15 +13,54 @@ logger.setLevel(logging.INFO)
 
 array_types = (list, tuple, np.ndarray)
 
+eqdsk_package_field_map = {
+    'bcentre': 'bcentr',
+    'cplasma': 'cpasma',
+    'dxc': None,
+    'dzc': None,
+    'ffprime': 'ffprime',
+    'fpol': 'fpol',
+    'Ic': None,
+    'name': 'gcase',
+    'nbdry': 'nbdry',
+    'ncoil': None,
+    'nlim': 'nlim',
+    'nx': 'nr',
+    'nz': 'nz',
+    'pprime': 'pprime',
+    'pressure': 'pres',
+    'psi': 'psi',
+    'psibdry': 'sibdry',
+    'psimag': 'simagx',
+    'xbdry': 'rbdry',
+    'xc': None,
+    'xcentre': 'rcentr',
+    'xdim': 'rdim',
+    'xgrid1': 'rleft',
+    'xlim': 'rlim',
+    'xmag': 'rmagx',
+    'zbdry': 'zbdry',
+    'zc': None,
+    'zdim': 'zdim',
+    'zlim': 'zlim',
+    'zmag': 'zmagx',
+    'zmid': 'zmid',
+    'x': None,
+    'z': None,
+    'psinorm': None,
+    'qpsi': 'qpsi',
+    'coil_names': None,
+    'coil_types': None,
+}
 
-def read_geqdsk_file(fname, interface='fibe'):
+def read_geqdsk_file(fname, interface='eqdsk'):
     if interface == 'eqdsk':
         return read_geqdsk_file_eqdsk(fname)
     else:
         return read_geqdsk_file_fibe(fname)
 
 
-def write_geqdsk_file(fname, datadict, interface='fibe'):
+def write_geqdsk_file(fname, datadict, interface='eqdsk'):
     if interface == 'eqdsk':
         write_geqdsk_file_eqdsk(fname, datadict)
     else:
@@ -28,13 +68,30 @@ def write_geqdsk_file(fname, datadict, interface='fibe'):
 
 
 def read_geqdsk_file_eqdsk(fname):
-    # TODO: Add actual eqdsk package function
-    return read_geqdsk_file_fibe(fname)
+    eqdsk_dict = EQDSKInterface.from_file(fname, no_cocos=True).to_dict()
+    eq = {nk: copy.deepcopy(eqdsk_dict[k]) for k, nk in eqdsk_package_field_map.items() if k in eqdsk_dict and isinstance(nk, str)}
+    if 'psi' in eq:
+        eq['psi'] = eq['psi'].T
+    return eq
 
 
 def write_geqdsk_file_eqdsk(fname, datadict):
-    # TODO: Add actual eqdsk package function
-    write_geqdsk_file_fibe(fname, **datadict)
+    pkg_logger = logging.getLogger("EQDSK Logger")
+    orig_level = pkg_logger.level
+    pkg_logger.setLevel(logging.ERROR)
+    eq = {k: copy.deepcopy(datadict[nk]) for k, nk in eqdsk_package_field_map.items() if isinstance(nk, str) and nk in datadict}
+    if 'psi' in eq:
+        eq['psi'] = eq['psi'].T
+    if 'ncoil' not in eq:
+        eq['ncoil'] = 0
+        eq['xc'] = []
+        eq['zc'] = []
+        eq['dxc'] = []
+        eq['dzc'] = []
+        eq['Ic'] = []
+    eqdsk_obj = EQDSKInterface(**eq)
+    eqdsk_obj.write(fname, 'geqdsk', strict_spec=True)
+    pkg_logger.setLevel(orig_level)
 
 
 def read_geqdsk_file_fibe(fname):
