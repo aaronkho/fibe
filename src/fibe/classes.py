@@ -464,7 +464,7 @@ class FixedBoundaryEquilibrium():
             if 'pprime' in self._data:
                 self._data['pprime'] *= self._data['curscale']
             if 'fpol' in self._data:
-                self._data['fpol'] *= np.sqrt(self._data['curscale'])
+                self._data['fpol'] *= np.sign(self._data['curscale']) * np.sqrt(np.abs(self._data['curscale']))
             if 'pres' in self._data:
                 self._data['pres'] *= self._data['curscale']
 
@@ -720,6 +720,19 @@ class FixedBoundaryEquilibrium():
             self._data['rbdry'] = np.concatenate([rbdry, [rbdry[0]]])
             self._data['zbdry'] = np.concatenate([zbdry, [zbdry[0]]])
             self._data['nbdry'] = len(self._data['rbdry'])
+
+
+    def load_eqdsk(self, path, clean=True):
+        if isinstance(path, (str, Path)):
+            if clean:
+                self._data = {}
+                self._fit = {}
+                self.solver = None
+                self.error = None
+                self.converged = None
+                self.fs = None
+            self._data.update(read_eqdsk_file(path))
+            self.enforce_boundary_duplicate_at_end()
 
 
     @classmethod
