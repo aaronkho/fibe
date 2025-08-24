@@ -1,21 +1,27 @@
 import pytest
 import numpy as np
-from fibe.solver import FixedBoundaryEquilibrium
+from fibe import FixedBoundaryEquilibrium
 
 
-
-@pytest.mark.usefixtures('empty_class')
+@pytest.mark.usefixtures('geqdsk_file_path')
 class TestCreation():
 
+    def test_creation_empty(self):
+        eq = FixedBoundaryEquilibrium()
+        assert isinstance(eq, FixedBoundaryEquilibrium)
+        assert (not eq._data)
 
-    def test_empty_class_creation(self, empty_class):
-        assert isinstance(empty_class, FixedBoundaryEquilibrium)
-
+    def test_creation_with_geqdsk(self, geqdsk_file_path):
+        eq = FixedBoundaryEquilibrium.from_eqdsk(geqdsk_file_path)
+        assert isinstance(eq, FixedBoundaryEquilibrium)
+        assert eq._data.get('nr', None) == 61
+        assert eq._data.get('nz', None) == 129
+        assert eq._data.get('nbdry', None) == 32 + 1  # Add 1 due to enforcing closed boundary vector
+        assert eq._data.get('nlim', None) == 0
 
 
 @pytest.mark.usefixtures('empty_class', 'scratch_grid', 'scratch_mxh_boundary', 'scratch_fp_profiles')
 class TestInitializationWithFP():
-
 
     def test_grid_initialization(self, empty_class, scratch_grid):
         empty_class.define_grid(**scratch_grid)
@@ -46,14 +52,31 @@ class TestInitializationWithFP():
         assert 'rvec' in empty_class._data
         assert 'zvec' in empty_class._data
         assert 'psi' in empty_class._data
+        assert 'simagx' in empty_class._data
+        assert 'sibdry' in empty_class._data
         assert 'cur' in empty_class._data
         assert 'curscale' in empty_class._data
         assert 'cpasma' in empty_class._data
 
-    def test_psi_initialization(self, empty_class):
-        print(empty_class._data['xpsi'])
+    def test_psi_solver(self, empty_class):
         empty_class.solve_psi()
         assert 'qpsi' in empty_class._data
         assert 'gcase' in empty_class._data
         assert 'gid' in empty_class._data
+
+
+@pytest.mark.usefixtures('empty_class', 'geqdsk_file_path')
+class TestInitializationWithGEQDSK():
+
+    def test_geqdsk_load(self, empty_class, geqdsk_file_path):
+        empty_class.load_eqdsk(geqdsk_file_path)
+        assert empty_class._data.get('nr', None) == 61
+        assert empty_class._data.get('nz', None) == 129
+        assert empty_class._data.get('nbdry', None) == 32 + 1  # Add 1 due to enforcing closed boundary vector
+        assert empty_class._data.get('nlim', None) == 0
+
+    def test_psi_regrid(self, empty_class, regrid_specs):
+        empty_class.regrid(**regrid_specs)
+        assert empty_class._data.get('nr', None) == 129
+        assert empty_class._data.get('nz', None) == 129
 
