@@ -1,14 +1,44 @@
 import copy
+import logging
 from pathlib import Path
 from typing import Any, Final, Self
 from collections.abc import MutableMapping, Mapping, MutableSequence, Sequence, Iterable
 import numpy as np
 
+
+logger = logging.getLogger('fibe')
+logger.setLevel(logging.INFO)
+
+
 array_types = (list, tuple, np.ndarray)
 
 
-def read_eqdsk_file(fname):
-    """ Read an eqdsk file """
+def read_geqdsk_file(fname, interface='fibe'):
+    if interface == 'eqdsk':
+        return read_geqdsk_file_eqdsk(fname)
+    else:
+        return read_geqdsk_file_fibe(fname)
+
+
+def write_geqdsk_file(fname, datadict, interface='fibe'):
+    if interface == 'eqdsk':
+        write_geqdsk_file_eqdsk(fname, datadict)
+    else:
+        write_geqdsk_file_fibe(fname, **datadict)
+
+
+def read_geqdsk_file_eqdsk(fname):
+    # TODO: Add actual eqdsk package function
+    return read_geqdsk_file_fibe(fname)
+
+
+def write_geqdsk_file_eqdsk(fname, datadict):
+    # TODO: Add actual eqdsk package function
+    write_geqdsk_file_fibe(fname, **datadict)
+
+
+def read_geqdsk_file_fibe(fname):
+    """ Read a g-eqdsk file """
 
     def _sep_eq_line(line, float_width=16, floats_per_line=5, sep=' '):
         """ Split a eqdsk-style line and inserts seperator characters """
@@ -104,7 +134,7 @@ def read_eqdsk_file(fname):
     return eq
 
 
-def write_eqdsk_file(
+def write_geqdsk_file_fibe(
     fname,
     nr=0,
     nz=0,
@@ -232,7 +262,7 @@ def write_eqdsk_file(
 
     fpath = Path(fname)
     if fpath.exists():
-        print(f'{fpath} exists, overwriting file with g-eqdsk file!')
+        logger.warning(f'{fpath} exists, overwriting file with g-eqdsk file!')
     if nbdry is None or rbdry is None or zbdry is None:
         nbdry = 0
         rbdry = []
@@ -310,7 +340,7 @@ def write_eqdsk_file(
             if (kk + 1) % 5 == 0 and (kk + 1) != nlim:
                 ff.write('\n')
             kk += 1
-    print(f'Output EQDSK file saved as {fpath}.')
+    logger.info(f'Output EQDSK file saved as {fpath}.')
 
 
 def define_cocos(cocos_number: int) -> MutableMapping[str, int]:
@@ -361,15 +391,15 @@ def determine_cocos(sign_dict: MutableMapping[str, int]) -> int:
         if sign_dict['sBp'] < 0:
             cocos_number += 2
         if sign_dict['scyl'] == 0:
-            print('Ambiguous cylindrical direction, assuming ccw from top')
+            logger.warning('Ambiguous cylindrical direction, assuming ccw from top')
         elif sign_dict['scyl'] < 0:
             cocos_number += 1
         if sign_dict['eBp'] < 0:
-            print('Ambiguous per radian specification, assuming not per radian')
+            logger.warning('Ambiguous per radian specification, assuming not per radian')
         elif sign_dict['eBp'] > 0:
             cocos_number += 10
         if sign_dict['srel'] == 0:
-            print('Ambiguous relative coordinate handedness, assuming all right-handed')
+            logger.warning('Ambiguous relative coordinate handedness, assuming all right-handed')
         if sign_dict['srel'] < 0:
             cocos_number = -cocos_number
     return cocos_number

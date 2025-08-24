@@ -39,14 +39,14 @@ from .math import (
     compute_adjusted_contour_resolution,
 )
 from ..utils.eqdsk import (
-    read_eqdsk_file,
-    write_eqdsk_file,
+    read_geqdsk_file,
+    write_geqdsk_file,
     detect_cocos,
     convert_cocos,
     contours_from_mxh_coefficients,
 )
 
-logger = logging.getLogger('fbe')
+logger = logging.getLogger('fibe')
 logger.setLevel(logging.INFO)
 
 
@@ -54,7 +54,7 @@ class FixedBoundaryEquilibrium():
 
 
     mu0 = 4.0e-7 * np.pi
-    eqdsk_fields = [
+    geqdsk_fields = [
         'nr',
         'nz',
         'rdim',
@@ -87,7 +87,7 @@ class FixedBoundaryEquilibrium():
 
     def __init__(
         self,
-        eqdsk=None,
+        geqdsk=None,
     ):
         self._data = {}
         self._fit = {}
@@ -101,8 +101,8 @@ class FixedBoundaryEquilibrium():
             'relaxj': 1.0,
         }
         self._fs = None
-        if isinstance(eqdsk, (str, Path)):
-            self._data.update(read_eqdsk_file(eqdsk))
+        if isinstance(geqdsk, (str, Path)):
+            self._data.update(read_geqdsk_file(geqdsk))
             self.enforce_boundary_duplicate_at_end()
 
 
@@ -725,7 +725,7 @@ class FixedBoundaryEquilibrium():
             self._data['nbdry'] = len(self._data['rbdry'])
 
 
-    def load_eqdsk(self, path, clean=True):
+    def load_geqdsk(self, path, clean=True):
         if isinstance(path, (str, Path)):
             if clean:
                 self._data = {}
@@ -734,22 +734,22 @@ class FixedBoundaryEquilibrium():
                 self.error = None
                 self.converged = None
                 self.fs = None
-            self._data.update(read_eqdsk_file(path))
+            self._data.update(read_geqdsk_file(path))
             self.enforce_boundary_duplicate_at_end()
 
 
     @classmethod
-    def from_eqdsk(cls, path):
-        return cls(eqdsk=path)
+    def from_geqdsk(cls, path):
+        return cls(geqdsk=path)
 
 
-    def to_eqdsk(self, path, cocos=2):
-        eqdsk = {k: v for k, v in self._data.items() if k in self.eqdsk_fields}
-        eqdsk['gcase'] = 'FBE'
-        eqdsk['gid'] = 42
-        current_cocos = detect_cocos(eqdsk)
-        eqdsk = convert_cocos(eqdsk, current_cocos, cocos)
-        write_eqdsk_file(path, **eqdsk)
+    def to_geqdsk(self, path, cocos=2):
+        geqdsk = {k: v for k, v in self._data.items() if k in self.geqdsk_fields}
+        geqdsk['gcase'] = 'FBE'
+        geqdsk['gid'] = 42
+        current_cocos = detect_cocos(geqdsk)
+        geqdsk = convert_cocos(geqdsk, current_cocos, cocos)
+        write_geqdsk_file(path, geqdsk)
 
 
     #@classmethod
