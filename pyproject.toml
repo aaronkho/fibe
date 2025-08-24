@@ -46,6 +46,7 @@ build = ["build", "twine"]
 "Source" = "https://gitlab.com/aaronkho/fibe"
 
 [project.scripts]
+fibe_regrid_geqdsk = "fibe.scripts.regrid_eqdsk:main"
 
 [tool.setuptools.dynamic]
 version = {attr = "fibe.__version__"}
