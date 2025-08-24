@@ -1,4 +1,3 @@
-import argparse
 import copy
 import logging
 from pathlib import Path
@@ -39,7 +38,7 @@ from .math import (
     trace_contour_with_splines,
     compute_adjusted_contour_resolution,
 )
-from .eqdsk import (
+from ..utils.eqdsk import (
     read_eqdsk_file,
     write_eqdsk_file,
     detect_cocos,
@@ -851,42 +850,3 @@ class FixedBoundaryEquilibrium():
             plt.show()
             plt.close(fig)
 
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('nr', type=int, required=True, help='Number of grid points in R')
-    parser.add_argument('nz', type=int, required=True, help='Number of grid points in Z')
-    parser.add_argument('niter', nargs='?', type=int, default=50, help='Maximum number of iterations for equilibrium solver')
-    parser.add_argument('err', nargs='?', type=float, default=1.0e-8, help='Convergence criteria on psi error for equilibrium solver')
-    parser.add_argument('relax', nargs='?', type=float, defualt=1.0, help='Relaxation constant to smoothen psi stepping for stability')
-    parser.add_argument('relaxj', nargs='?', type=float, defualt=1.0, help='Relaxation constant to smoothen current stepping for stability')
-    parser.add_argument('--ifile', type=str, default=None, help='Path to input g-eqdsk file')
-    parser.add_argument('--ofile', type=str, default=None, help='Path for output g-eqdsk file')
-    parser.add_arguemnt('--optimize', default=False, action='store_true', help='Toggle on optimal grid dimensions to fit boundary contour')
-    parser.add_argument('--keep_psi_scale', default=False, action='store_true', help='Toggle on renormalization of psi solution to original psi scale')
-    args = parser.parse_args()
-
-    if args.ifile is None:
-        # From scratch
-        eq = FixedBoundaryEquilibrium()
-        #eq.define_grid(args.nr, args.nz, args.rmin, args.rmax, args.zmin, args.zmax)
-        #eq.define_boundary(args.rb, args.zb)
-        #eq.setup()
-        #eq.init_psi()
-        #eq.run(args.niter, args.err, args.relax, args.relaxj)
-    else:
-        ipath = Path(args.ifile)
-        if ipath.is_file():
-            eq = FixedBoundaryEquilibrium.from_eqdsk(ipath)
-            eq.regrid(args.nr, args.nz, optimal=args.optimize)
-            eq.run(args.niter, args.err, args.relax, args.relaxj)
-            if args.ofile is not None:
-                opath = Path(args.ofile)
-                if not opath.exists():
-                    opath.parent.mkdir(parents=True, exist_ok=True)
-                    eq.to_eqdsk(opath)
-
-
-if __name__ == '__main__':
-    main()
