@@ -12,7 +12,7 @@ class TestCreation():
         assert (not eq._data)
 
     def test_creation_with_geqdsk(self, geqdsk_file_path):
-        eq = FixedBoundaryEquilibrium.from_eqdsk(geqdsk_file_path)
+        eq = FixedBoundaryEquilibrium.from_geqdsk(geqdsk_file_path)
         assert isinstance(eq, FixedBoundaryEquilibrium)
         assert eq._data.get('nr', None) == 61
         assert eq._data.get('nz', None) == 129
@@ -69,7 +69,7 @@ class TestInitializationWithFP():
 class TestInitializationWithGEQDSK():
 
     def test_geqdsk_load(self, empty_class, geqdsk_file_path):
-        empty_class.load_eqdsk(geqdsk_file_path)
+        empty_class.load_geqdsk(geqdsk_file_path)
         assert empty_class._data.get('nr', None) == 61
         assert empty_class._data.get('nz', None) == 129
         assert empty_class._data.get('nbdry', None) == 32 + 1  # Add 1 due to enforcing closed boundary vector
