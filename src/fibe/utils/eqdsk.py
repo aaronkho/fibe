@@ -10,7 +10,6 @@ from eqdsk import EQDSKInterface
 logger = logging.getLogger('fibe')
 logger.setLevel(logging.INFO)
 
-
 array_types = (list, tuple, np.ndarray)
 
 eqdsk_package_field_map = {
@@ -52,6 +51,7 @@ eqdsk_package_field_map = {
     'coil_names': None,
     'coil_types': None,
 }
+
 
 def read_geqdsk_file(fname, interface='eqdsk'):
     if interface == 'eqdsk':
