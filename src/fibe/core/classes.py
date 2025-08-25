@@ -267,7 +267,7 @@ class FixedBoundaryEquilibrium():
             self._data['simagx'] = bisplev(r, z, self._fit['psi_rz']['tck'])
 
 
-    def find_x_points(self, sanitize=True):
+    def find_x_points(self, sanitize=False):
 
         self.save_original_data(['xpoints'])
 
