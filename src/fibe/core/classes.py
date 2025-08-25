@@ -188,19 +188,19 @@ class FixedBoundaryEquilibrium():
         self._data['sibdry'] = 0.0
         self.find_magnetic_axis()
         self.compute_normalized_psi_map()
+        self.create_boundary_splines()
 
 
     def initialize_current(self):
-        ff, pp = self.compute_f_and_p_grid(self._data['xpsi'])
+        self._data['curscale'] = 1.0
+        ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'])
         self._data['cur'] = compute_jtor(
             self._data['inout'],
             self._data['rpsi'].ravel(),
-            ff.ravel(),
+            ffp.ravel(),
             pp.ravel()
         )
-        self._data['curscale'] = 1.0
         self._data['cpasma'] = float(np.sum(self._data['cur']) * self._data['hrz'])
-        self.create_boundary_splines()
 
 
     def define_pressure_profile(self, pressure, psinorm=None, smooth=True):
@@ -229,14 +229,24 @@ class FixedBoundaryEquilibrium():
             self._data['qpsi'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['qpsi_fs']['tck'])
 
 
+    def define_current(self, cpasma):
+        if isinstance(cpasma, (float, int)):
+            if 'inout' not in self._data:
+                self.create_finite_difference_grid()
+            self._data['cpasma'] = float(cpasma)
+            self._data['curscale'] = 1.0
+            self._data['cur'] = np.where(self._data['inout'] == 0, 0.0, self._data['cpasma'] / self._data['hrz'])
+
+
     def define_f_and_pressure_profiles(self, f, pressure, psinorm=None, smooth=True):
         self.define_f_profile(f, psinorm=psinorm, smooth=smooth)
         self.define_pressure_profile(pressure, psinorm=psinorm, smooth=smooth)
 
 
-    def define_pressure_and_q_profiles(self, pressure, q, psinorm=None, smooth=True):
+    def define_pressure_and_q_profiles(self, pressure, q, ip, psinorm=None, smooth=True):
         self.define_pressure_profile(pressure, psinorm=psinorm, smooth=smooth)
         self.define_q_profile(q, psinorm=psinorm, smooth=smooth)
+        self.define_current(ip)
 
 
     def compute_normalized_psi_map(self):
@@ -361,7 +371,6 @@ class FixedBoundaryEquilibrium():
 
     def create_finite_difference_grid(self):
         '''Setup the grid and compute the differences matrix.'''
-
         self.create_grid_basis_vectors()
         self._data.update(
             generate_finite_difference_grid(self._data['rvec'], self._data['zvec'], self._data['rbdry'], self._data['zbdry'])
@@ -661,7 +670,8 @@ class FixedBoundaryEquilibrium():
         self.create_grid_basis_meshes()
         self.compute_normalized_psi_map()
         self.zero_psi_outside_boundary()
-        self._data['cur'] = np.where(self._data['inout'] == 0, 0.0, self._data['cpasma'])
+        if 'cur' not in self._data:
+            self.define_current(self._data['cpasma'])
         for n in range(self._options['nxiter']):
             ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'])
             self._data['cur'] = compute_jtor(
