@@ -34,6 +34,7 @@ from .math import (
     compute_psi_extension,
     compute_flux_surface_quantities,
     compute_safety_factor_contour_integral,
+    compute_f_from_safety_factor_and_contour,
     trace_contours_with_contourpy,
     trace_contour_with_splines,
     compute_adjusted_contour_resolution,
@@ -92,7 +93,8 @@ class FixedBoundaryEquilibrium():
         self._data = {}
         self._fit = {}
         self.solver = None
-        self.error = None
+        self.psi_error = None
+        self.q_error = None
         self.converged = None
         self._options = {
             'nxiter': 50,
@@ -219,9 +221,22 @@ class FixedBoundaryEquilibrium():
             self._data['ffprime'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['fpol_fs']['tck'], der=1) * self._data['fpol']
 
 
+    def define_q_profile(self, q, psinorm=None, smooth=True):
+        if isinstance(q, (list, tuple, np.ndarray)) and len(q) > 0:
+            self.save_original_data(['qpsi'])
+            q_new = np.array(q).flatten()
+            self._fit['qpsi_fs'] = generate_bounded_1d_spline(qpsi, xnorm=psinorm, symmetrical=True, smooth=smooth)
+            self._data['qpsi'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['qpsi_fs']['tck'])
+
+
     def define_f_and_pressure_profiles(self, f, pressure, psinorm=None, smooth=True):
         self.define_f_profile(f, psinorm=psinorm, smooth=smooth)
         self.define_pressure_profile(pressure, psinorm=psinorm, smooth=smooth)
+
+
+    def define_pressure_and_q_profiles(self, pressure, q, psinorm=None, smooth=True):
+        self.define_pressure_profile(pressure, psinorm=psinorm, smooth=smooth)
+        self.define_q_profile(q, psinorm=psinorm, smooth=smooth)
 
 
     def compute_normalized_psi_map(self):
@@ -666,7 +681,7 @@ class FixedBoundaryEquilibrium():
             self.zero_magnetic_boundary()
             self.compute_normalized_psi_map()
             #if self.nxiter < 0:
-            #    print('max(psiNew-psiOld)/max(psiNew) = %8.2e'%(error))
+            #    print('max(psiNew-psiOld)/max(psiNew) = %8.2e'%(psi_error))
             if psi_error <= self._options['erreq']: break
         self.rescale_kinetic_profiles()
         self.extend_psi_beyond_boundary()
@@ -675,12 +690,12 @@ class FixedBoundaryEquilibrium():
         self.find_magnetic_axis()
         self.recompute_q_profile_from_scratch()
 
-        self.error = psi_error
+        self.psi_error = psi_error
         if n + 1 == self._options['nxiter']:
-            #print ('Failed to converge after %i iterations with error = %8.2e. Time = %6.1f S'%(abs_nxiter,error,t0))
+            #print ('Failed to converge after %i iterations with error = %8.2e'%(abs_nxiter,psi_error))
             self.converged = False
         else:
-            #print ('Converged after %i iterations with error = %8.2e. Time = %6.1f S'%(n+1,error,t0))
+            #print ('Converged after %i iterations with error = %8.2e'%(n+1,psi_error))
             self.converged = True
 
         if self.solver is not None:
@@ -694,13 +709,50 @@ class FixedBoundaryEquilibrium():
         self,
         nxqiter=50,
         errq=1.0e-3,
+        relaxq=1.0,
         nxiter=50,
         erreq=1.0e-8,
         relax=1.0,
         relaxj=1.0,
     ):
-        # TODO: Compute F using q and fs, iterate until q convergence
-        self.solve_psi(nxiter=nxiter, erreq=erreq, relax=relax, relaxj=relaxj)
+
+        self.save_original_data(['qpsi', 'fpol', 'ffprime'])
+        self._data['qpsi_target'] = copy.deepcopy(self._data['qpsi'])
+
+        if isinstance(nxqiter, int):
+            self._options['nxqiter'] = abs(nxqiter)
+        if isinstance(errq, float):
+            self._options['errq'] = errq
+        if isinstance(relaxq, float):
+            self._options['relaxq'] = relaxq
+
+        self.recompute_q_profile_from_scratch()
+        for n in range(self._options['nxqiter']):
+            q_old = copy.deepcopy(self._data['qpsi'])
+            psinorm = np.linspace(0.0, 1.0, self._data['nr'])
+            f = np.zeros_like(psinorm)
+            for i, (level, contour) in enumerate(self._fs.items()):
+                if level != self._data['simagx']:
+                    f[i] = compute_f_from_safety_factor_and_contour(self._data['qpsi'][i], contour)
+            self.define_f_profile(f[1:], psinorm=psinorm[1:] symmetrical=True, smooth=True)
+            self.solve_psi(nxiter=nxiter, erreq=erreq, relax=relax, relaxj=relaxj)
+            # TODO: Fix this error to modify F in the direction of q error reduction
+            q_new, q_error = compute_q(
+                self._data['qpsi'],
+                q_old,
+                self._data['qpsi_target'],
+                relax=self._options['relaxq'],
+            )
+            self._data['qpsi'] = copy.deepcopy(q_new)
+            if q_error <= self._options['errq']: break
+
+        self.q_error = q_error
+        if n + 1 == self._options['nxqiter']:
+            #print ('Failed to converge after %i iterations with error = %8.2e'%(abs_nxqiter,q_error))
+            self.converged = False
+        else:
+            #print ('Converged after %i iterations with error = %8.2e'%(n+1,q_error))
+            self.converged = True
 
 
     def check_psi_solution(self):

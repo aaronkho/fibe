@@ -317,6 +317,14 @@ def compute_psi(solver, s5, current, flat_psi_old, relax=1.0):
     return flat_psi_new, flat_psi_error
 
 
+def compare_q(q, q_old, q_target, relax=1.0):
+    q_new = copy.deepcopy(q)
+    if relax != 1.0:
+        q_new = q_old + relax * (q_new - q_old)
+    q_error = np.nanmax(np.abs(q_target - q_new) / np.nanmax(np.abs(q_target)))
+    return q_new, q_error
+
+
 def compute_finite_difference_matrix(nr, nz, s1, s2, s3, s4):
     # FULL DIFFERENCE MATRIX FOR SPARSE MATRIX INVERSION OR SOLUTION
     data = np.array([np.ones((nr * nz, )), -s1, -s2, -s3, -s4])
@@ -958,13 +966,26 @@ def compute_safety_factor_contour_integral(contour):
     if contour.get('r', np.array([])).size > 1:
         dl = np.sqrt(np.square(np.diff(contour['r'])) + np.square(np.diff(contour['z']))).flatten()
         rcm = 0.5 * (contour['r'][1:] + contour['r'][:-1]).flatten()
-        zcm = 0.5 * (contour['z'][1:] + contour['z'][:-1]).flatten()
+        #zcm = 0.5 * (contour['z'][1:] + contour['z'][:-1]).flatten()
         bpm = 0.5 * (contour['bpol'][1:] + contour['bpol'][:-1]).flatten()
-        btm = 0.5 * (contour['btor'][1:] + contour['btor'][:-1]).flatten()
+        #btm = 0.5 * (contour['btor'][1:] + contour['btor'][:-1]).flatten()
         dl_over_bp = dl / bpm
         vp = np.sum(dl_over_bp)
         rm2 = np.sum(dl_over_bp / np.square(rcm)) / vp
         val = contour['fpol'].item() * vp * rm2 / (2.0 * np.pi)
+    return val
+
+
+def compute_f_from_safety_factor_and_contour(q, contour):
+    val = 0.0
+    if contour.get('r', np.array([])).size > 1:
+        dl = np.sqrt(np.square(np.diff(contour['r'])) + np.square(np.diff(contour['z']))).flatten()
+        rcm = 0.5 * (contour['r'][1:] + contour['r'][:-1]).flatten()
+        bpm = 0.5 * (contour['bpol'][1:] + contour['bpol'][:-1]).flatten()
+        dl_over_bp = dl / bpm
+        vp = np.sum(dl_over_bp)
+        rm2 = np.sum(dl_over_bp / np.square(rcm)) / vp
+        val = 2.0 * np.pi * q / (vp * rm2)
     return val
 
 
