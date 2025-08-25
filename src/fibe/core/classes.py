@@ -188,6 +188,9 @@ class FixedBoundaryEquilibrium():
         self._data['sibdry'] = 0.0
         self.find_magnetic_axis()
         self.compute_normalized_psi_map()
+
+
+    def initialize_current(self):
         ff, pp = self.compute_f_and_p_grid(self._data['xpsi'])
         self._data['cur'] = compute_jtor(
             self._data['inout'],
@@ -195,12 +198,9 @@ class FixedBoundaryEquilibrium():
             ff.ravel(),
             pp.ravel()
         )
-        #self._data['curscale'] = self._data['cpasma'] / (np.sum(self._data['cur']) * self._data['hrz'])
         self._data['curscale'] = 1.0
         self._data['cpasma'] = float(np.sum(self._data['cur']) * self._data['hrz'])
-        #self._data['cur'] *= self._data['curscale']
         self.create_boundary_splines()
-        #self.recompute_q_profile_from_scratch()
 
 
     def define_pressure_profile(self, pressure, psinorm=None, smooth=True):
@@ -457,18 +457,22 @@ class FixedBoundaryEquilibrium():
         self.recompute_q_profile()
 
 
-    def compute_f_and_p_grid(self, psinorm):
+    def compute_ffprime_and_pprime_grid(self, psinorm):
         '''Function to compute current density from R and psiN'''
-        ff = np.zeros(psinorm.shape)
-        pp = np.zeros(psinorm.shape)
-        if 'ffprime' in self._fit:
-            ff = splev(psinorm, self._fit['ffprime']['tck'])
-        else:
-            ff = np.interp(psinorm, np.linspace(0.0, 1.0, self._data['fpol'].size), self._data['fpol'])
-        if 'pprime' in self._fit:
-            pp = splev(psinorm, self._fit['pprime']['tck'])
-        else:
-            pp = np.interp(psinorm, np.linspace(0.0, 1.0, self._data['pres'].size), self._data['pres'])
+        ff = np.zeros_like(psinorm)
+        pp = np.zeros_like(psinorm)
+        #if 'ffprime_fs' in self._fit:
+        #    ff = splev(psinorm, self._fit['ffprime_fs']['tck'])
+        if 'fpol_fs' in self._fit:
+            ff = splev(psinorm, self._fit['fpol_fs']['tck'], der=1) * splev(psinorm, self._fit['fpol_fs']['tck'])
+        elif 'ffprime' in self._data:
+            ff = np.interp(psinorm, np.linspace(0.0, 1.0, self._data['ffprime'].size), self._data['ffprime'])
+        #if 'pprime_fs' in self._fit:
+        #    pp = splev(psinorm, self._fit['pprime_fs']['tck'])
+        if 'pres_fs' in self._fit:
+            pp = splev(psinorm, self._fit['pres_fs']['tck'], der=1)
+        elif 'pprime' in self._data:
+            pp = np.interp(psinorm, np.linspace(0.0, 1.0, self._data['pprime'].size), self._data['pprime'])
         return ff, pp
 
 
@@ -483,6 +487,7 @@ class FixedBoundaryEquilibrium():
                 self._data['fpol'] *= np.sign(self._data['curscale']) * np.sqrt(np.abs(self._data['curscale']))
             if 'pres' in self._data:
                 self._data['pres'] *= self._data['curscale']
+            # TODO: Rescale spline fits for these profiles too
 
 
     def create_boundary_gradient_splines(self, tol=1.0e-6):
@@ -658,11 +663,11 @@ class FixedBoundaryEquilibrium():
         self.zero_psi_outside_boundary()
         self._data['cur'] = np.where(self._data['inout'] == 0, 0.0, self._data['cpasma'])
         for n in range(self._options['nxiter']):
-            ff, pp = self.compute_f_and_p_grid(self._data['xpsi'])
+            ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'])
             self._data['cur'] = compute_jtor(
                 self._data['inout'],
                 self._data['rpsi'].ravel(),
-                ff.ravel(),
+                ffp.ravel(),
                 pp.ravel(),
                 self._data['cur'],
                 relax=self._options['relaxj'] if n > 0 else 1.0
@@ -734,7 +739,7 @@ class FixedBoundaryEquilibrium():
             for i, (level, contour) in enumerate(self._fs.items()):
                 if level != self._data['simagx']:
                     f[i] = compute_f_from_safety_factor_and_contour(self._data['qpsi'][i], contour)
-            self.define_f_profile(f[1:], psinorm=psinorm[1:] symmetrical=True, smooth=True)
+            self.define_f_profile(f[1:], psinorm=psinorm[1:], symmetrical=True, smooth=True)
             self.solve_psi(nxiter=nxiter, erreq=erreq, relax=relax, relaxj=relaxj)
             # TODO: Fix this error to modify F in the direction of q error reduction
             q_new, q_error = compute_q(
