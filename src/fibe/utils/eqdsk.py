@@ -5,6 +5,7 @@ from typing import Any, Final, Self
 from collections.abc import MutableMapping, Mapping, MutableSequence, Sequence, Iterable
 import numpy as np
 from eqdsk import EQDSKInterface
+from megpy import Equilibrium
 
 
 logger = logging.getLogger('fibe')
@@ -51,18 +52,51 @@ eqdsk_package_field_map = {
     'coil_names': None,
     'coil_types': None,
 }
+megpy_package_field_map = {
+    'case': 'gcase',
+    'idum': 'gid',
+    'nw': 'nr',
+    'nh': 'nz',
+    'rdim': 'rdim',
+    'zdim': 'zdim',
+    'rcentr': 'rcentr',
+    'rleft': 'rleft',
+    'zmid': 'zmid',
+    'rmaxis': 'rmagx',
+    'zmaxis': 'zmagx',
+    'simag': 'simagx',
+    'sibry': 'sibdry',
+    'bcentr': 'bcentr',
+    'current': 'cpasma',
+    'fpol': 'fpol',
+    'pres': 'pres',
+    'ffprim': 'ffprime',
+    'pprime': 'pprime',
+    'psirz': 'psi',
+    'qpsi': 'qpsi',
+    'nbbbs': 'nbdry',
+    'rbbbs': 'rbdry',
+    'zbbbs': 'zbdry',
+    'limitr': 'nlim',
+    'rlim': 'rlim',
+    'zlim': 'zlim',
+}
 
 
-def read_geqdsk_file(fname, interface='eqdsk'):
+def read_geqdsk_file(fname, interface='megpy'):
     if interface == 'eqdsk':
         return read_geqdsk_file_eqdsk(fname)
+    elif interface == 'megpy':
+        return read_geqdsk_file_megpy(fname)
     else:
         return read_geqdsk_file_fibe(fname)
 
 
-def write_geqdsk_file(fname, datadict, interface='eqdsk'):
+def write_geqdsk_file(fname, datadict, interface='megpy'):
     if interface == 'eqdsk':
         write_geqdsk_file_eqdsk(fname, datadict)
+    elif interface == 'megpy':
+        write_geqdsk_file_megpy(fname, datadict)
     else:
         write_geqdsk_file_fibe(fname, **datadict)
 
@@ -92,6 +126,21 @@ def write_geqdsk_file_eqdsk(fname, datadict):
     eqdsk_obj = EQDSKInterface(**eq)
     eqdsk_obj.write(fname, 'geqdsk', strict_spec=True)
     pkg_logger.setLevel(orig_level)
+
+
+def read_geqdsk_file_megpy(fname):
+    megpy_obj = Equilibrium()
+    megpy_obj.read_geqdsk(fname)
+    megpy_dict = megpy_obj.raw
+    eq = {nk: copy.deepcopy(megpy_dict[k]) for k, nk in megpy_package_field_map.items() if k in megpy_dict and isinstance(nk, str)}
+    return eq
+
+
+def write_geqdsk_file_megpy(fname, datadict):
+    eq = {k: copy.deepcopy(datadict[nk]) for k, nk in megpy_package_field_map.items() if isinstance(nk, str) and nk in datadict}
+    megpy_obj = Equilibrium()
+    megpy_obj.raw = eq
+    megpy_obj.write_geqdsk(fname)
 
 
 def read_geqdsk_file_fibe(fname):
