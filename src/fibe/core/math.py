@@ -17,27 +17,31 @@ from shapely import Point, Polygon
 
 
 def generate_bounded_1d_spline(y, xnorm=None, symmetrical=True, smooth=False):
-    w = 100.0 / y if smooth else None
-    xn = np.linspace(0.0, 1.0, len(y))
-    if isinstance(xnorm, np.ndarray) and len(xnorm) == len(y):
+    yn = copy.deepcopy(y)
+    w = 1000.0 / yn if smooth else None  # Should this be made user-configurable?
+    xn = np.linspace(0.0, 1.0, len(yn))
+    if isinstance(xnorm, np.ndarray) and len(xnorm) == len(yn):
         xn = copy.deepcopy(xnorm)
     b = (0.0, 1.0)
     xn_mirror = []
-    y_mirror = []
+    yn_mirror = []
     w_mirror = [] if w is not None else None
     if symmetrical:
         b = (-1.0, 1.0)
         xn_mirror = -xn[::-1]
-        y_mirror = y[::-1]
+        yn_mirror = yn[::-1]
         w_mirror = w[::-1] if w is not None else None
         if np.isclose(xn[0], xn_mirror[-1]):
+            #xn = xn[1:]
+            #yn = yn[1:]
+            #w = w[1:] if w is not None else None
             xn_mirror = xn_mirror[:-1]
-            y_mirror = y_mirror[:-1]
+            yn_mirror = yn_mirror[:-1]
             w_mirror = w_mirror[:-1] if w_mirror is not None else None
     xn_fit = np.concatenate([xn_mirror, xn])
-    y_fit = np.concatenate([y_mirror, y])
+    yn_fit = np.concatenate([yn_mirror, yn])
     w_fit = np.concatenate([w_mirror, w]) if w is not None else None
-    return {'tck': splrep(xn_fit, y_fit, w_fit, xb=b[0], xe=b[-1], k=3, quiet=1), 'bounds': b}
+    return {'tck': splrep(xn_fit, yn_fit, w_fit, xb=b[0], xe=b[-1], k=3, quiet=1), 'bounds': b}
 
 
 def generate_2d_spline(x, y, z):

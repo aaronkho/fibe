@@ -430,6 +430,7 @@ class FixedBoundaryEquilibrium():
         zmin=None,
         zmax=None,
         optimal=False,
+        smooth=False,
     ):
         '''Setup a new grid and map psi from an existing grid.'''
 
@@ -462,23 +463,31 @@ class FixedBoundaryEquilibrium():
         self.make_solver()
 
         self._data['psi'] = bisplev(self._data['rvec'], self._data['zvec'], self._fit['psi_rz']['tck']).T
-        self.recompute_pressure_profile()
-        self.recompute_f_profile()
-        self.recompute_q_profile()
+        self.recompute_pressure_profile(smooth=smooth)
+        self.recompute_f_profile(smooth=smooth)
+        self.recompute_q_profile(smooth=smooth)
 
 
-    def compute_ffprime_and_pprime_grid(self, psinorm):
+    def compute_ffprime_and_pprime_grid(self, psinorm, internal_cutoff=0.01):
         dpsinorm_dpsi = 1.0 / (self._data['sibdry'] - self._data['simagx'])
         ffp = np.zeros_like(psinorm)
         pp = np.zeros_like(psinorm)
         if 'fpol_fs' in self._fit:
+            ffp_internal = splev(internal_cutoff, self._fit['fpol_fs']['tck'], der=1) * splev(internal_cutoff, self._fit['fpol_fs']['tck']) * dpsinorm_dpsi
             ffp = splev(psinorm, self._fit['fpol_fs']['tck'], der=1) * splev(psinorm, self._fit['fpol_fs']['tck']) * dpsinorm_dpsi
+            ffp = np.where(psinorm < internal_cutoff, float(ffp_internal), ffp)
         elif 'ffprime' in self._data:
+            ffp_internal = np.interp(internal_cutoff, np.linspace(0.0, 1.0, self._data['ffprime'].size), self._data['ffprime']) * dpsinorm_dpsi
             ffp = np.interp(psinorm, np.linspace(0.0, 1.0, self._data['ffprime'].size), self._data['ffprime']) * dpsinorm_dpsi
+            ffp = np.where(psinorm < internal_cutoff, float(ffp_internal), ffp)
         if 'pres_fs' in self._fit:
+            pp_internal = splev(internal_cutoff, self._fit['pres_fs']['tck'], der=1) * dpsinorm_dpsi
             pp = splev(psinorm, self._fit['pres_fs']['tck'], der=1) * dpsinorm_dpsi
+            pp = np.where(psinorm < internal_cutoff, float(pp_internal), pp)
         elif 'pprime' in self._data:
+            pp_internal = np.interp(internal_cutoff, np.linspace(0.0, 1.0, self._data['pprime'].size), self._data['pprime']) * dpsinorm_dpsi
             pp = np.interp(psinorm, np.linspace(0.0, 1.0, self._data['pprime'].size), self._data['pprime']) * dpsinorm_dpsi
+            pp = np.where(psinorm < internal_cutoff, float(pp_internal), pp)
         return ffp, pp
 
 
@@ -600,12 +609,12 @@ class FixedBoundaryEquilibrium():
         return fine_contours
 
 
-    def recompute_pressure_profile(self):
-        self.define_pressure_profile(self._data['pres'], smooth=False)
+    def recompute_pressure_profile(self, smooth=False):
+        self.define_pressure_profile(self._data['pres'], smooth=smooth)
 
 
-    def recompute_f_profile(self):
-        self.define_f_profile(self._data['fpol'], smooth=False)
+    def recompute_f_profile(self, smooth=False):
+        self.define_f_profile(self._data['fpol'], smooth=smooth)
 
 
     def recompute_q_profile(self, smooth=False):
@@ -624,7 +633,7 @@ class FixedBoundaryEquilibrium():
         qpsi = np.zeros((len(self._fs), ), dtype=float)
         for i, (level, contour) in enumerate(self._fs.items()):
             psinorm[i] = (level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
-            qpsi[i] = compute_safety_factor_contour_integral(contour)
+            qpsi[i] = np.sign(self._data['cpasma']) * compute_safety_factor_contour_integral(contour)
         qpsi[0] = 2.0 * qpsi[1] - qpsi[2]  # Linear interpolation to axis
         self._fit['qpsi_fs'] = generate_bounded_1d_spline(qpsi, xnorm=psinorm, symmetrical=True, smooth=False)
         self._data['qpsi'] = qpsi
@@ -649,6 +658,7 @@ class FixedBoundaryEquilibrium():
         erreq=1.0e-8, # Convergence criteria in eq loop max(psiNew-psiOld)/max(psiNew) <= erreq: recommend 1.e-8
         relax=1.0,    # Relaxation parameter in psi correction in eq loop: recommend 1.0
         relaxj=1.0,   # Relaxation parameter in j correction in eq loop: recommend 1.0
+        pnaxis=None,  # Normalized psi below which to apply j modification: recommend None (auto)
     ):
         '''RUN THE EQ SOLVER'''
 
@@ -662,6 +672,10 @@ class FixedBoundaryEquilibrium():
             self._options['relax'] = relax
         if isinstance(relaxj, float):
             self._options['relaxj'] = relaxj
+        if isinstance(pnaxis, float):
+            self._options['pnaxis'] = pnaxis
+        else:
+            self._options['pnaxis'] = 1.0 / float(self._data['nr_orig']) if 'nr_orig' in self._data else 1.0 / float(self._data['nr'])
 
         # INITIAL CURRENT PROFILE
         self.create_grid_basis_meshes()
@@ -670,7 +684,7 @@ class FixedBoundaryEquilibrium():
         if 'cur' not in self._data:
             self.define_current(self._data['cpasma'])
         for n in range(self._options['nxiter']):
-            ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'])
+            ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
             self._data['cur'] = compute_jtor(
                 self._data['inout'],
                 self._data['rpsi'].ravel(),
@@ -726,6 +740,7 @@ class FixedBoundaryEquilibrium():
         erreq=1.0e-8,
         relax=1.0,
         relaxj=1.0,
+        pnaxis=None,
     ):
 
         self.save_original_data(['qpsi', 'fpol', 'ffprime'])
@@ -750,7 +765,7 @@ class FixedBoundaryEquilibrium():
                     f[i] = compute_f_from_safety_factor_and_contour(self._data['qpsi'][i], contour)
             #f *= np.sign(self._data['curscale']) * np.sqrt(np.abs(self._data['curscale']))
             self.define_f_profile(f[1:], psinorm=psinorm[1:], smooth=True)
-            self.solve_psi(nxiter=nxiter, erreq=erreq, relax=relax, relaxj=relaxj)
+            self.solve_psi(nxiter=nxiter, erreq=erreq, relax=relax, relaxj=relaxj, pnaxis=pnaxis)
             # TODO: Fix this error to modify F in the direction of q error reduction
             q_new, q_error = compare_q(
                 self._data['qpsi'],
@@ -996,6 +1011,46 @@ class FixedBoundaryEquilibrium():
             ax.set_ylim(zmin, zmax)
             ax.set_xlabel('R [m]')
             ax.set_ylabel('Z [m]')
+            fig.tight_layout()
+            if isinstance(save, (str, Path)):
+                fig.savefig(save, dpi=100)
+            plt.show()
+            plt.close(fig)
+
+
+    def plot_profiles(self, save=None):
+        if 'fpol' in self._data and 'pres' in self._data:
+            import matplotlib.pyplot as plt
+            fig = plt.figure(figsize=(12, 6))
+            ax1 = fig.add_subplot(121)
+            ax2 = fig.add_subplot(122)
+            psinorm = np.linspace(0.0, 1.0, self._data['nr'])
+            f_factor = np.sign(self._data['bcentr'])
+            p_factor = 1.0e-5
+            q_factor = np.sign(self._data['bcentr'] * self._data['cpasma'])
+            ax1.plot(psinorm, f_factor * self._data['fpol'], c='b', label='F')
+            if 'ffprime' in self._data:
+                ax2.plot(psinorm, f_factor * self._data['ffprime'] / self._data['fpol'], c='b', label='Fp')
+            if 'fpol_fs' in self._fit:
+                ax1.plot(psinorm, f_factor * splev(psinorm, self._fit['fpol_fs']['tck']), c='b', ls='--', label='F Fit')
+                ax2.plot(psinorm, f_factor * splev(psinorm, self._fit['fpol_fs']['tck'], der=1), c='b', ls='--', label='Fp Fit')
+            ax1.plot(psinorm, p_factor * self._data['pres'], c='r', label='p')
+            if 'pprime' in self._data:
+                ax2.plot(psinorm, p_factor * self._data['pprime'], c='r', label='pp')
+            if 'pres_fs' in self._fit:
+                ax1.plot(psinorm, p_factor * splev(psinorm, self._fit['pres_fs']['tck']), c='r', ls='--', label='p Fit')
+                ax2.plot(psinorm, p_factor * splev(psinorm, self._fit['pres_fs']['tck'], der=1), c='r', ls='--', label='pp Fit')
+            if 'qpsi' in self._data:
+                ax1.plot(psinorm, q_factor * self._data['qpsi'], c='g', label='q')
+                if 'qpsi_fs' in self._fit:
+                    ax1.plot(psinorm, q_factor * splev(psinorm, self._fit['qpsi_fs']['tck']), c='g', ls='--', label='q Fit')
+                    ax2.plot(psinorm, q_factor * splev(psinorm, self._fit['qpsi_fs']['tck'], der=1), c='g', ls='--', label='qp Fit')
+            ax1.set_xlim(0.0, 1.0)
+            ax1.set_xlabel('psi_norm [-]')
+            ax1.set_ylabel('Profiles')
+            ax2.set_xlim(0.0, 1.0)
+            ax2.set_xlabel('psi_norm [-]')
+            ax2.set_ylabel('Gradients')
             fig.tight_layout()
             if isinstance(save, (str, Path)):
                 fig.savefig(save, dpi=100)
