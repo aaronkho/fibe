@@ -195,7 +195,7 @@ def generate_finite_difference_grid(rvec, zvec, rbdry, zbdry):
     ss4.put(ijin, hzm2)
     ss5 = copy.deepcopy(ss4)
     ss6 = np.where(inout, mu0 * rpsi.ravel(), 0.0)
-        
+
     a1 = np.ones((nrz, ))
     a2 = np.ones((nrz, ))
     b1 = np.ones((nrz, ))
@@ -299,27 +299,29 @@ def generate_finite_difference_grid(rvec, zvec, rbdry, zbdry):
     return out
 
 
-def compute_jtor(inout, rpsi, fpol, pressure, flat_current_old=None, relax=1.0):
+def compute_jtor(inout, rpsi, ffprime, pprime, flat_current_old=None, relax=1.0):
     '''Compute current density over grid. Scale to Ip'''
     mu0 = 4.0e-7 * np.pi
-    jtor = -1.0 * (fpol / (mu0 * rpsi) + rpsi * pressure)
+    jtor = ffprime / (mu0 * rpsi) + rpsi * pprime
     flat_current_new = np.where(inout == 0, 0.0, jtor.ravel())
-    if flat_current_old is not None and relax != 1.0:
+    if flat_current_old is not None and relax > 0.0 and relax < 1.0:
         flat_current_new = flat_current_old + relax * (flat_current_new - flat_current_old)
     return flat_current_new
 
 
-def compute_psi(solver, s5, current, flat_psi_old, relax=1.0):
+def compute_psi(solver, s5, current, flat_psi_old=None, relax=1.0):
     flat_psi_new = solver(s5 * current)
-    if relax != 1.0:
-        flat_psi_new = flat_psi_old + relax * (flat_psi_new - flat_psi_old)
-    flat_psi_error = np.nanmax(np.abs(flat_psi_new - flat_psi_old)) / np.nanmax(np.abs(flat_psi_new))
+    flat_psi_error = 0.0
+    if flat_psi_old is not None:
+        if relax > 0.0 and relax < 1.0:
+            flat_psi_new = flat_psi_old + relax * (flat_psi_new - flat_psi_old)
+        flat_psi_error = np.nanmax(np.abs(flat_psi_new - flat_psi_old)) / np.nanmax(np.abs(flat_psi_new))
     return flat_psi_new, flat_psi_error
 
 
-def compare_q(q, q_old, q_target, relax=1.0):
+def compare_q(q, q_target, q_old=None, relax=1.0):
     q_new = copy.deepcopy(q)
-    if relax != 1.0:
+    if q_old is not None and relax > 0.0 and relax < 1.0:
         q_new = q_old + relax * (q_new - q_old)
     q_error = np.nanmax(np.abs(q_target - q_new) / np.nanmax(np.abs(q_target)))
     return q_new, q_error
@@ -757,7 +759,7 @@ def find_extrema_with_taylor_expansion(rvec, zvec, psi):
     )
     delta = arz * arz - arr * azz
     rmax = (azz * ar - arz * az) / delta
-    zmax = (-arz * ar + arr * az) / delta
+    zmax = (arr * az - arz * ar) / delta
 
     j = k // nr
     i = k - j * nr
@@ -768,7 +770,7 @@ def find_extrema_with_taylor_expansion(rvec, zvec, psi):
         rmax * ar + zmax * az + 
         0.5 * arr * rmax**2 + 0.5 * azz * zmax**2 + 
         arz * rmax * zmax
-    )
+    ) * np.sign(psi.ravel()[k])
     return r_extrema, z_extrema, psi_extrema
 
 
