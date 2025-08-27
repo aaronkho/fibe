@@ -129,7 +129,7 @@ def write_geqdsk_file_eqdsk(fname, datadict):
 
 
 def read_geqdsk_file_megpy(fname):
-    megpy_obj = Equilibrium()
+    megpy_obj = Equilibrium(verbose=False)
     megpy_obj.read_geqdsk(fname)
     megpy_dict = megpy_obj.raw
     eq = {nk: copy.deepcopy(megpy_dict[k]) for k, nk in megpy_package_field_map.items() if k in megpy_dict and isinstance(nk, str)}
@@ -138,7 +138,7 @@ def read_geqdsk_file_megpy(fname):
 
 def write_geqdsk_file_megpy(fname, datadict):
     eq = {k: copy.deepcopy(datadict[nk]) for k, nk in megpy_package_field_map.items() if isinstance(nk, str) and nk in datadict}
-    megpy_obj = Equilibrium()
+    megpy_obj = Equilibrium(verbose=False)
     megpy_obj.raw = eq
     megpy_obj.write_geqdsk(fname)
 
@@ -611,3 +611,27 @@ def contours_from_mxh_coefficients(mxh, theta):
     z_contour = z0 + kappa * r * np.sin(theta_ex)
     #theta_ref = arctan2pi(z_contour - z0, r_contour - r0)
     return {'r': r_contour, 'z': z_contour}
+
+
+def trace_contours(eqdsk_data):
+    eq = {k: copy.deepcopy(eqdsk_data[nk]) for k, nk in megpy_package_field_map.items() if isinstance(nk, str) and nk in eqdsk_data}
+    megpy_obj = Equilibrium(verbose=False)
+    megpy_obj.raw = eq
+    megpy_obj = megpy_obj.add_fluxsurfaces(incl_B=True)
+    fs = {}
+    for i, level in enumerate(megpy_obj.fluxsurfaces['psi']):
+        psinorm = (level - megpy_obj.raw['simag']) / (megpy_obj.raw['sibry'] - megpy_obj.raw['simag'])
+        fs[float(psinorm)] = {
+            'r': fs['R'][i].flatten(),
+            'z': fs['Z'][i].flatten(),
+            'fpol': np.array([fs['fpol'][i]]).flatten(),
+            'bpol': fs['Bpol'][i].flatten(),
+            'btor': fs['Btor'][i].flatten(),
+            'b': fs['B'][i].flatten(),
+            'vp': np.array([fs['Vprime'][i]]).flatten(),
+            'rm': np.array([fs['1/R'][i]]).flatten(),
+            'r0': np.array([fs['R0'][i]]).flatten(),
+            'z0': np.array([fs['Z0'][i]]).flatten(),
+        }
+    return dict(sorted(fs.items()))
+

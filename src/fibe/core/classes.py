@@ -8,6 +8,7 @@ import pandas as pd
 from scipy.interpolate import splev, bisplev
 from scipy.sparse.linalg import factorized
 from scipy.optimize import root
+from shapely import Point, Polygon
 
 from .math import (
     generate_bounded_1d_spline,
@@ -46,6 +47,11 @@ from ..utils.eqdsk import (
     detect_cocos,
     convert_cocos,
     contours_from_mxh_coefficients,
+    trace_contours,
+)
+from megpy import (
+    find_null_points,
+    contour,
 )
 
 logger = logging.getLogger('fibe')
@@ -262,7 +268,7 @@ class FixedBoundaryEquilibrium():
         self._fit['psi_rz'] = generate_2d_spline(self._data['rvec'], self._data['zvec'], self._data['psi'].T)
 
 
-    def find_magnetic_axis(self):
+    def old_find_magnetic_axis(self):
 
         self.save_original_data(['simagx', 'rmagx', 'zmagx'])
 
@@ -279,7 +285,7 @@ class FixedBoundaryEquilibrium():
             self._data['simagx'] = float(bisplev(r, z, self._fit['psi_rz']['tck']))
 
 
-    def find_x_points(self, sanitize=False):
+    def old_find_x_points(self, sanitize=False):
 
         self.save_original_data(['xpoints'])
 
@@ -330,6 +336,55 @@ class FixedBoundaryEquilibrium():
         self._data['xpoints'] = xpoints
 
 
+    def find_magnetic_axis(self):
+        self.save_original_data(['simagx', 'rmagx', 'zmagx'])
+        if 'rvec' not in self._data or 'zvec' not in self._data:
+            self.create_grid_basis_vectors()
+        if 'psi_rz' not in self._fit:
+            self.generate_psi_bivariate_spline()
+        nulls = find_null_points(self._data['rvec'], self._data['zvec'], self._data['psi'], level=self._data['simagx'], atol=1.0e-3)
+        if len(nulls['o-points']) > 0:
+            self._data['rmagx'] = float(nulls['o-points'][0][0])
+            self._data['zmagx'] = float(nulls['o-points'][0][1])
+            self._data['simagx'] = float(bisplev(self._data['rmagx'], self._data['zmagx'], self._fit['psi_rz']['tck']))
+
+
+    def find_x_points(self):
+        if 'rvec' not in self._data or 'zvec' not in self._data:
+            self.create_grid_basis_vectors()
+        nulls = find_null_points(self._data['rvec'], self._data['zvec'], self._data['psi'], level=self._data['sibdry'], atol=1.0e-3)
+        self._data['xpoints'] = [np.array(xp) for xp in nulls['x-points']]
+
+
+    def refine_boundary_by_grid_trace(self):
+        if 'rvec' not in self._data or 'zvec' not in self._data:
+            self.create_grid_basis_vectors()
+        axis = np.array([self._data['rmagx'], self._data['zmagx']])
+        loops = contour(
+            self._data['rvec'],
+            self._data['zvec'],
+            self._data['psi'],
+            level=self._data['sibdry'],
+            kind='s',
+            ref_point=axis,
+            x_point=True
+        )
+        point_inside = Point([float(v) for v in axis.tolist()])
+        iloop = None
+        if len(loops) > 0:
+            for i in range(len(loops)):
+                polygon = Polygon(np.array(loops[i]).T)
+                if polygon.contains(point_inside):
+                    iloop = i
+                    break
+        if iloop is not None:
+            boundary = np.array(loops[iloop]).T
+            self._data['rbdry'] = boundary[:, 0].flatten()
+            self._data['zbdry'] = boundary[:, 1].flatten()
+            self._data['nbdry'] = len(self._data['rbdry'])
+            self.enforce_boundary_duplicate_at_end()
+
+
     def create_boundary_splines(self, enforce_concave=False):
 
         self.save_original_fit(['lseg_abdry'])
@@ -337,6 +392,7 @@ class FixedBoundaryEquilibrium():
         if 'xpoints' not in self._data:
             self.find_x_points()
 
+        self.refine_boundary_by_grid_trace()
         splines = generate_boundary_splines(
             self._data['rbdry'],
             self._data['zbdry'],
@@ -628,12 +684,18 @@ class FixedBoundaryEquilibrium():
         self.save_original_data(['qpsi'])
         if self._data['psi'][0, 0] == self._data['psi'][-1, -1] and self._data['psi'][0, -1] == self._data['psi'][-1, 0]:
             self.extend_psi_beyond_boundary()
-        self._fs = self.trace_fine_flux_surfaces()
-        psinorm = np.zeros((len(self._fs), ), dtype=float)
-        qpsi = np.zeros((len(self._fs), ), dtype=float)
+        #self._fs = self.trace_fine_flux_surfaces()
+        #psinorm = np.zeros((len(self._fs), ), dtype=float)
+        #qpsi = np.zeros((len(self._fs), ), dtype=float)
+        #for i, (level, contour) in enumerate(self._fs.items()):
+        #    psinorm[i] = (level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
+        #    qpsi[i] = np.sign(self._data['cpasma']) * compute_safety_factor_contour_integral(contour)
+        self._fs = trace_contours({k: v for k, v in self._data.items() if k in self.geqdsk_fields})
+        psinorm = np.zeros((len(self._fs) + 1, ), dtype=float)
+        qpsi = np.zeros((len(self._fs) + 1, ), dtype=float)
         for i, (level, contour) in enumerate(self._fs.items()):
-            psinorm[i] = (level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
-            qpsi[i] = np.sign(self._data['cpasma']) * compute_safety_factor_contour_integral(contour)
+            psinorm[i + 1] = level
+            qpsi[i + 1] = np.sign(self._data['cpasma']) * compute_safety_factor_contour_integral(contour)
         qpsi[0] = 2.0 * qpsi[1] - qpsi[2]  # Linear interpolation to axis
         self._fit['qpsi_fs'] = generate_bounded_1d_spline(qpsi, xnorm=psinorm, symmetrical=True, smooth=False)
         self._data['qpsi'] = qpsi
@@ -764,7 +826,7 @@ class FixedBoundaryEquilibrium():
                 if level != self._data['simagx']:
                     f[i] = compute_f_from_safety_factor_and_contour(self._data['qpsi'][i], contour)
             #f *= np.sign(self._data['curscale']) * np.sqrt(np.abs(self._data['curscale']))
-            self.define_f_profile(f[1:], psinorm=psinorm[1:], smooth=True)
+            self.define_f_profile(f[1:], psinorm=psinorm[1:], smooth=False)
             self.solve_psi(nxiter=nxiter, erreq=erreq, relax=relax, relaxj=relaxj, pnaxis=pnaxis)
             # TODO: Fix this error to modify F in the direction of q error reduction
             q_new, q_error = compare_q(
