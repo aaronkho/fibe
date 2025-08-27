@@ -14,6 +14,10 @@ from scipy.sparse import spdiags
 from scipy.optimize import brentq
 import contourpy
 from shapely import Point, Polygon
+from megpy import (
+    contour as contour_tracer,
+    find_null_points,
+)
 
 
 def generate_bounded_1d_spline(y, xnorm=None, symmetrical=True, smooth=False):
@@ -1065,6 +1069,29 @@ def trace_contour_with_splines(dmap, level, npoints, rmagx, zmagx, psimagx, psib
     return rc, zc
 
 
+def trace_contour_with_megpy(rvec, zvec, psi, level, rcheck, zcheck):
+    contour_out = {}
+    check = [float(rcheck), float(zcheck)]
+    loops = contour_tracer(
+        rvec,
+        zvec,
+        psi,
+        level=level,
+        kind='s',
+        ref_point=np.array(check),
+        x_point=True
+    )
+    point_inside = Point(check)
+    for i in range(len(loops)):
+        loop = np.array(loops[i]).T
+        polygon = Polygon(loop)
+        if polygon.contains(point_inside):
+            contour_out['r'] = np.concatenate([loop[:, 0].flatten(), np.array([loop[0, 0]])])
+            contour_out['z'] = np.concatenate([loop[:, 1].flatten(), np.array([loop[0, 1]])])
+            break
+    return contour_out
+
+
 def compute_adjusted_contour_resolution(r_axis, z_axis, r_boundary, z_boundary, r_contour, z_contour, maxpoints=51, minpoints=21):
     v_axis = r_axis + 1.0j * z_axis
     v_boundary = r_boundary + 1.0j * z_boundary
@@ -1075,5 +1102,36 @@ def compute_adjusted_contour_resolution(r_axis, z_axis, r_boundary, z_boundary, 
         v_contour = v_contour[np.isfinite(v_contour)]
     lmax_boundary = np.nanmax(np.abs(v_boundary - v_axis))
     lmax_contour = np.nanmax(np.abs(v_contour - v_axis))
-    npoints = min(maxpoints, max(minpoints, int(np.rint(1.2 * float(maxpoints) * lmax_contour / lmax_boundary))))
+    npoints = min(maxpoints, max(minpoints, int(np.rint(1.5 * float(maxpoints) * np.sqrt(lmax_contour / lmax_boundary)))))
     return npoints
+
+
+def compute_mxh_coefficients_from_contours(fs):
+    # Incomplete!
+    r0 = (np.max(fs['r'][:-1]) + np.min(fs['r'][:-1])) / 2
+    z0 = (np.max(fs['z'][:-1]) + np.min(fs['z'][:-1])) / 2
+    r = (np.max(fs['r'][:-1]) - np.min(fs['r'][:-1])) / 2
+    kappa = ((np.max(fs['z'][:-1]) - np.min(fs['z'][:-1])) / 2) / r
+    shape[:4] = [r0, z0, r, kappa]
+    return None
+
+
+def compute_contours_from_mxh_coefficients(mxh, theta):
+    r0 = mxh['r0']
+    z0 = mxh['z0']
+    r = mxh['r']
+    kappa = mxh['kappa']
+    cosc = mxh['cos_coeffs']
+    sinc = mxh['sin_coeffs']
+    if sinc.shape[-1] == (cosc.shape[-1] - 1):
+        sinc = np.concatenate([np.atleast_2d(np.zeros(r0.shape)).T, sinc], axis=-1)
+    theta_ex = np.repeat(np.atleast_2d(theta), r0.shape[0], axis=0)
+    theta_R = copy.deepcopy(theta_ex)
+    for n in range(cosc.shape[-1]):
+        cos_R = cosc[:, n] * np.cos(float(n) * theta_ex)
+        sin_R = sinc[:, n] * np.sin(float(n) * theta_ex)
+        theta_R += cos_R + sin_R
+    r_contour = r0 + r * np.cos(theta_R)
+    z_contour = z0 + kappa * r * np.sin(theta_ex)
+    return {'r': r_contour, 'z': z_contour}
+

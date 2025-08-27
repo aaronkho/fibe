@@ -11,6 +11,7 @@ from scipy.optimize import root
 from shapely import Point, Polygon
 
 from .math import (
+    find_null_points,
     generate_bounded_1d_spline,
     generate_2d_spline,
     generate_optimal_grid,
@@ -39,19 +40,15 @@ from .math import (
     compute_f_from_safety_factor_and_contour,
     trace_contours_with_contourpy,
     trace_contour_with_splines,
+    trace_contour_with_megpy,
     compute_adjusted_contour_resolution,
+    compute_contours_from_mxh_coefficients,
 )
 from ..utils.eqdsk import (
     read_geqdsk_file,
     write_geqdsk_file,
     detect_cocos,
     convert_cocos,
-    contours_from_mxh_coefficients,
-    trace_contours,
-)
-from megpy import (
-    find_null_points,
-    contour,
 )
 
 logger = logging.getLogger('fibe')
@@ -179,7 +176,7 @@ class FixedBoundaryEquilibrium():
                 'cos_coeffs': np.atleast_2d(np.array([cos_coeffs]).flatten()),
                 'sin_coeffs': np.atleast_2d(np.array([sin_coeffs]).flatten()),
             }
-            boundary = contours_from_mxh_coefficients(mxh, theta)
+            boundary = compute_contours_from_mxh_coefficients(mxh, theta)
             self._data['nbdry'] = nbdry
             self._data['rbdry'] = copy.deepcopy(boundary['r'].flatten())
             self._data['zbdry'] = copy.deepcopy(boundary['z'].flatten())
@@ -357,30 +354,23 @@ class FixedBoundaryEquilibrium():
 
 
     def refine_boundary_by_grid_trace(self):
+
         if 'rvec' not in self._data or 'zvec' not in self._data:
             self.create_grid_basis_vectors()
-        axis = np.array([self._data['rmagx'], self._data['zmagx']])
-        loops = contour(
+
+        self.save_original_data(['nbdry', 'rbdry', 'zbdry'])
+
+        boundary = trace_contour_with_megpy(
             self._data['rvec'],
             self._data['zvec'],
             self._data['psi'],
-            level=self._data['sibdry'],
-            kind='s',
-            ref_point=axis,
-            x_point=True
+            self._data['sibdry'],
+            self._data['rmagx'],
+            self._data['zmagx']
         )
-        point_inside = Point([float(v) for v in axis.tolist()])
-        iloop = None
-        if len(loops) > 0:
-            for i in range(len(loops)):
-                polygon = Polygon(np.array(loops[i]).T)
-                if polygon.contains(point_inside):
-                    iloop = i
-                    break
-        if iloop is not None:
-            boundary = np.array(loops[iloop]).T
-            self._data['rbdry'] = boundary[:, 0].flatten()
-            self._data['zbdry'] = boundary[:, 1].flatten()
+        if 'r' in boundary and 'z' in boundary:
+            self._data['rbdry'] = boundary['r']
+            self._data['zbdry'] = boundary['z']
             self._data['nbdry'] = len(self._data['rbdry'])
             self.enforce_boundary_duplicate_at_end()
 
@@ -637,7 +627,7 @@ class FixedBoundaryEquilibrium():
                 self._data['rbdry'],
                 self._data['zbdry'],
                 contours[ll][:, 0],
-                contours[ll][:, 0],
+                contours[ll][:, 1],
                 maxpoints=maxpoints,
                 minpoints=minpoints
             )
@@ -665,6 +655,48 @@ class FixedBoundaryEquilibrium():
         return fine_contours
 
 
+    def trace_flux_surfaces(self):
+        if 'psi_rz' not in self._fit:
+            self.generate_psi_bivariate_spline()
+        if 'fpol_fs' not in self._fit:
+            self.recompute_f_profile()
+        psinorm = np.linspace(0.0, 1.0, self._data['nr'])
+        contours = {}
+        contours[float(self._data['simagx'])] = compute_flux_surface_quantities(
+            psinorm[0],
+            np.array([self._data['rmagx']]),
+            np.array([self._data['zmagx']]),
+            self._fit['psi_rz']['tck'],
+            self._fit['fpol_fs']['tck']
+        )
+        for ll in psinorm[1:-1]:
+            level = ll * (self._data['sibdry'] - self._data['simagx']) + self._data['simagx']
+            contour = trace_contour_with_megpy(
+                self._data['rvec'],
+                self._data['zvec'],
+                self._data['psi'],
+                level,
+                self._data['rmagx'],
+                self._data['zmagx']
+            )
+            if 'r' in contour and 'z' in contour:
+                contours[float(level)] = compute_flux_surface_quantities(
+                    ll,
+                    contour['r'],
+                    contour['z'],
+                    self._fit['psi_rz']['tck'],
+                    self._fit['fpol_fs']['tck']
+                )
+        contours[float(self._data['sibdry'])] = compute_flux_surface_quantities(
+            psinorm[-1],
+            self._data['rbdry'],
+            self._data['zbdry'],
+            self._fit['psi_rz']['tck'],
+            self._fit['fpol_fs']['tck']
+        )
+        return contours
+
+
     def recompute_pressure_profile(self, smooth=False):
         self.define_pressure_profile(self._data['pres'], smooth=smooth)
 
@@ -684,18 +716,13 @@ class FixedBoundaryEquilibrium():
         self.save_original_data(['qpsi'])
         if self._data['psi'][0, 0] == self._data['psi'][-1, -1] and self._data['psi'][0, -1] == self._data['psi'][-1, 0]:
             self.extend_psi_beyond_boundary()
-        #self._fs = self.trace_fine_flux_surfaces()
-        #psinorm = np.zeros((len(self._fs), ), dtype=float)
-        #qpsi = np.zeros((len(self._fs), ), dtype=float)
-        #for i, (level, contour) in enumerate(self._fs.items()):
-        #    psinorm[i] = (level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
-        #    qpsi[i] = np.sign(self._data['cpasma']) * compute_safety_factor_contour_integral(contour)
-        self._fs = trace_contours({k: v for k, v in self._data.items() if k in self.geqdsk_fields})
-        psinorm = np.zeros((len(self._fs) + 1, ), dtype=float)
-        qpsi = np.zeros((len(self._fs) + 1, ), dtype=float)
+        #self._fs = self.trace_fine_flux_surfaces(71, 71)
+        self._fs = self.trace_flux_surfaces()
+        psinorm = np.zeros((len(self._fs), ), dtype=float)
+        qpsi = np.zeros_like(psinorm)
         for i, (level, contour) in enumerate(self._fs.items()):
-            psinorm[i + 1] = level
-            qpsi[i + 1] = np.sign(self._data['cpasma']) * compute_safety_factor_contour_integral(contour)
+            psinorm[i] = (level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
+            qpsi[i] = np.sign(self._data['cpasma']) * compute_safety_factor_contour_integral(contour)
         qpsi[0] = 2.0 * qpsi[1] - qpsi[2]  # Linear interpolation to axis
         self._fit['qpsi_fs'] = generate_bounded_1d_spline(qpsi, xnorm=psinorm, symmetrical=True, smooth=False)
         self._data['qpsi'] = qpsi
@@ -798,7 +825,7 @@ class FixedBoundaryEquilibrium():
         nxqiter=50,
         errq=1.0e-3,
         relaxq=1.0,
-        nxiter=50,
+        nxiter=100,
         erreq=1.0e-8,
         relax=1.0,
         relaxj=1.0,
