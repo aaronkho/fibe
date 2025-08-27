@@ -327,11 +327,16 @@ def compute_psi(solver, s5, current, flat_psi_old=None, relax=1.0):
     return flat_psi_new, flat_psi_error
 
 
-def compare_q(q, q_target, q_old=None, relax=1.0):
+def compare_q(q, q_target, q_old=None, relax=1.0, drop_first=False, drop_last=False):
     q_new = copy.deepcopy(q)
     if q_old is not None and relax > 0.0 and relax < 1.0:
         q_new = q_old + relax * (q_new - q_old)
-    q_error = np.nanmax(np.abs(q_target - q_new) / np.nanmax(np.abs(q_target)))
+    q_errorvec = np.abs(q_target - q_new) / np.abs(q_target)
+    if drop_first:
+        q_errorvec = q_errorvec[1:]
+    if drop_last:
+        q_errorvec = q_errorvec[:-1]
+    q_error = np.nanmax(q_errorvec)
     return q_new, q_error
 
 

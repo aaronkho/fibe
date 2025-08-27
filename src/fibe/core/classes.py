@@ -712,7 +712,7 @@ class FixedBoundaryEquilibrium():
         self._data['qpsi'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['qpsi_fs']['tck'])
 
 
-    def recompute_q_profile_from_scratch(self):
+    def recompute_q_profile_from_scratch(self, approximate_lcfs=False):
         self.save_original_data(['qpsi'])
         if self._data['psi'][0, 0] == self._data['psi'][-1, -1] and self._data['psi'][0, -1] == self._data['psi'][-1, 0]:
             self.extend_psi_beyond_boundary()
@@ -724,6 +724,8 @@ class FixedBoundaryEquilibrium():
             psinorm[i] = (level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
             qpsi[i] = np.sign(self._data['cpasma']) * compute_safety_factor_contour_integral(contour)
         qpsi[0] = 2.0 * qpsi[1] - qpsi[2]  # Linear interpolation to axis
+        if approximate_lcfs:
+            qpsi[-1] = qpsi[-2] + 2.0 * (qpsi[-2] - qpsi[-3])  # Linear interpolation to separatrix with increased slope
         self._fit['qpsi_fs'] = generate_bounded_1d_spline(qpsi, xnorm=psinorm, symmetrical=True, smooth=False)
         self._data['qpsi'] = qpsi
 
@@ -748,6 +750,7 @@ class FixedBoundaryEquilibrium():
         relax=1.0,    # Relaxation parameter in psi correction in eq loop: recommend 1.0
         relaxj=1.0,   # Relaxation parameter in j correction in eq loop: recommend 1.0
         pnaxis=None,  # Normalized psi below which to apply j modification: recommend None (auto)
+        approxq=False,
     ):
         '''RUN THE EQ SOLVER'''
 
@@ -803,7 +806,7 @@ class FixedBoundaryEquilibrium():
         self.normalize_psi_to_original()
         self.generate_psi_bivariate_spline()
         self.find_magnetic_axis()
-        self.recompute_q_profile_from_scratch()
+        self.recompute_q_profile_from_scratch(approximate_lcfs=approxq)
 
         self.psi_error = psi_error
         if n + 1 == self._options['nxiter']:
@@ -851,7 +854,7 @@ class FixedBoundaryEquilibrium():
             f = np.zeros_like(psinorm)
             for i, (level, contour) in enumerate(self._fs.items()):
                 if level != self._data['simagx']:
-                    f[i] = compute_f_from_safety_factor_and_contour(self._data['qpsi'][i], contour)
+                    f[i] = np.sign(self._data['cpasma']) * compute_f_from_safety_factor_and_contour(self._data['qpsi'][i], contour)
             #f *= np.sign(self._data['curscale']) * np.sqrt(np.abs(self._data['curscale']))
             self.define_f_profile(f[1:], psinorm=psinorm[1:], smooth=False)
             self.solve_psi(nxiter=nxiter, erreq=erreq, relax=relax, relaxj=relaxj, pnaxis=pnaxis)
@@ -861,7 +864,9 @@ class FixedBoundaryEquilibrium():
                 q_old,
                 self._data['qpsi_target'],
                 relax=self._options['relaxq'],
+                drop_last=True
             )
+            print(q_error, self._data['fpol'][0], self._data['fpol'][-1])
             self._data['qpsi'] = copy.deepcopy(q_new)
             if q_error <= self._options['errq']: break
 
