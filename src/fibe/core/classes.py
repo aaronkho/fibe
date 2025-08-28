@@ -910,7 +910,7 @@ class FixedBoundaryEquilibrium():
                 relax=self._options['relaxq'],
                 drop_last=True
             )
-            print(q_error, self._data['fpol'][0], self._data['fpol'][-1])
+            #print(q_error, self._data['fpol'][0], self._data['fpol'][-1])
             self._data['qpsi'] = copy.deepcopy(q_new)
             if q_error <= self._options['errq']: break
 
@@ -940,7 +940,6 @@ class FixedBoundaryEquilibrium():
             df = df.drop_duplicates(subset=['rbdry', 'zbdry'], keep='first').reset_index(drop=True)
             rbdry = df['rbdry'].to_numpy()
             zbdry = df['zbdry'].to_numpy()
-            print(rbdry, zbdry)
             self._data['rbdry'] = np.concatenate([rbdry, [rbdry[0]]])
             self._data['zbdry'] = np.concatenate([zbdry, [zbdry[0]]])
             self._data['nbdry'] = len(self._data['rbdry'])

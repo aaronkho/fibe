@@ -1,4 +1,5 @@
 import copy
+import logging
 import numpy as np
 import xarray as xr
 from scipy.interpolate import (
@@ -18,6 +19,9 @@ from megpy import (
     contour as contour_tracer,
     find_null_points,
 )
+
+logger = logging.getLogger('fibe')
+logger.setLevel(logging.INFO)
 
 
 def generate_bounded_1d_spline(y, xnorm=None, symmetrical=True, smooth=False):
@@ -462,7 +466,7 @@ def generate_segments(r_contour, z_contour, indices, cuts=None, r_reference=None
             amin = np.nanmin(angle_dv_segment)
             amax = np.nanmax(angle_dv_segment)
             if amax - amin > np.pi:
-                print('Spline angle error')
+                logger.error('Spline angle error')
             rotation = np.exp(1.0j * (amax + amin - np.pi) / 2.0)
             vspline = (v_segment - v_reference) * rotation
             xspline = vspline.real
@@ -483,7 +487,7 @@ def generate_segments(r_contour, z_contour, indices, cuts=None, r_reference=None
             amin0 = np.nanmin(angle_dv_segment[:nchop-1])
             amax0 = np.nanmax(angle_dv_segment[:nchop-1])
             if amax0 - amin0 > np.pi:
-                print('Spline 0 angle error')
+                logger.error('Spline 0 angle error')
             rotation0 = np.exp(1.0j * (amax0 + amin0 - np.pi) / 2.0)
             vspline0 = (v_segment[:nchop] - v_reference) * rotation0
             xspline0 = vspline0.real
@@ -495,7 +499,7 @@ def generate_segments(r_contour, z_contour, indices, cuts=None, r_reference=None
             amin1 = np.nanmin(angle_dv_segment[-nchop+1:])
             amax1 = np.nanmax(angle_dv_segment[-nchop+1:])
             if amax1 - amin1 > np.pi:
-                print('Spline 1 angle error')
+                logger.error('Spline 1 angle error')
             rotation1 = np.exp(1.0j * (amax1 + amin1 - np.pi) / 2.0)
             vspline1 = (v_segment[-nchop:] - v_reference) * rotation1
             xspline1 = vspline1.real
@@ -559,7 +563,7 @@ def generate_x_point_candidates(rbdry, zbdry, rmagx, zmagx, psi_tck, dr, dz):
         #tb = (dx.imag * da.real - dx.real * da.imag) / (da.imag * db.real - da.real * db.imag)
         px = p1 + ta * (p2 - p1)
         if not np.isclose(np.abs(px - (p3 + tb * (p4 - p3))), 0.0):
-            print('Intersection error')
+            logger.error('Intersection error')
         intersections.append(np.array([px.real, px.imag]))
 
     for i, inter in enumerate(intersections):
