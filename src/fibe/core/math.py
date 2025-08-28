@@ -751,7 +751,7 @@ def generate_boundary_splines(rbdry, zbdry, rmagx, zmagx, xpoints, enforce_conca
         spl = make_interp_spline(angle_segment, length_segment, bc_type=None)
         splines.append({'tck': spl.tck, 'bounds': (float(np.nanmin(angle_segment)), float(np.nanmax(angle_segment)))})
     if len(splines) == 0:
-        spl = make_interp_spline(angle_ordered, length_ordered, bc_type='periodic')
+        spl = make_interp_spline(angle_ordered[:-1], length_ordered[:-1], bc_type='periodic')
         splines.append({'tck': spl.tck, 'bounds': (float(np.nanmin(angle_ordered)), float(np.nanmax(angle_ordered)))})
     return splines
 
@@ -957,11 +957,11 @@ def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gr
     return psi
 
 
-def compute_flux_surface_quantities(psinorm, r_contour, z_contour, psi_tck, fpol_tck):
-    fpol = splev(psinorm, fpol_tck)
+def compute_flux_surface_quantities(psinorm, r_contour, z_contour, psi_tck=None, fpol_tck=None):
+    fpol = splev(psinorm, fpol_tck) if fpol_tck is not None else 0.0
     gradr_contour = np.array([0.0])
     gradz_contour = np.array([0.0])
-    if len(r_contour) > 1 and len(z_contour) > 1:
+    if psi_tck is not None and len(r_contour) > 1 and len(z_contour) > 1:
         gradr_contour = np.array([bisplev(r, z, psi_tck, dx=1) for r, z in zip(r_contour, z_contour)])
         gradz_contour = np.array([bisplev(r, z, psi_tck, dy=1) for r, z in zip(r_contour, z_contour)])
     out = {
@@ -1074,7 +1074,7 @@ def trace_contour_with_splines(dmap, level, npoints, rmagx, zmagx, psimagx, psib
     return rc, zc
 
 
-def trace_contour_with_megpy(rvec, zvec, psi, level, rcheck, zcheck):
+def trace_contour_with_megpy(rvec, zvec, psi, level, rcheck, zcheck, boundary=False):
     contour_out = {}
     check = [float(rcheck), float(zcheck)]
     loops = contour_tracer(
@@ -1084,16 +1084,21 @@ def trace_contour_with_megpy(rvec, zvec, psi, level, rcheck, zcheck):
         level=level,
         kind='s',
         ref_point=np.array(check),
-        x_point=True
+        x_point=boundary
     )
     point_inside = Point(check)
     for i in range(len(loops)):
         loop = np.array(loops[i]).T
-        polygon = Polygon(loop)
-        if polygon.contains(point_inside):
-            contour_out['r'] = np.concatenate([loop[:, 0].flatten(), np.array([loop[0, 0]])])
-            contour_out['z'] = np.concatenate([loop[:, 1].flatten(), np.array([loop[0, 1]])])
-            break
+        if loop.shape[0] > 4:
+            polygon = Polygon(loop)
+            if polygon.contains(point_inside):
+                contour_out['r'] = np.concatenate([loop[:, 0].flatten(), np.array([loop[0, 0]])])
+                contour_out['z'] = np.concatenate([loop[:, 1].flatten(), np.array([loop[0, 1]])])
+                break
+    if not contour_out and len(loops) > 0:
+        loop = np.array(loops[0]).T
+        contour_out['r'] = np.concatenate([loop[:, 0].flatten(), np.array([loop[0, 0]])])
+        contour_out['z'] = np.concatenate([loop[:, 1].flatten(), np.array([loop[0, 1]])])
     return contour_out
 
 

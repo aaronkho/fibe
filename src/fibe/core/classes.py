@@ -165,9 +165,9 @@ class FixedBoundaryEquilibrium():
             self.enforce_boundary_duplicate_at_end()
 
 
-    def define_boundary_with_mxh(self, rgeo, zgeo, rminor, kappa, cos_coeffs, sin_coeffs, nbdry=201):
+    def define_boundary_with_mxh(self, rgeo, zgeo, rminor, kappa, cos_coeffs, sin_coeffs, nbdry=301):
         if 'nbdry' not in self._data and 'rbdry' not in self._data and 'zbdry' not in self._data:
-            theta = np.linspace(0.0, 2.0 * np.pi, nbdry) if isinstance(nbdry, int) else np.linspace(0.0, 2.0 * np.pi, 201)
+            theta = np.linspace(0.0, 2.0 * np.pi, nbdry) if isinstance(nbdry, int) else np.linspace(0.0, 2.0 * np.pi, 301)
             mxh = {
                 'r0': np.array([rgeo]).flatten(),
                 'z0': np.array([zgeo]).flatten(),
@@ -191,6 +191,7 @@ class FixedBoundaryEquilibrium():
         self._data['simagx'] = 1.0
         self._data['sibdry'] = 0.0
         self.find_magnetic_axis()
+        self.extend_psi_beyond_boundary()
         self.compute_normalized_psi_map()
         self.create_boundary_splines()
 
@@ -229,7 +230,7 @@ class FixedBoundaryEquilibrium():
         if isinstance(q, (list, tuple, np.ndarray)) and len(q) > 0:
             self.save_original_data(['qpsi'])
             q_new = np.array(q).flatten()
-            self._fit['qpsi_fs'] = generate_bounded_1d_spline(qpsi, xnorm=psinorm, symmetrical=True, smooth=smooth)
+            self._fit['qpsi_fs'] = generate_bounded_1d_spline(q_new, xnorm=psinorm, symmetrical=True, smooth=smooth)
             self._data['qpsi'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['qpsi_fs']['tck'])
 
 
@@ -366,7 +367,8 @@ class FixedBoundaryEquilibrium():
             self._data['psi'],
             self._data['sibdry'],
             self._data['rmagx'],
-            self._data['zmagx']
+            self._data['zmagx'],
+            boundary=True
         )
         if 'r' in boundary and 'z' in boundary:
             self._data['rbdry'] = boundary['r']
@@ -381,8 +383,9 @@ class FixedBoundaryEquilibrium():
 
         if 'xpoints' not in self._data:
             self.find_x_points()
+        if self._data['nbdry'] < 51:
+            self.refine_boundary_by_grid_trace()
 
-        self.refine_boundary_by_grid_trace()
         splines = generate_boundary_splines(
             self._data['rbdry'],
             self._data['zbdry'],
@@ -484,7 +487,7 @@ class FixedBoundaryEquilibrium():
 
         if 'psi_rz' not in self._fit:
             self.generate_psi_bivariate_spline()
-        if self._data['nbdry'] < 301:
+        if self._data['nbdry'] < 201:
             self.refine_boundary_with_splines(nbdry=501)
 
         if rmin is None:
@@ -509,9 +512,12 @@ class FixedBoundaryEquilibrium():
         self.make_solver()
 
         self._data['psi'] = bisplev(self._data['rvec'], self._data['zvec'], self._fit['psi_rz']['tck']).T
-        self.recompute_pressure_profile(smooth=smooth)
-        self.recompute_f_profile(smooth=smooth)
-        self.recompute_q_profile(smooth=smooth)
+        if 'pres' in self._data:
+            self.recompute_pressure_profile(smooth=smooth)
+        if 'fpol' in self._data:
+            self.recompute_f_profile(smooth=smooth)
+        if 'qpsi' in self._data:
+            self.recompute_q_profile(smooth=smooth)
 
 
     def compute_ffprime_and_pprime_grid(self, psinorm, internal_cutoff=0.01):
@@ -656,18 +662,14 @@ class FixedBoundaryEquilibrium():
 
 
     def trace_flux_surfaces(self):
-        if 'psi_rz' not in self._fit:
-            self.generate_psi_bivariate_spline()
-        if 'fpol_fs' not in self._fit:
-            self.recompute_f_profile()
         psinorm = np.linspace(0.0, 1.0, self._data['nr'])
         contours = {}
         contours[float(self._data['simagx'])] = compute_flux_surface_quantities(
             psinorm[0],
             np.array([self._data['rmagx']]),
             np.array([self._data['zmagx']]),
-            self._fit['psi_rz']['tck'],
-            self._fit['fpol_fs']['tck']
+            self._fit['psi_rz']['tck'] if 'psi_rz' in self._fit else None,
+            self._fit['fpol_fs']['tck'] if 'fpol_fs' in self._fit else None
         )
         for ll in psinorm[1:-1]:
             level = ll * (self._data['sibdry'] - self._data['simagx']) + self._data['simagx']
@@ -677,22 +679,23 @@ class FixedBoundaryEquilibrium():
                 self._data['psi'],
                 level,
                 self._data['rmagx'],
-                self._data['zmagx']
+                self._data['zmagx'],
+                boundary=False
             )
             if 'r' in contour and 'z' in contour:
                 contours[float(level)] = compute_flux_surface_quantities(
                     ll,
                     contour['r'],
                     contour['z'],
-                    self._fit['psi_rz']['tck'],
-                    self._fit['fpol_fs']['tck']
+                    self._fit['psi_rz']['tck'] if 'psi_rz' in self._fit else None,
+                    self._fit['fpol_fs']['tck'] if 'fpol_fs' in self._fit else None
                 )
         contours[float(self._data['sibdry'])] = compute_flux_surface_quantities(
             psinorm[-1],
             self._data['rbdry'],
             self._data['zbdry'],
-            self._fit['psi_rz']['tck'],
-            self._fit['fpol_fs']['tck']
+            self._fit['psi_rz']['tck'] if 'psi_rz' in self._fit else None,
+            self._fit['fpol_fs']['tck'] if 'fpol_fs' in self._fit else None
         )
         return contours
 
@@ -705,8 +708,25 @@ class FixedBoundaryEquilibrium():
         self.define_f_profile(self._data['fpol'], smooth=smooth)
 
 
+    def recompute_f_profile_from_scratch(self):
+        self.save_original_data(['fpol', 'ffprime'])
+        self.save_original_fit(['fpol_fs'])
+        if self._data['psi'][0, 0] == self._data['psi'][-1, -1] and self._data['psi'][0, -1] == self._data['psi'][-1, 0]:
+            self.extend_psi_beyond_boundary()
+        self._fs = self.trace_flux_surfaces()
+        psinorm = np.zeros((len(self._fs), ), dtype=float)
+        fpol = np.zeros_like(psinorm)
+        for i, (level, contour) in enumerate(self._fs.items()):
+            if level != self._data['simagx']:
+                psinorm[i] = (level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
+                fpol[i] = np.sign(self._data['cpasma']) * compute_f_from_safety_factor_and_contour(self._data['qpsi'][i], contour)
+        #fpol *= np.sign(self._data['curscale']) * np.sqrt(np.abs(self._data['curscale']))
+        self.define_f_profile(fpol[1:], psinorm=psinorm[1:], smooth=False)
+
+
     def recompute_q_profile(self, smooth=False):
         self.save_original_data(['qpsi'])
+        self.save_original_fit(['qpsi_fs'])
         psinorm = np.linspace(0.0, 1.0, len(self._data['qpsi']))
         self._fit['qpsi_fs'] = generate_bounded_1d_spline(self._data['qpsi'], xnorm=psinorm, symmetrical=True, smooth=smooth)
         self._data['qpsi'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['qpsi_fs']['tck'])
@@ -714,6 +734,7 @@ class FixedBoundaryEquilibrium():
 
     def recompute_q_profile_from_scratch(self, approximate_lcfs=False):
         self.save_original_data(['qpsi'])
+        self.save_original_fit(['qpsi_fs'])
         if self._data['psi'][0, 0] == self._data['psi'][-1, -1] and self._data['psi'][0, -1] == self._data['psi'][-1, 0]:
             self.extend_psi_beyond_boundary()
         #self._fs = self.trace_fine_flux_surfaces(71, 71)
@@ -847,16 +868,11 @@ class FixedBoundaryEquilibrium():
 
         if 'cur' not in self._data:
             self.define_current(self._data['cpasma'])
-        self.recompute_q_profile_from_scratch()
+        if 'qpsi' not in self._data:
+            self.recompute_q_profile_from_scratch()
         for n in range(self._options['nxqiter']):
             q_old = copy.deepcopy(self._data['qpsi'])
-            psinorm = np.linspace(0.0, 1.0, self._data['nr'])
-            f = np.zeros_like(psinorm)
-            for i, (level, contour) in enumerate(self._fs.items()):
-                if level != self._data['simagx']:
-                    f[i] = np.sign(self._data['cpasma']) * compute_f_from_safety_factor_and_contour(self._data['qpsi'][i], contour)
-            #f *= np.sign(self._data['curscale']) * np.sqrt(np.abs(self._data['curscale']))
-            self.define_f_profile(f[1:], psinorm=psinorm[1:], smooth=False)
+            self.recompute_f_profile_from_scratch()
             self.solve_psi(nxiter=nxiter, erreq=erreq, relax=relax, relaxj=relaxj, pnaxis=pnaxis)
             # TODO: Fix this error to modify F in the direction of q error reduction
             q_new, q_error = compare_q(
