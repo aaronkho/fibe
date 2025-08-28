@@ -14,6 +14,10 @@ from scipy.sparse import spdiags
 from scipy.optimize import brentq
 import contourpy
 from shapely import Point, Polygon
+from megpy import (
+    contour as contour_tracer,
+    find_null_points,
+)
 
 
 def generate_bounded_1d_spline(y, xnorm=None, symmetrical=True, smooth=False):
@@ -323,12 +327,24 @@ def compute_psi(solver, s5, current, flat_psi_old=None, relax=1.0):
     return flat_psi_new, flat_psi_error
 
 
-def compare_q(q, q_target, q_old=None, relax=1.0):
+def compare_q(q, q_target, q_old=None, relax=1.0, drop_first=False, drop_last=False):
     q_new = copy.deepcopy(q)
     if q_old is not None and relax > 0.0 and relax < 1.0:
         q_new = q_old + relax * (q_new - q_old)
-    q_error = np.nanmax(np.abs(q_target - q_new) / np.nanmax(np.abs(q_target)))
+    q_errorvec = np.abs(q_target - q_new) / np.abs(q_target)
+    if drop_first:
+        q_errorvec = q_errorvec[1:]
+    if drop_last:
+        q_errorvec = q_errorvec[:-1]
+    q_error = np.nanmax(q_errorvec)
     return q_new, q_error
+
+
+def compute_jpar(inout, btot, fpol, fprime, pprime):
+    mu0 = 4.0e-7 * np.pi
+    jpar = -1.0 * (mu0 * fpol * pprime / btot + fprime * btot)
+    flat_current = np.where(inout == 0, 0.0, jpar.ravel())
+    return flat_current
 
 
 def compute_finite_difference_matrix(nr, nz, s1, s2, s3, s4):
@@ -351,7 +367,6 @@ def generate_initial_psi(rvec, zvec, rbdry, zbdry, ijin):
     drb = rb[1:] - rb[:-1]
     dzb = zb[1:] - zb[:-1]
     drzb = rb[:-1] * dzb - zb[:-1] * drb
-    #tcur = 0.0
     for k in ijin:
         j = k // nr
         i = k - j * nr
@@ -742,7 +757,7 @@ def generate_boundary_splines(rbdry, zbdry, rmagx, zmagx, xpoints, enforce_conca
         spl = make_interp_spline(angle_segment, length_segment, bc_type=None)
         splines.append({'tck': spl.tck, 'bounds': (float(np.nanmin(angle_segment)), float(np.nanmax(angle_segment)))})
     if len(splines) == 0:
-        spl = make_interp_spline(angle_ordered, length_ordered, bc_type='periodic')
+        spl = make_interp_spline(angle_ordered[:-1], length_ordered[:-1], bc_type='periodic')
         splines.append({'tck': spl.tck, 'bounds': (float(np.nanmin(angle_ordered)), float(np.nanmax(angle_ordered)))})
     return splines
 
@@ -948,11 +963,11 @@ def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gr
     return psi
 
 
-def compute_flux_surface_quantities(psinorm, r_contour, z_contour, psi_tck, fpol_tck):
-    fpol = splev(psinorm, fpol_tck)
+def compute_flux_surface_quantities(psinorm, r_contour, z_contour, psi_tck=None, fpol_tck=None):
+    fpol = splev(psinorm, fpol_tck) if fpol_tck is not None else 0.0
     gradr_contour = np.array([0.0])
     gradz_contour = np.array([0.0])
-    if len(r_contour) > 1 and len(z_contour) > 1:
+    if psi_tck is not None and len(r_contour) > 1 and len(z_contour) > 1:
         gradr_contour = np.array([bisplev(r, z, psi_tck, dx=1) for r, z in zip(r_contour, z_contour)])
         gradz_contour = np.array([bisplev(r, z, psi_tck, dy=1) for r, z in zip(r_contour, z_contour)])
     out = {
@@ -1065,6 +1080,34 @@ def trace_contour_with_splines(dmap, level, npoints, rmagx, zmagx, psimagx, psib
     return rc, zc
 
 
+def trace_contour_with_megpy(rvec, zvec, psi, level, rcheck, zcheck, boundary=False):
+    contour_out = {}
+    check = [float(rcheck), float(zcheck)]
+    loops = contour_tracer(
+        rvec,
+        zvec,
+        psi,
+        level=level,
+        kind='s',
+        ref_point=np.array(check),
+        x_point=boundary
+    )
+    point_inside = Point(check)
+    for i in range(len(loops)):
+        loop = np.array(loops[i]).T
+        if loop.shape[0] > 4:
+            polygon = Polygon(loop)
+            if polygon.contains(point_inside):
+                contour_out['r'] = np.concatenate([loop[:, 0].flatten(), np.array([loop[0, 0]])])
+                contour_out['z'] = np.concatenate([loop[:, 1].flatten(), np.array([loop[0, 1]])])
+                break
+    if not contour_out and len(loops) > 0:
+        loop = np.array(loops[0]).T
+        contour_out['r'] = np.concatenate([loop[:, 0].flatten(), np.array([loop[0, 0]])])
+        contour_out['z'] = np.concatenate([loop[:, 1].flatten(), np.array([loop[0, 1]])])
+    return contour_out
+
+
 def compute_adjusted_contour_resolution(r_axis, z_axis, r_boundary, z_boundary, r_contour, z_contour, maxpoints=51, minpoints=21):
     v_axis = r_axis + 1.0j * z_axis
     v_boundary = r_boundary + 1.0j * z_boundary
@@ -1075,5 +1118,36 @@ def compute_adjusted_contour_resolution(r_axis, z_axis, r_boundary, z_boundary, 
         v_contour = v_contour[np.isfinite(v_contour)]
     lmax_boundary = np.nanmax(np.abs(v_boundary - v_axis))
     lmax_contour = np.nanmax(np.abs(v_contour - v_axis))
-    npoints = min(maxpoints, max(minpoints, int(np.rint(1.2 * float(maxpoints) * lmax_contour / lmax_boundary))))
+    npoints = min(maxpoints, max(minpoints, int(np.rint(1.5 * float(maxpoints) * np.sqrt(lmax_contour / lmax_boundary)))))
     return npoints
+
+
+def compute_mxh_coefficients_from_contours(fs):
+    # Incomplete!
+    r0 = (np.max(fs['r'][:-1]) + np.min(fs['r'][:-1])) / 2
+    z0 = (np.max(fs['z'][:-1]) + np.min(fs['z'][:-1])) / 2
+    r = (np.max(fs['r'][:-1]) - np.min(fs['r'][:-1])) / 2
+    kappa = ((np.max(fs['z'][:-1]) - np.min(fs['z'][:-1])) / 2) / r
+    shape[:4] = [r0, z0, r, kappa]
+    return None
+
+
+def compute_contours_from_mxh_coefficients(mxh, theta):
+    r0 = mxh['r0']
+    z0 = mxh['z0']
+    r = mxh['r']
+    kappa = mxh['kappa']
+    cosc = mxh['cos_coeffs']
+    sinc = mxh['sin_coeffs']
+    if sinc.shape[-1] == (cosc.shape[-1] - 1):
+        sinc = np.concatenate([np.atleast_2d(np.zeros(r0.shape)).T, sinc], axis=-1)
+    theta_ex = np.repeat(np.atleast_2d(theta), r0.shape[0], axis=0)
+    theta_R = copy.deepcopy(theta_ex)
+    for n in range(cosc.shape[-1]):
+        cos_R = cosc[:, n] * np.cos(float(n) * theta_ex)
+        sin_R = sinc[:, n] * np.sin(float(n) * theta_ex)
+        theta_R += cos_R + sin_R
+    r_contour = r0 + r * np.cos(theta_R)
+    z_contour = z0 + kappa * r * np.sin(theta_ex)
+    return {'r': r_contour, 'z': z_contour}
+
