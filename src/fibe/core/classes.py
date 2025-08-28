@@ -187,10 +187,21 @@ class FixedBoundaryEquilibrium():
         '''Initialize psi. Use if no geqdsk is read.'''
         self.create_finite_difference_grid()
         self.make_solver()
-        self._data['psi'] = generate_initial_psi(self._data['rvec'], self._data['zvec'], self._data['rbdry'], self._data['zbdry'], self._data['ijin'])
+        self._data['psi'] = generate_initial_psi(
+            self._data['rvec'],
+            self._data['zvec'],
+            self._data['rbdry'],
+            self._data['zbdry'],
+            self._data['ijin']
+        )
         self._data['simagx'] = 1.0
         self._data['sibdry'] = 0.0
-        self.find_magnetic_axis()
+        if 'cpasma' in self._data:
+            psi_mult = 4.0e-7 * np.pi * float(self._data['cpasma']) * self._data['rvec'][0]
+            self._data['psi'] *= psi_mult
+            self._data['simagx'] *= psi_mult
+            self._data['sibdry'] *= psi_mult
+        self.old_find_magnetic_axis()
         self.extend_psi_beyond_boundary()
         self.compute_normalized_psi_map()
         self.create_boundary_splines()
@@ -243,15 +254,24 @@ class FixedBoundaryEquilibrium():
             self._data['cur'] = np.where(self._data['inout'] == 0, 0.0, self._data['cpasma'] / (self._data['hrz'] * float(len(self._data['ijin']))))
 
 
+    def define_toroidal_field(self, bcentr, rcentr=None):
+        if isinstance(bcentr, (float, int)):
+            self._data['rcentr'] = float(rcentr) if isinstance(rcentr, (float, int)) else float(self._data['rleft'] + 0.5 * self._data['rdim'])
+            self._data['bcentr'] = float(bcentr)
+            if 'fpol' not in self._data:
+                self._data['fpol'] = np.zeros((self._data['nr'], )) + self._data['bcentr'] * self._data['rcentr']
+
+
     def define_f_and_pressure_profiles(self, f, pressure, psinorm=None, smooth=True):
         self.define_f_profile(f, psinorm=psinorm, smooth=smooth)
         self.define_pressure_profile(pressure, psinorm=psinorm, smooth=smooth)
 
 
-    def define_pressure_and_q_profiles(self, pressure, q, ip, psinorm=None, smooth=True):
+    def define_pressure_and_q_profiles(self, pressure, q, ip, bt, psinorm=None, smooth=True):
         self.define_pressure_profile(pressure, psinorm=psinorm, smooth=smooth)
         self.define_q_profile(q, psinorm=psinorm, smooth=smooth)
         self.define_current(ip)
+        self.define_toroidal_field(bt)
 
 
     def compute_normalized_psi_map(self):
@@ -341,10 +361,14 @@ class FixedBoundaryEquilibrium():
         if 'psi_rz' not in self._fit:
             self.generate_psi_bivariate_spline()
         nulls = find_null_points(self._data['rvec'], self._data['zvec'], self._data['psi'], level=self._data['simagx'], atol=1.0e-3)
-        if len(nulls['o-points']) > 0:
-            self._data['rmagx'] = float(nulls['o-points'][0][0])
-            self._data['zmagx'] = float(nulls['o-points'][0][1])
-            self._data['simagx'] = float(bisplev(self._data['rmagx'], self._data['zmagx'], self._fit['psi_rz']['tck']))
+        for i, op in enumerate(nulls['o-points']):
+            point_inside = Point([float(op[0]), float(op[1])])
+            polygon = Polygon(np.vstack([np.atleast_2d(self._data['rbdry']), np.atleast_2d(self._data['zbdry'])]).T)
+            if polygon.contains(point_inside):
+                self._data['rmagx'] = float(op[0])
+                self._data['zmagx'] = float(op[1])
+                self._data['simagx'] = float(bisplev(self._data['rmagx'], self._data['zmagx'], self._fit['psi_rz']['tck']))
+                break
 
 
     def find_x_points(self):
@@ -377,13 +401,16 @@ class FixedBoundaryEquilibrium():
             self.enforce_boundary_duplicate_at_end()
 
 
-    def create_boundary_splines(self, enforce_concave=False):
+    def create_boundary_splines(self, enforce_concave=False, old_method=False):
 
         self.save_original_fit(['lseg_abdry'])
 
         if 'xpoints' not in self._data:
-            self.find_x_points()
-        if self._data['nbdry'] < 51:
+            if old_method:
+                self.old_find_x_points()
+            else:
+                self.find_x_points()
+        if self._data['nbdry'] < 51 and not old_method:
             self.refine_boundary_by_grid_trace()
 
         splines = generate_boundary_splines(
@@ -872,7 +899,8 @@ class FixedBoundaryEquilibrium():
             self.recompute_q_profile_from_scratch()
         for n in range(self._options['nxqiter']):
             q_old = copy.deepcopy(self._data['qpsi'])
-            self.recompute_f_profile_from_scratch()
+            if n > 0 or 'fpol' not in self._data:
+                self.recompute_f_profile_from_scratch()
             self.solve_psi(nxiter=nxiter, erreq=erreq, relax=relax, relaxj=relaxj, pnaxis=pnaxis)
             # TODO: Fix this error to modify F in the direction of q error reduction
             q_new, q_error = compare_q(
@@ -912,6 +940,7 @@ class FixedBoundaryEquilibrium():
             df = df.drop_duplicates(subset=['rbdry', 'zbdry'], keep='first').reset_index(drop=True)
             rbdry = df['rbdry'].to_numpy()
             zbdry = df['zbdry'].to_numpy()
+            print(rbdry, zbdry)
             self._data['rbdry'] = np.concatenate([rbdry, [rbdry[0]]])
             self._data['zbdry'] = np.concatenate([zbdry, [zbdry[0]]])
             self._data['nbdry'] = len(self._data['rbdry'])

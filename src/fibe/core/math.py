@@ -367,7 +367,6 @@ def generate_initial_psi(rvec, zvec, rbdry, zbdry, ijin):
     drb = rb[1:] - rb[:-1]
     dzb = zb[1:] - zb[:-1]
     drzb = rb[:-1] * dzb - zb[:-1] * drb
-    #tcur = 0.0
     for k in ijin:
         j = k // nr
         i = k - j * nr
