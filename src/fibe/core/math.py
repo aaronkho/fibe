@@ -311,37 +311,16 @@ def generate_finite_difference_grid(rvec, zvec, rbdry, zbdry):
     return out
 
 
-def compute_jtor(inout, rpsi, ffprime, pprime, flat_current_old=None, relax=1.0):
+def compute_jtor(rpsi, ffprime, pprime):
     '''Compute current density over grid. Scale to Ip'''
     mu0 = 4.0e-7 * np.pi
     jtor = ffprime / (mu0 * rpsi) + rpsi * pprime
-    flat_current_new = np.where(inout == 0, 0.0, jtor.ravel())
-    if flat_current_old is not None and relax > 0.0 and relax < 1.0:
-        flat_current_new = flat_current_old + relax * (flat_current_new - flat_current_old)
-    return flat_current_new
+    return jtor
 
 
 def compute_psi(solver, s5, current, flat_psi_old=None, relax=1.0):
-    flat_psi_new = solver(s5 * current)
-    flat_psi_error = 0.0
-    if flat_psi_old is not None:
-        if relax > 0.0 and relax < 1.0:
-            flat_psi_new = flat_psi_old + relax * (flat_psi_new - flat_psi_old)
-        flat_psi_error = np.nanmax(np.abs(flat_psi_new - flat_psi_old)) / np.nanmax(np.abs(flat_psi_new))
+    return solver(s5 * current)
     return flat_psi_new, flat_psi_error
-
-
-def compare_q(q, q_target, q_old=None, relax=1.0, drop_first=False, drop_last=False):
-    q_new = copy.deepcopy(q)
-    if q_old is not None and relax > 0.0 and relax < 1.0:
-        q_new = q_old + relax * (q_new - q_old)
-    q_errorvec = np.abs(q_target - q_new) / np.abs(q_target)
-    if drop_first:
-        q_errorvec = q_errorvec[1:]
-    if drop_last:
-        q_errorvec = q_errorvec[:-1]
-    q_error = np.nanmax(q_errorvec)
-    return q_new, q_error
 
 
 def compute_jpar(inout, btot, fpol, fprime, pprime):
@@ -761,7 +740,7 @@ def generate_boundary_splines(rbdry, zbdry, rmagx, zmagx, xpoints, enforce_conca
         spl = make_interp_spline(angle_segment, length_segment, bc_type=None)
         splines.append({'tck': spl.tck, 'bounds': (float(np.nanmin(angle_segment)), float(np.nanmax(angle_segment)))})
     if len(splines) == 0:
-        spl = make_interp_spline(angle_ordered[:-1], length_ordered[:-1], bc_type='periodic')
+        spl = make_interp_spline(angle_ordered, length_ordered, bc_type='periodic')
         splines.append({'tck': spl.tck, 'bounds': (float(np.nanmin(angle_ordered)), float(np.nanmax(angle_ordered)))})
     return splines
 

@@ -20,7 +20,6 @@ from .math import (
     generate_finite_difference_grid,
     compute_jtor,
     compute_psi,
-    compare_q,
     compute_finite_difference_matrix,
     generate_initial_psi,
     compute_grad_psi_vector_from_2d_spline,
@@ -94,6 +93,7 @@ class FixedBoundaryEquilibrium():
         self,
         geqdsk=None,
     ):
+        self.scratch = True
         self._data = {}
         self._fit = {}
         self.solver = None
@@ -110,6 +110,7 @@ class FixedBoundaryEquilibrium():
         if isinstance(geqdsk, (str, Path)):
             self._data.update(read_geqdsk_file(geqdsk))
             self.enforce_boundary_duplicate_at_end()
+            self.scratch = False
 
 
     def save_original_data(self, fields):
@@ -176,15 +177,16 @@ class FixedBoundaryEquilibrium():
                 'cos_coeffs': np.atleast_2d(np.array([cos_coeffs]).flatten()),
                 'sin_coeffs': np.atleast_2d(np.array([sin_coeffs]).flatten()),
             }
-            boundary = compute_contours_from_mxh_coefficients(mxh, theta)
-            self._data['nbdry'] = nbdry
+            boundary = compute_contours_from_mxh_coefficients(mxh, theta[:-1])
             self._data['rbdry'] = copy.deepcopy(boundary['r'].flatten())
             self._data['zbdry'] = copy.deepcopy(boundary['z'].flatten())
-            #self.enforce_boundary_duplicate_at_end()
+            self._data['nbdry'] = len(self._data['rbdry'])
+            self.enforce_boundary_duplicate_at_end()
 
 
     def initialize_psi(self):
         '''Initialize psi. Use if no geqdsk is read.'''
+        self.scratch = True
         self.create_finite_difference_grid()
         self.make_solver()
         self._data['psi'] = generate_initial_psi(
@@ -196,11 +198,13 @@ class FixedBoundaryEquilibrium():
         )
         self._data['simagx'] = 1.0
         self._data['sibdry'] = 0.0
-        if 'cpasma' in self._data:
-            psi_mult = 4.0e-7 * np.pi * float(self._data['cpasma']) * self._data['rvec'][0]
-            self._data['psi'] *= psi_mult
-            self._data['simagx'] *= psi_mult
-            self._data['sibdry'] *= psi_mult
+        if 'cpasma' not in self._data:
+            self.compute_normalized_psi_map()
+            self.initialize_current()
+        psi_mult = 4.0e-7 * np.pi * float(self._data['cpasma']) * self._data['rvec'][0]
+        self._data['psi'] *= psi_mult
+        self._data['simagx'] *= psi_mult
+        self._data['sibdry'] *= psi_mult
         self.old_find_magnetic_axis()
         self.extend_psi_beyond_boundary()
         self.compute_normalized_psi_map()
@@ -208,14 +212,11 @@ class FixedBoundaryEquilibrium():
 
 
     def initialize_current(self):
+        if 'inout' not in self._data:
+            self.create_finite_difference_grid()
         self._data['curscale'] = 1.0
         ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'])
-        self._data['cur'] = compute_jtor(
-            self._data['inout'],
-            self._data['rpsi'].ravel(),
-            ffp.ravel(),
-            pp.ravel()
-        )
+        self._data['cur'] = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp.ravel(), pp.ravel()))
         self._data['cpasma'] = float(np.sum(self._data['cur']) * self._data['hrz'])
 
 
@@ -256,14 +257,26 @@ class FixedBoundaryEquilibrium():
 
     def define_toroidal_field(self, bcentr, rcentr=None):
         if isinstance(bcentr, (float, int)):
-            self._data['rcentr'] = float(rcentr) if isinstance(rcentr, (float, int)) else float(self._data['rleft'] + 0.5 * self._data['rdim'])
+            if not isinstance(rcentr, (float, int)):
+                if 'rmagx' in self._data:
+                    rcentr = self._data['rmagx']
+                else:
+                    rcentr = self._data['rleft'] + 0.5 * self._data['rdim']
+            self._data['rcentr'] = float(rcentr)
             self._data['bcentr'] = float(bcentr)
             if 'fpol' not in self._data:
-                self._data['fpol'] = np.zeros((self._data['nr'], )) + self._data['bcentr'] * self._data['rcentr']
+                f_factor = 1.05 - 0.05 * np.tanh(np.linspace(-2.0, 1.5, self._data['nr']))
+                f = f_factor * self._data['bcentr'] * self._data['rcentr']
+                self.define_f_profile(f, smooth=True)
 
 
     def define_f_and_pressure_profiles(self, f, pressure, psinorm=None, smooth=True):
         self.define_f_profile(f, psinorm=psinorm, smooth=smooth)
+        self.define_pressure_profile(pressure, psinorm=psinorm, smooth=smooth)
+
+
+    def define_toroidal_field_and_pressure_profile(self, bt, pressure, psinorm=None, smooth=True):
+        self.define_toroidal_field(bt)
         self.define_pressure_profile(pressure, psinorm=psinorm, smooth=smooth)
 
 
@@ -791,6 +804,28 @@ class FixedBoundaryEquilibrium():
             self.renormalize_psi(self._data['simagx_orig'], self._data['sibdry_orig'])
 
 
+    def _update_current(self, current_new, relax=1.0):
+        if relax > 0.0 and relax < 1.0:
+            current_new = self._data['cur'] + relax * (current_new - self._data['cur'])
+        self._data['curscale'] = self._data['cpasma'] / (np.sum(current_new) * self._data['hrz'])
+        self._data['cur'] = self._data['curscale'] * current_new
+
+
+    def _update_psi(self, psi_new, relax=1.0):
+        if relax > 0.0 and relax < 1.0:
+            psi_new = self._data['psi'].ravel() + relax * (psi_new - self._data['psi'].ravel())
+        self._data['psi_error'] = np.nanmax(np.abs(psi_new - self._data['psi'].ravel())) / np.nanmax(np.abs(psi_new))
+        self._data['psi'] = psi_new.reshape(self._data['nz'], self._data['nr'])
+
+
+    def _update_q(self, q_new, q_old=None, relax=1.0):
+        if relax > 0.0 and relax < 1.0:
+            q_new = q_old + relax * (q_new - q_old)
+        self._data['q_error'] = np.nanmax((np.abs(self._data['qpsi_target'] - q_new) / np.abs(self._data['qpsi_target']))[:-1])
+        #print(q_error, self._data['fpol'][0], self._data['fpol'][-1])
+        self._data['qpsi'] = copy.deepcopy(q_new)
+
+
     def solve_psi(
         self,
         nxiter=100,   # Max iterations in the equilibrium loop: recommend 100
@@ -814,6 +849,10 @@ class FixedBoundaryEquilibrium():
             self._options['relaxj'] = relaxj
         if isinstance(pnaxis, float):
             self._options['pnaxis'] = pnaxis
+        elif self.scratch:
+            self._options['pnaxis'] = 0.1
+            #print('fprime: ', splev(self._options['pnaxis'], self._fit['fpol_fs']['tck'], der=1) / splev(self._options['pnaxis'], self._fit['fpol_fs']['tck']))
+            #print('pprime: ', splev(self._options['pnaxis'], self._fit['pres_fs']['tck'], der=1) / splev(self._options['pnaxis'], self._fit['pres_fs']['tck']))
         else:
             self._options['pnaxis'] = 1.0 / float(self._data['nr_orig']) if 'nr_orig' in self._data else 1.0 / float(self._data['nr'])
 
@@ -823,30 +862,17 @@ class FixedBoundaryEquilibrium():
         self.zero_psi_outside_boundary()
         if 'cur' not in self._data:
             self.define_current(self._data['cpasma'])
+        self._data['psi_error'] = 0.0
         for n in range(self._options['nxiter']):
             ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
-            self._data['cur'] = compute_jtor(
-                self._data['inout'],
-                self._data['rpsi'].ravel(),
-                ffp.ravel(),
-                pp.ravel(),
-                self._data['cur'],
-                relax=self._options['relaxj'] if n > 0 else 1.0
-            )
-            self._data['curscale'] = self._data['cpasma'] / (np.sum(self._data['cur']) * self._data['hrz'])
-            self._data['cur'] *= self._data['curscale']
-            psi_new, psi_error = compute_psi(
-                self.solver,
-                self._data['s5'],
-                self._data['cur'],
-                copy.deepcopy(self._data['psi']).ravel(),
-                relax=self._options['relax']
-            )
-            self._data['psi'] = psi_new.reshape(self._data['nz'], self._data['nr'])
+            cur_new = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp.ravel(), pp.ravel()))
+            self._update_current(cur_new, relax=self._options['relaxj'] if n > 0 else 1.0)
+            psi_new = compute_psi(self.solver, self._data['s5'], self._data['cur'])
+            self._update_psi(psi_new, relax=self._options['relax'])
             self.find_magnetic_axis_from_grid()
             self.zero_magnetic_boundary()
             self.compute_normalized_psi_map()
-            if psi_error <= self._options['erreq']: break
+            if self._data['psi_error'] <= self._options['erreq']: break
         #self.rescale_kinetic_profiles()
         #self.recompute_f_profile()
         #self.recompute_pressure_profile()
@@ -856,12 +882,11 @@ class FixedBoundaryEquilibrium():
         self.find_magnetic_axis()
         self.recompute_q_profile_from_scratch(approximate_lcfs=approxq)
 
-        self.psi_error = psi_error
         if n + 1 == self._options['nxiter']:
-            logger.info(f'Failed to converge after {n + 1} iterations with maximum psi error of {psi_error:8.2e}')
+            logger.info(f'Failed to converge after {n + 1} iterations with maximum psi error of {self._data["psi_error"]:8.2e}')
             self.converged = False
         else:
-            logger.info(f'Converged after {n + 1} iterations with maximum psi error of {psi_error:8.2e}')
+            logger.info(f'Converged after {n + 1} iterations with maximum psi error of {self._data["psi_error"]:8.2e}')
             self.converged = True
 
         if self.solver is not None:
@@ -897,29 +922,20 @@ class FixedBoundaryEquilibrium():
             self.define_current(self._data['cpasma'])
         if 'qpsi' not in self._data:
             self.recompute_q_profile_from_scratch()
+        q_error = 0.0
         for n in range(self._options['nxqiter']):
             q_old = copy.deepcopy(self._data['qpsi'])
             if n > 0 or 'fpol' not in self._data:
                 self.recompute_f_profile_from_scratch()
             self.solve_psi(nxiter=nxiter, erreq=erreq, relax=relax, relaxj=relaxj, pnaxis=pnaxis)
-            # TODO: Fix this error to modify F in the direction of q error reduction
-            q_new, q_error = compare_q(
-                self._data['qpsi'],
-                q_old,
-                self._data['qpsi_target'],
-                relax=self._options['relaxq'],
-                drop_last=True
-            )
-            #print(q_error, self._data['fpol'][0], self._data['fpol'][-1])
-            self._data['qpsi'] = copy.deepcopy(q_new)
-            if q_error <= self._options['errq']: break
+            self._update_q(self._data['qpsi'], q_old=q_old, relax=self._options['relaxq'])
+            if self._data['q_error'] <= self._options['errq']: break
 
-        self.q_error = q_error
         if n + 1 == self._options['nxqiter']:
-            logger.info(f'Failed to converge after {n + 1} iterations with maximum safety factor error of {q_error:8.2e}')
+            logger.info(f'Failed to converge after {n + 1} iterations with maximum safety factor error of {self._data["q_error"]:8.2e}')
             self.converged = False
         else:
-            logger.info(f'Converged after {n + 1} iterations with maximum safety factor error of {q_error:8.2e}')
+            logger.info(f'Converged after {n + 1} iterations with maximum safety factor error of {self._data["q_error"]:8.2e}')
             self.converged = True
 
 
@@ -956,6 +972,7 @@ class FixedBoundaryEquilibrium():
                 self.fs = None
             self._data.update(read_geqdsk_file(path))
             self.enforce_boundary_duplicate_at_end()
+            self.scratch = False
 
 
     @classmethod
