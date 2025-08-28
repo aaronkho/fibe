@@ -340,6 +340,13 @@ def compare_q(q, q_target, q_old=None, relax=1.0, drop_first=False, drop_last=Fa
     return q_new, q_error
 
 
+def compute_jpar(inout, btot, fpol, fprime, pprime):
+    mu0 = 4.0e-7 * np.pi
+    jpar = -1.0 * (mu0 * fpol * pprime / btot + fprime * btot)
+    flat_current = np.where(inout == 0, 0.0, jpar.ravel())
+    return flat_current
+
+
 def compute_finite_difference_matrix(nr, nz, s1, s2, s3, s4):
     # FULL DIFFERENCE MATRIX FOR SPARSE MATRIX INVERSION OR SOLUTION
     data = np.array([np.ones((nr * nz, )), -s1, -s2, -s3, -s4])
