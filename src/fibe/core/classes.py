@@ -892,7 +892,7 @@ class FixedBoundaryEquilibrium():
         if self.solver is not None:
             self._data['errsol'] = self.check_psi_solution()
 
-        self._data['gcase'] = 'FBE'
+        self._data['gcase'] = 'FiBE'
         self._data['gid'] = 0
 
 
@@ -982,7 +982,7 @@ class FixedBoundaryEquilibrium():
 
     def to_geqdsk(self, path, cocos=2):
         geqdsk = {k: v for k, v in self._data.items() if k in self.geqdsk_fields}
-        geqdsk['gcase'] = 'FBE'
+        geqdsk['gcase'] = 'FiBE'
         geqdsk['gid'] = 0
         current_cocos = detect_cocos(geqdsk)
         geqdsk = convert_cocos(geqdsk, current_cocos, cocos)

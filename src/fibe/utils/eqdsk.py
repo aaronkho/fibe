@@ -137,9 +137,35 @@ def read_geqdsk_file_megpy(fname):
 
 
 def write_geqdsk_file_megpy(fname, datadict):
+    if 'gcase' not in datadict:
+        datadict['gcase'] = 'FiBE'
+    if 'gid' not in datadict:
+        datadict['gid'] = 0
+    if 'cpasma' not in datadict:
+        datadict['cpasma'] = 1.0
+    if 'bcentr' not in datadict:
+        datadict['bcentr'] = 1.0
+    if 'rcentr' not in datadict:
+        datadict['rcentr'] = datadict['rleft'] + 0.5 * datadict['rdim']
+    if 'fpol' not in datadict:
+        datadict['fpol'] = np.zeros((datadict['nr'], ))
+    if 'pres' not in datadict:
+        datadict['pres'] = np.zeros((datadict['nr'], ))
+    if 'ffprime' not in datadict:
+        datadict['ffprime'] = np.zeros((datadict['nr'], ))
+    if 'pprime' not in datadict:
+        datadict['pprime'] = np.zeros((datadict['nr'], ))
+    if 'qpsi' not in datadict:
+        datadict['qpsi'] = np.zeros((datadict['nr'], ))
     eq = {k: copy.deepcopy(datadict[nk]) for k, nk in megpy_package_field_map.items() if isinstance(nk, str) and nk in datadict}
+    eq['xdum'] = 0.0
+    eq['simag2'] = eq['simag']
+    eq['rmaxis2'] = eq['rmaxis']
+    eq['zmaxis2'] = eq['zmaxis']
+    eq['sibry2'] = eq['sibry']
     megpy_obj = Equilibrium(verbose=False)
     megpy_obj.raw = eq
+    megpy_obj.derived = eq
     megpy_obj.write_geqdsk(fname)
 
 
