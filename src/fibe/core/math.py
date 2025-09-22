@@ -391,9 +391,7 @@ def order_contour_points_by_angle(r_contour, z_contour, r_reference=None, z_refe
         z_reference = 0.5 * (np.nanmax(z_contour) + np.nanmin(z_contour))
     contour = r_contour + 1.0j * z_contour
     reference = r_reference + 1.0j * z_reference
-    angle = np.angle(contour - reference)
-    if np.any(angle < 0.0):
-        angle[angle < 0.0] = angle[angle < 0.0] + 2.0 * np.pi
+    angle = np.mod(np.angle(contour - reference), 2.0 * np.pi)
     coords = {'angle': angle}
     data_vars = {'r': (['angle'], r_contour), 'z': (['angle'], z_contour)}
     for k, v in extra_data:
@@ -598,9 +596,7 @@ def avoid_convex_curvature(r_contour, z_contour, r_point, z_point, r_reference=N
     v_vertex = r_vertex + 1.0j * z_vertex
     v_point = r_point + 1.0j * z_point
     r_ordered, z_ordered, angle_ordered, _ = order_contour_points_by_angle(r_contour, z_contour, r_reference, z_reference)
-    angle_point = np.angle(v_point - v_reference)
-    if angle_point < 0.0:
-        angle_point += 2.0 * np.pi
+    angle_point = np.mod(np.angle(v_point - v_reference), 2.0 * np.pi)
     dangle_ordered = angle_ordered - angle_point
     iangle = np.argmin(np.abs(dangle_ordered))
     jangle = iangle
@@ -731,7 +727,6 @@ def generate_boundary_splines(rbdry, zbdry, rmagx, zmagx, xpoints, enforce_conca
                 dx = p3 - p1
                 ta = (dx.imag * db.real - dx.real * db.imag) / (da.imag * db.real - da.real * db.imag)
                 tb = (dx.imag * da.real - dx.real * da.imag) / (da.imag * db.real - da.real * db.imag)
-                #tb = (ta * da.real - dx.real) / db.real
                 if tb > 1.0:
                     newp = vmagx + tb * (r_segment[j - 1] + 1.0j * z_segment[j - 1] - vmagx) / 0.99
                     r_segment[j - 1] = newp.real
@@ -867,33 +862,23 @@ def generate_boundary_gradient_spline(r_points, z_points, grad_points, r_referen
     # USING MAGNETIC AXIS AS CENTER
     v_reference = r_reference + 1.0j * z_reference
     v_points = r_points + 1.0j * z_points - v_reference
-    ds = xr.Dataset(coords={'angle': np.angle(v_points)}, data_vars={'length': (['angle'], np.abs(v_points)), 'gradient': (['angle'], grad_points)})
+    ds = xr.Dataset(coords={'angle': np.angle(v_points)}, data_vars={'gradient': (['angle'], grad_points)})
     ds = ds.drop_duplicates('angle').sortby('angle')
     angle_ordered = ds['angle'].to_numpy()
-    length_ordered = ds['length'].to_numpy()
     grad_ordered = ds['gradient'].to_numpy()
+    angle_ordered_extended = np.concatenate([angle_ordered, [angle_ordered[0] + 2.0 * np.pi]])
+    grad_ordered_extended = np.concatenate([grad_ordered, [grad_ordered[0]]])
 
-    tck = splrep(angle_ordered, grad_ordered, k=3, quiet=1)
-    if np.abs(angle_ordered[0] + np.pi) < tol:
-        angle_ordered[0] = -np.pi
-    if np.abs(angle_ordered[-1] - np.pi) < tol:
-        angle_ordered[-1] = np.pi
-    yy = None
-    if angle_ordered[0] == -np.pi:
-        yy = grad_ordered[0]
-    elif angle_ordered[-1] == np.pi:
-        yy = grad_ordered[-1]
-    if angle_ordered[0] > -np.pi:
-        if yy is None:
-            xx = angle_ordered[0]
-            yy = splev(xx, tck) - (np.pi + xx) * splev(xx, tck, der=1)  # Why?
-        angle_ordered = np.concatenate(([-np.pi], angle_ordered))
-        grad_ordered = np.concatenate(([yy], grad_ordered))
-    if angle_ordered[-1] < np.pi:
-        angle_ordered = np.concatenate((angle_ordered, [np.pi]))
-        grad_ordered = np.concatenate((grad_ordered, [yy]))
-    b = (float(np.nanmin(angle_ordered)), float(np.nanmax(angle_ordered)))
-    return {'tck': splrep(angle_ordered, grad_ordered, xb=b[0], xe=b[-1], k=3, quiet=1), 'bounds': b}
+    tck = splrep(angle_ordered_extended, grad_ordered_extended, k=3, per=True, quiet=1)
+    yy = splev(np.pi, tck) if angle_ordered_extended[-1] > np.pi else splev(-np.pi, tck)
+    mask = (angle_ordered >= -np.pi) & (angle_ordered <= np.pi)
+    if np.any(mask):
+        angle_ordered = angle_ordered[mask]
+        grad_ordered = grad_ordered[mask]
+    angle_ordered = np.concatenate(([-np.pi], angle_ordered, [np.pi]))
+    grad_ordered = np.concatenate(([yy], grad_ordered, [yy]))
+    b = (-np.pi, np.pi)
+    return {'tck': splrep(angle_ordered, grad_ordered, xb=b[0], xe=b[-1], k=3, per=True, quiet=1), 'bounds': b}
 
 
 def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gradr_tck, gradz_tck):
@@ -921,20 +906,16 @@ def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gr
         angmax = np.angle(vb1[k] - vmagx)
         angvec = np.angle(vvec - vmagx)
         angmask = np.isfinite(angvec)
-        if (angmin - angmax) > (2.0 * np.pi):
-            angmask = np.logical_and(
-                angmask,
-                angvec > 0.0
-            )
-            angvec.put(np.logical_not(angmask), angvec.compress(np.logical_not(angmask)) + 2.0 * np.pi)
-            angmax += 2.0 * np.pi
         numer = c0 * np.conj(dvb[k])
         mask = np.logical_and(
             angvec >= angmin,
             angvec < angmax
         )
-        if not np.all(angmask):
-            angvec.put(np.logical_not(angmask), angvec.compress(np.logical_not(angmask)) - 2.0 * np.pi)
+        if np.abs(angmax - angmin) > (1.9 * np.pi):
+            mask = np.logical_or(
+                angvec >= angmin,
+                angvec < angmax
+            )
         if not np.any(mask): continue
         ang = angvec.compress(mask)
         vvecc = vvec.compress(mask)
