@@ -41,6 +41,7 @@ from .math import (
     trace_contour_with_splines,
     trace_contour_with_megpy,
     compute_adjusted_contour_resolution,
+    compute_mxh_coefficients_from_contours,
     compute_contours_from_mxh_coefficients,
 )
 from ..utils.eqdsk import (
@@ -959,6 +960,21 @@ class FixedBoundaryEquilibrium():
             self._data['rbdry'] = np.concatenate([rbdry, [rbdry[0]]])
             self._data['zbdry'] = np.concatenate([zbdry, [zbdry[0]]])
             self._data['nbdry'] = len(self._data['rbdry'])
+
+
+    def compute_mxh_parameters(self, n_coeff=6):
+        if 'rvec' not in self._data or 'zvec' not in self._data:
+            self.create_grid_basis_meshes()
+        #if 'xpsi' not in self._data:
+        #    self.compute_normalized_psi_map()
+        if self._fs is None:
+            self._fs = self.trace_flux_surfaces()
+        self._mxh = {}
+        for level, contour in self._fs.items():
+            if level != self._data['simagx']:
+                self._mxh[float(level)] = compute_mxh_coefficients_from_contours(contour, r_reference=self._data['rmagx'], z_reference=self._data['zmagx'], n_coeff=n_coeff)
+            else:
+                self._mxh[float(level)] = {}
 
 
     def load_geqdsk(self, path, clean=True):
