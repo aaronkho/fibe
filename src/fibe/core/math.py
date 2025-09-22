@@ -1082,16 +1082,7 @@ def trace_contour_with_megpy(rvec, zvec, psi, level, rcheck, zcheck, boundary=Fa
         ref_point=np.array(check),
         x_point=boundary
     )
-    point_inside = Point(check)
-    for i in range(len(loops)):
-        loop = np.array(loops[i]).T
-        if loop.shape[0] > 4:
-            polygon = Polygon(loop)
-            if polygon.contains(point_inside):
-                contour_out['r'] = np.concatenate([loop[:, 0].flatten(), np.array([loop[0, 0]])])
-                contour_out['z'] = np.concatenate([loop[:, 1].flatten(), np.array([loop[0, 1]])])
-                break
-    if not contour_out and len(loops) > 0:
+    if len(loops) > 0:
         loop = np.array(loops[0]).T
         contour_out['r'] = np.concatenate([loop[:, 0].flatten(), np.array([loop[0, 0]])])
         contour_out['z'] = np.concatenate([loop[:, 1].flatten(), np.array([loop[0, 1]])])
