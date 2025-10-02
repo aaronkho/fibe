@@ -185,6 +185,17 @@ class FixedBoundaryEquilibrium():
             self.enforce_boundary_duplicate_at_end()
 
 
+    def define_grid_and_boundary_with_mxh(self, nr, nz, rgeo, zgeo, rminor, kappa, cos_coeffs, sin_coeffs, nbdry=301):
+        self.define_boundary_with_mxh(rgeo, zgeo, rminor, kappa, cos_coeffs, sin_coeffs, nbdry=nbdry)
+        rmin, rmax, zmin, zmax = generate_optimal_grid(nr, nz, self._data['rbdry'], self._data['zbdry'])
+        self._data['nr'] = nr
+        self._data['nz'] = nz
+        self._data['rleft'] = rmin
+        self._data['rdim'] = rmax - rmin
+        self._data['zmid'] = (zmax + zmin) / 2.0
+        self._data['zdim'] = zmax - zmin
+
+
     def initialize_psi(self):
         '''Initialize psi. Use if no geqdsk is read.'''
         self.scratch = True
@@ -315,6 +326,8 @@ class FixedBoundaryEquilibrium():
             self._data['rmagx'] = float(r)
             self._data['zmagx'] = float(z)
             self._data['simagx'] = float(bisplev(r, z, self._fit['psi_rz']['tck']))
+        else:
+            logger.warning('Magnetic axis could not be found using the old method.')
 
 
     def old_find_x_points(self, sanitize=False):
