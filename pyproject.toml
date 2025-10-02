@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=62.0", "wheel", "setuptools-scm"]
+requires = ["setuptools>=80.0", "wheel", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -13,7 +13,7 @@ authors = [
   { name = "Aaron Ho", email = "aaronkho@mit.edu" }
 ]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
   "Topic :: Utilities",
   "License :: OSI Approved :: Apache Software License",
@@ -33,7 +33,7 @@ dependencies = [
   "contourpy",
   "shapely",
   "eqdsk",
-  "megpy",
+  "megpy @ git+https://github.com/gsnoep/megpy.git@unstable",
 ]
 
 [project.optional-dependencies]
