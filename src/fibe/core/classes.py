@@ -183,6 +183,31 @@ class FixedBoundaryEquilibrium():
             self._data['zbdry'] = copy.deepcopy(boundary['z'].flatten())
             self._data['nbdry'] = len(self._data['rbdry'])
             self.enforce_boundary_duplicate_at_end()
+            a = copy.deepcopy(theta)
+            a_r = np.zeros_like(a)
+            a_t = np.ones_like(a)
+            for i in range(mxh['cos_coeffs'].shape[1]):
+                a += mxh['cos_coeffs'][:, i] * np.cos(float(i) * theta)
+                a_r += np.zeros_like(mxh['cos_coeffs'][:, i]) * np.cos(float(i) * theta)
+                a_t += mxh['cos_coeffs'][:, i] * float(-i) * np.sin(float(i) * theta)
+            for i in range(mxh['sin_coeffs'].shape[1]):
+                a += mxh['sin_coeffs'][:, i] * np.sin(float(i) * theta)
+                a_r += np.zeros_like(mxh['sin_coeffs'][:, i]) * np.sin(float(i) * theta)
+                a_t += mxh['sin_coeffs'][:, i] * float(i) * np.cos(float(i) * theta)
+            r = mxh['r0'] + mxh['r'] * np.cos(a)
+            r_r = np.zeros_like(mxh['r0']) + np.cos(a) - mxh['r'] * np.sin(a) * a_r
+            r_t = mxh['r'] * a_t * np.sin(a)
+            z = mxh['z0'] + mxh['kappa'] * mxh['r'] * np.sin(theta)
+            z_r = np.zeros_like(mxh['z0']) + mxh['kappa'] * (1.0 + np.zeros_like(mxh['kappa'])) * np.sin(theta)
+            z_t = mxh['kappa'] * mxh['r'] * np.cos(theta)
+            l_t = np.sqrt(np.power(r_t, 2.0) + np.power(z_t, 2.0))
+            j_r = r * (r_r * z_t - r_t * z_r)
+            inv_j_r = 1.0 / np.where(np.isclose(j_r, 0.0), 0.001, j_r)
+            grad_r = np.where(np.isclose(j_r, 0.0), 1.0, r * l_t * inv_j_r)
+            c = 2.0 * np.pi * np.sum((l_t / (r * grad_r))[:-1], axis=-1)
+            f = 2.0 * np.pi * mxh['r'] / (np.where(np.isclose(c, 0.0), 1.0, c) / 300.0)
+            self._data['mxh_a'] = np.pi * np.power(mxh['r'], 2.0) / np.trapezoid(self._data['rbdry'], self._data['zbdry'])
+            self._data['mxh_f'] = f
 
 
     def define_grid_and_boundary_with_mxh(self, nr, nz, rgeo, zgeo, rminor, kappa, cos_coeffs, sin_coeffs, nbdry=301):
@@ -194,6 +219,15 @@ class FixedBoundaryEquilibrium():
         self._data['rdim'] = rmax - rmin
         self._data['zmid'] = (zmax + zmin) / 2.0
         self._data['zdim'] = zmax - zmin
+
+
+    def initialize_minimum(self, pressure_axis, ip, bt):
+        if 'pres' not in self._data and 'nr' in self._data:
+            pressure_span = 0.9
+            pressure = np.exp(-np.power(np.linspace(0.0, 1.0, self._data['nr']) / 0.5, 2.0)) * pressure_span * pressure_axis + (1.0 - pressure_span) * pressure_axis
+            self.define_pressure_profile(pressure)
+            self._data['cpasma'] = ip
+            self._data['bcentr'] = bt
 
 
     def initialize_psi(self):
@@ -208,8 +242,16 @@ class FixedBoundaryEquilibrium():
             self._data['zbdry'],
             self._data['ijin']
         )
+        #self._data['simagx'] = np.nanmax(self._data['psi'])
         self._data['simagx'] = 1.0
         self._data['sibdry'] = 0.0
+        self.find_magnetic_axis_from_grid()
+        if 'fpol' not in self._data and 'bcentr' in self._data:
+            #fpol = np.linspace(self._data['rmagx'] * self._data['bcentr'], np.sign(self._data['bcentr']) * self._data['mxh_f'] * self._data['mxh_a'], self._data['nr'])
+            f_span = 0.95
+            f_axis = self._data['rmagx'] * self._data['bcentr']
+            fpol = np.linspace(f_axis, f_span * f_axis, self._data['nr'])
+            self.define_f_profile(fpol)
         if 'cpasma' not in self._data:
             self.compute_normalized_psi_map()
             self.initialize_current()
