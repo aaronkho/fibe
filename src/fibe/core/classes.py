@@ -6,6 +6,7 @@ from collections.abc import MutableMapping, Mapping, MutableSequence, Sequence, 
 import numpy as np
 import pandas as pd
 from scipy.interpolate import splev, bisplev
+from scipy.integrate import cumulative_simpson
 from scipy.sparse.linalg import factorized
 from scipy.optimize import root
 from shapely import Point, Polygon
@@ -221,7 +222,7 @@ class FixedBoundaryEquilibrium():
         self._data['zdim'] = zmax - zmin
 
 
-    def initialize_minimum(self, pressure_axis, ip, bt):
+    def initialize_profiles_with_minimal_input(self, pressure_axis, ip, bt):
         if 'pres' not in self._data and 'nr' in self._data:
             pressure_span = 0.9
             pressure = np.exp(-np.power(np.linspace(0.0, 1.0, self._data['nr']) / 0.5, 2.0)) * pressure_span * pressure_axis + (1.0 - pressure_span) * pressure_axis
@@ -826,6 +827,7 @@ class FixedBoundaryEquilibrium():
         psinorm = np.linspace(0.0, 1.0, len(self._data['qpsi']))
         self._fit['qpsi_fs'] = generate_bounded_1d_spline(self._data['qpsi'], xnorm=psinorm, symmetrical=True, smooth=smooth)
         self._data['qpsi'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['qpsi_fs']['tck'])
+        self.recompute_phi_profile(smooth=smooth)
 
 
     def recompute_q_profile_from_scratch(self, approximate_lcfs=False):
@@ -845,6 +847,18 @@ class FixedBoundaryEquilibrium():
             qpsi[-1] = qpsi[-2] + 2.0 * (qpsi[-2] - qpsi[-3])  # Linear interpolation to separatrix with increased slope
         self._fit['qpsi_fs'] = generate_bounded_1d_spline(qpsi, xnorm=psinorm, symmetrical=True, smooth=False)
         self._data['qpsi'] = qpsi
+        self.recompute_phi_profile(smooth=False)
+
+
+    def recompute_phi_profile(self, smooth=False):
+        self.save_original_data(['phi'])
+        self.save_original_fit(['phi_fs'])
+        if 'simagx' not in self._data or 'sibdry' not in self._data:
+            self.find_magnetic_axis()
+        if 'qpsi' in self._data:
+            psi = np.linspace(0.0, 1.0, self._data['nr']) * (self._data['sibdry'] - self._data['simagx']) + self._data['simagx']
+            psi_sign = np.sign(self._data['sibdry'] - self._data['simagx'])
+            self._data['phi'] = psi_sign * cumulative_simpson(self._data['qpsi'], x=psi_sign * psi, initial=0.0)
 
 
     def renormalize_psi(self, simagx=None, sibdry=None):
@@ -1024,12 +1038,34 @@ class FixedBoundaryEquilibrium():
         #    self.compute_normalized_psi_map()
         if self._fs is None:
             self._fs = self.trace_flux_surfaces()
-        self._mxh = {}
+        r0 = []
+        z0 = []
+        rm = []
+        kappa = []
+        cosc = []
+        sinc = []
         for level, contour in self._fs.items():
             if level != self._data['simagx']:
-                self._mxh[float(level)] = compute_mxh_coefficients_from_contours(contour, r_reference=self._data['rmagx'], z_reference=self._data['zmagx'], n_coeff=n_coeff)
+                mxh = compute_mxh_coefficients_from_contours(contour, r_reference=self._data['rmagx'], z_reference=self._data['zmagx'], n_coeff=n_coeff)
+                r0.append(mxh['r0'])
+                z0.append(mxh['z0'])
+                rm.append(mxh['r'])
+                kappa.append(mxh['kappa'])
+                cosc.append(mxh['cos_coeffs'])
+                sinc.append(mxh['sin_coeffs'])
             else:
-                self._mxh[float(level)] = {}
+                r0.append(np.atleast_1d(np.mean(contour['r'])))
+                z0.append(np.atleast_1d(np.mean(contour['z'])))
+                rm.append(np.atleast_1d([0.0]))
+                kappa.append(np.atleast_1d([1.0]))
+                cosc.append(np.atleast_2d(np.zeros((n_coeff + 1, ))))
+                sinc.append(np.atleast_2d(np.zeros((n_coeff + 1, ))))
+        self._data['mxh_r0'] = np.concatenate(r0, axis=0)
+        self._data['mxh_z0'] = np.concatenate(z0, axis=0)
+        self._data['mxh_r'] = np.concatenate(r, axis=0)
+        self._data['mxh_kappa'] = np.concatenate(kappa, axis=0)
+        self._data['mxh_cos'] = np.concatenate(cosc, axis=0)
+        self._data['mxh_sin'] = np.concatenate(sinc, axis=0)
 
 
     def load_geqdsk(self, path, clean=True):
@@ -1279,6 +1315,7 @@ class FixedBoundaryEquilibrium():
             f_factor = np.sign(self._data['bcentr'])
             p_factor = 1.0e-5
             q_factor = np.sign(self._data['bcentr'] * self._data['cpasma'])
+            phi_factor = 1.0
             ax1.plot(psinorm, f_factor * self._data['fpol'], c='b', label='F')
             if 'ffprime' in self._data:
                 ax2.plot(psinorm, f_factor * self._data['ffprime'] / self._data['fpol'], c='b', label='Fp')
@@ -1296,12 +1333,56 @@ class FixedBoundaryEquilibrium():
                 if 'qpsi_fs' in self._fit:
                     ax1.plot(psinorm, q_factor * splev(psinorm, self._fit['qpsi_fs']['tck']), c='g', ls='--', label='q Fit')
                     ax2.plot(psinorm, q_factor * splev(psinorm, self._fit['qpsi_fs']['tck'], der=1), c='g', ls='--', label='qp Fit')
+            if 'phi' in self._data:
+                ax1.plot(psinorm, phi_factor * self._data['phi'], c='m', label='phi')
             ax1.set_xlim(0.0, 1.0)
             ax1.set_xlabel('psi_norm [-]')
             ax1.set_ylabel('Profiles')
             ax2.set_xlim(0.0, 1.0)
             ax2.set_xlabel('psi_norm [-]')
             ax2.set_ylabel('Gradients')
+            fig.tight_layout()
+            if isinstance(save, (str, Path)):
+                fig.savefig(save, dpi=100)
+            plt.show()
+            plt.close(fig)
+
+
+    def plot_shaping_parameters(self, save=None):
+        if self._fs is not None:
+            import matplotlib.pyplot as plt
+            fig = plt.figure(figsize=(18, 6))
+            ax1 = fig.add_subplot(131)
+            ax2 = fig.add_subplot(132)
+            ax3 = fig.add_subplot(133)
+            psinorm = np.linspace(0.0, 1.0, self._data['nr'])
+            if 'mxh_r0' in self._data:
+                ax1.plot(psinorm, self._data['mxh_r0'], label='R0')
+            if 'mxh_z0' in self._data:
+                ax1.plot(psinorm, self._data['mxh_z0'], label='Z0')
+            if 'mxh_r' in self._data:
+                ax1.plot(psinorm, self._data['mxh_r'], label='r')
+            if 'mxh_kappa' in self._data:
+                ax1.plot(psinorm, self._data['mxh_kappa'], label='kappa')
+            if 'mxh_cos' in self._data:
+                for i in range(self._data['mxh_cos'].shape[1]):
+                    if i > 0:
+                        ax2.plot(psinorm, self._data['mxh_cos'][:, i], label=f'c{i:d}')
+                    else:
+                        ax1.plot(psinorm, self._data['mxh_cos'][:, i], label='c0')
+            if 'mxh_sin' in self._data:
+                for i in range(self._data['mxh_sin'].shape[1]):
+                    if i > 0:
+                        ax3.plot(psinorm, self._data['mxh_sin'][:, i], label=f's{i:d}')
+            ax1.set_xlim(0.0, 1.0)
+            ax1.set_xlabel('psi_norm [-]')
+            ax1.set_ylabel('Coefficients')
+            ax2.set_xlim(0.0, 1.0)
+            ax2.set_xlabel('psi_norm [-]')
+            ax2.set_ylabel('Coefficients')
+            ax3.set_xlim(0.0, 1.0)
+            ax3.set_xlabel('psi_norm [-]')
+            ax3.set_ylabel('Coefficients')
             fig.tight_layout()
             if isinstance(save, (str, Path)):
                 fig.savefig(save, dpi=100)
