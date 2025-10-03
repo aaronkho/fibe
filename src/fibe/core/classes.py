@@ -1051,12 +1051,13 @@ class FixedBoundaryEquilibrium():
         return cls(geqdsk=path)
 
 
-    def to_geqdsk(self, path, cocos=2):
+    def to_geqdsk(self, path, cocos=None):
         geqdsk = {k: v for k, v in self._data.items() if k in self.geqdsk_fields}
         geqdsk['gcase'] = 'FiBE'
         geqdsk['gid'] = 0
-        current_cocos = detect_cocos(geqdsk)
-        geqdsk = convert_cocos(geqdsk, current_cocos, cocos)
+        if isinstance(cocos, int):
+            current_cocos = detect_cocos(geqdsk)
+            geqdsk = convert_cocos(geqdsk, current_cocos, cocos)
         write_geqdsk_file(path, geqdsk)
 
 
