@@ -1046,6 +1046,30 @@ class FixedBoundaryEquilibrium():
             self.scratch = False
 
 
+    def insert_geqdsk_dict(self, geqdsk_dict, clean=True):
+        if isinstance(geqdsk_dict, dict) and 'nr' in geqdsk_dict and 'nz' in geqdsk_dict and 'rbdry' in geqdsk_dict and 'zbdry' in geqdsk_dict:
+            if clean:
+                self._data = {}
+                self._fit = {}
+                self.solver = None
+                self.error = None
+                self.converged = None
+                self.fs = None
+            self._data.update(geqdsk_dict)
+            self.enforce_boundary_duplicate_at_end()
+            self.scratch = False
+
+
+    def extract_geqdsk_dict(self, cocos=None):
+        geqdsk_dict = {k: v for k, v in self._data.items() if k in self.geqdsk_fields}
+        geqdsk_dict['gcase'] = 'FiBE'
+        geqdsk_dict['gid'] = 0
+        if isinstance(cocos, int):
+            current_cocos = detect_cocos(geqdsk_dict)
+            geqdsk_dict = convert_cocos(geqdsk_dict, current_cocos, cocos)
+        return geqdsk_dict
+
+
     @classmethod
     def from_geqdsk(cls, path):
         return cls(geqdsk=path)
