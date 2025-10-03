@@ -13,6 +13,7 @@ from scipy.interpolate import (
 )
 from scipy.sparse import spdiags
 from scipy.optimize import brentq
+from scipy.integrate import quad
 import contourpy
 from shapely import Point, Polygon
 from megpy import (
@@ -30,12 +31,12 @@ def generate_bounded_1d_spline(y, xnorm=None, symmetrical=True, smooth=False):
     xn = np.linspace(0.0, 1.0, len(yn))
     if isinstance(xnorm, np.ndarray) and len(xnorm) == len(yn):
         xn = copy.deepcopy(xnorm)
-    b = (0.0, 1.0)
+    b = (xn[0], xn[-1])
     xn_mirror = []
     yn_mirror = []
     w_mirror = [] if w is not None else None
     if symmetrical:
-        b = (-1.0, 1.0)
+        b = (-xn[-1], xn[-1])
         xn_mirror = -xn[::-1]
         yn_mirror = yn[::-1]
         w_mirror = w[::-1] if w is not None else None
@@ -390,9 +391,7 @@ def order_contour_points_by_angle(r_contour, z_contour, r_reference=None, z_refe
         z_reference = 0.5 * (np.nanmax(z_contour) + np.nanmin(z_contour))
     contour = r_contour + 1.0j * z_contour
     reference = r_reference + 1.0j * z_reference
-    angle = np.angle(contour - reference)
-    if np.any(angle < 0.0):
-        angle[angle < 0.0] = angle[angle < 0.0] + 2.0 * np.pi
+    angle = np.mod(np.angle(contour - reference), 2.0 * np.pi)
     coords = {'angle': angle}
     data_vars = {'r': (['angle'], r_contour), 'z': (['angle'], z_contour)}
     for k, v in extra_data:
@@ -597,9 +596,7 @@ def avoid_convex_curvature(r_contour, z_contour, r_point, z_point, r_reference=N
     v_vertex = r_vertex + 1.0j * z_vertex
     v_point = r_point + 1.0j * z_point
     r_ordered, z_ordered, angle_ordered, _ = order_contour_points_by_angle(r_contour, z_contour, r_reference, z_reference)
-    angle_point = np.angle(v_point - v_reference)
-    if angle_point < 0.0:
-        angle_point += 2.0 * np.pi
+    angle_point = np.mod(np.angle(v_point - v_reference), 2.0 * np.pi)
     dangle_ordered = angle_ordered - angle_point
     iangle = np.argmin(np.abs(dangle_ordered))
     jangle = iangle
@@ -640,8 +637,12 @@ def generate_boundary_splines(rbdry, zbdry, rmagx, zmagx, xpoints, enforce_conca
     r_ordered, z_ordered, angle_ordered, _ = order_contour_points_by_angle(rbdry, zbdry, rmagx, zmagx, close_contour=True)
     v_ordered = r_ordered + 1.0j * z_ordered
     length_ordered = np.abs(v_ordered - vmagx)
+    rxps = np.array([xp[0] for xp in xpoints])
+    zxps = np.array([xp[-1] for xp in xpoints])
+    rxp_ordered, zxp_ordered, axp_ordered, _ = order_contour_points_by_angle(rxps, zxps, rmagx, zmagx, close_contour=False)
+    xps = [np.array([r, z]) for r, z in zip(rxp_ordered, zxp_ordered)]
     mask = np.isfinite(angle_ordered)
-    for i, xp in enumerate(xpoints):
+    for i, xp in enumerate(xps):
         rxp = xp[0]
         zxp = xp[-1]
         vxp = rxp + 1.0j * zxp
@@ -660,7 +661,7 @@ def generate_boundary_splines(rbdry, zbdry, rmagx, zmagx, xpoints, enforce_conca
     angle_ordered = angle_ordered[mask]
     length_ordered = length_ordered[mask]
     splines = []
-    for i, xp in enumerate(xpoints):
+    for i, xp in enumerate(xps):
         r_xpa = xp[0]
         z_xpa = xp[-1]
         v_xpa = r_xpa + 1.0j * z_xpa
@@ -673,9 +674,9 @@ def generate_boundary_splines(rbdry, zbdry, rmagx, zmagx, xpoints, enforce_conca
         z_segment = None
         angle_segment = None
         length_segment = None
-        if i + 1 < len(xpoints):
-            r_xpb = xpoints[i + 1][0]
-            z_xpb = xpoints[i + 1][-1]
+        if i + 1 < len(xps):
+            r_xpb = xps[i + 1][0]
+            z_xpb = xps[i + 1][-1]
             v_xpb = r_xpb + 1.0j * z_xpb
             length_xpb = np.abs(v_xpb - vmagx)
             angle_xpb = np.angle(v_xpb - vmagx)
@@ -696,8 +697,8 @@ def generate_boundary_splines(rbdry, zbdry, rmagx, zmagx, xpoints, enforce_conca
             length_segment = np.concatenate([[length_xpa], length_ordered.compress(smask)])
             angle_segment = np.concatenate([[angle_xpa], angle_ordered.compress(smask)])
             angle_segment = angle_segment - 2.0 * np.pi
-            r_xpb = xpoints[0][0]
-            z_xpb = xpoints[0][-1]
+            r_xpb = xps[0][0]
+            z_xpb = xps[0][-1]
             v_xpb = r_xpb + 1.0j * z_xpb
             length_xpb = np.abs(v_xpb - vmagx)
             angle_xpb = np.angle(v_xpb - vmagx)
@@ -726,7 +727,6 @@ def generate_boundary_splines(rbdry, zbdry, rmagx, zmagx, xpoints, enforce_conca
                 dx = p3 - p1
                 ta = (dx.imag * db.real - dx.real * db.imag) / (da.imag * db.real - da.real * db.imag)
                 tb = (dx.imag * da.real - dx.real * da.imag) / (da.imag * db.real - da.real * db.imag)
-                #tb = (ta * da.real - dx.real) / db.real
                 if tb > 1.0:
                     newp = vmagx + tb * (r_segment[j - 1] + 1.0j * z_segment[j - 1] - vmagx) / 0.99
                     r_segment[j - 1] = newp.real
@@ -737,6 +737,8 @@ def generate_boundary_splines(rbdry, zbdry, rmagx, zmagx, xpoints, enforce_conca
                     r_segment[j - 1] = newp.real
                     z_segment[j - 1] = newp.imag
                     length_segment[j - 1] = np.abs(newp - vmagx)
+        #if angle_segment[0] > angle_segment[-1]:
+        #    angle_segment[angle_segment > np.pi] = angle_segment[angle_segment > np.pi] - 2.0 * np.pi
         spl = make_interp_spline(angle_segment, length_segment, bc_type=None)
         splines.append({'tck': spl.tck, 'bounds': (float(np.nanmin(angle_segment)), float(np.nanmax(angle_segment)))})
     if len(splines) == 0:
@@ -860,33 +862,23 @@ def generate_boundary_gradient_spline(r_points, z_points, grad_points, r_referen
     # USING MAGNETIC AXIS AS CENTER
     v_reference = r_reference + 1.0j * z_reference
     v_points = r_points + 1.0j * z_points - v_reference
-    ds = xr.Dataset(coords={'angle': np.angle(v_points)}, data_vars={'length': (['angle'], np.abs(v_points)), 'gradient': (['angle'], grad_points)})
+    ds = xr.Dataset(coords={'angle': np.angle(v_points)}, data_vars={'gradient': (['angle'], grad_points)})
     ds = ds.drop_duplicates('angle').sortby('angle')
     angle_ordered = ds['angle'].to_numpy()
-    length_ordered = ds['length'].to_numpy()
     grad_ordered = ds['gradient'].to_numpy()
+    angle_ordered_extended = np.concatenate([angle_ordered, [angle_ordered[0] + 2.0 * np.pi]])
+    grad_ordered_extended = np.concatenate([grad_ordered, [grad_ordered[0]]])
 
-    tck = splrep(angle_ordered, grad_ordered, k=3, quiet=1)
-    if np.abs(angle_ordered[0] + np.pi) < tol:
-        angle_ordered[0] = -np.pi
-    if np.abs(angle_ordered[-1] - np.pi) < tol:
-        angle_ordered[-1] = np.pi
-    yy = None
-    if angle_ordered[0] == -np.pi:
-        yy = grad_ordered[0]
-    elif angle_ordered[-1] == np.pi:
-        yy = grad_ordered[-1]
-    if angle_ordered[0] > -np.pi:
-        if yy is None:
-            xx = angle_ordered[0]
-            yy = splev(xx, tck) - (np.pi + xx) * splev(xx, tck, der=1)  # Why?
-        angle_ordered = np.concatenate(([-np.pi], angle_ordered))
-        grad_ordered = np.concatenate(([yy], grad_ordered))
-    if angle_ordered[-1] < np.pi:
-        angle_ordered = np.concatenate((angle_ordered, [np.pi]))
-        grad_ordered = np.concatenate((grad_ordered, [yy]))
-    b = (float(np.nanmin(angle_ordered)), float(np.nanmax(angle_ordered)))
-    return {'tck': splrep(angle_ordered, grad_ordered, xb=b[0], xe=b[-1], k=3, quiet=1), 'bounds': b}
+    tck = splrep(angle_ordered_extended, grad_ordered_extended, k=3, per=True, quiet=1)
+    yy = splev(np.pi, tck) if angle_ordered_extended[-1] > np.pi else splev(-np.pi, tck)
+    mask = (angle_ordered >= -np.pi) & (angle_ordered <= np.pi)
+    if np.any(mask):
+        angle_ordered = angle_ordered[mask]
+        grad_ordered = grad_ordered[mask]
+    angle_ordered = np.concatenate(([-np.pi], angle_ordered, [np.pi]))
+    grad_ordered = np.concatenate(([yy], grad_ordered, [yy]))
+    b = (-np.pi, np.pi)
+    return {'tck': splrep(angle_ordered, grad_ordered, xb=b[0], xe=b[-1], k=3, per=True, quiet=1), 'bounds': b}
 
 
 def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gradr_tck, gradz_tck):
@@ -914,20 +906,16 @@ def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gr
         angmax = np.angle(vb1[k] - vmagx)
         angvec = np.angle(vvec - vmagx)
         angmask = np.isfinite(angvec)
-        if (angmin - angmax) > (2.0 * np.pi):
-            angmask = np.logical_and(
-                angmask,
-                angvec > 0.0
-            )
-            angvec.put(np.logical_not(angmask), angvec.compress(np.logical_not(angmask)) + 2.0 * np.pi)
-            angmax += 2.0 * np.pi
         numer = c0 * np.conj(dvb[k])
         mask = np.logical_and(
             angvec >= angmin,
             angvec < angmax
         )
-        if not np.all(angmask):
-            angvec.put(np.logical_not(angmask), angvec.compress(np.logical_not(angmask)) - 2.0 * np.pi)
+        if np.abs(angmax - angmin) > (1.9 * np.pi):
+            mask = np.logical_or(
+                angvec >= angmin,
+                angvec < angmax
+            )
         if not np.any(mask): continue
         ang = angvec.compress(mask)
         vvecc = vvec.compress(mask)
@@ -1075,17 +1063,8 @@ def trace_contour_with_megpy(rvec, zvec, psi, level, rcheck, zcheck, boundary=Fa
         ref_point=np.array(check),
         x_point=boundary
     )
-    point_inside = Point(check)
-    for i in range(len(loops)):
-        loop = np.array(loops[i]).T
-        if loop.shape[0] > 4:
-            polygon = Polygon(loop)
-            if polygon.contains(point_inside):
-                contour_out['r'] = np.concatenate([loop[:, 0].flatten(), np.array([loop[0, 0]])])
-                contour_out['z'] = np.concatenate([loop[:, 1].flatten(), np.array([loop[0, 1]])])
-                break
-    if not contour_out and len(loops) > 0:
-        loop = np.array(loops[0]).T
+    if len(loops['contours']) > 0:
+        loop = np.array(loops['contours'][0]).T
         contour_out['r'] = np.concatenate([loop[:, 0].flatten(), np.array([loop[0, 0]])])
         contour_out['z'] = np.concatenate([loop[:, 1].flatten(), np.array([loop[0, 1]])])
     return contour_out
@@ -1105,14 +1084,31 @@ def compute_adjusted_contour_resolution(r_axis, z_axis, r_boundary, z_boundary, 
     return npoints
 
 
-def compute_mxh_coefficients_from_contours(fs):
-    # Incomplete!
-    r0 = (np.max(fs['r'][:-1]) + np.min(fs['r'][:-1])) / 2
-    z0 = (np.max(fs['z'][:-1]) + np.min(fs['z'][:-1])) / 2
-    r = (np.max(fs['r'][:-1]) - np.min(fs['r'][:-1])) / 2
-    kappa = ((np.max(fs['z'][:-1]) - np.min(fs['z'][:-1])) / 2) / r
-    shape[:4] = [r0, z0, r, kappa]
-    return None
+def compute_mxh_coefficients_from_contours(fs, r_reference=None, z_reference=None, n_coeff=6):
+    r_ref = r_reference if isinstance(r_reference, (float, int)) else np.nanmean(fs['r'])
+    z_ref = z_reference if isinstance(z_reference, (float, int)) else np.nanmean(fs['z'])
+    r_ordered, z_ordered, angle_ordered, _ = order_contour_points_by_angle(fs['r'], fs['z'], r_ref, z_ref, close_contour=True)
+    v_ordered = r_ordered + 1.0j * z_ordered
+    v_ref = r_ref + 1.0j * z_ref
+    length_ordered = np.abs(v_ordered - v_ref)
+    r0 = (np.nanmax(r_ordered) + np.nanmin(r_ordered)) / 2.0
+    z0 = (np.nanmax(z_ordered) + np.nanmin(z_ordered)) / 2.0
+    r = (np.nanmax(r_ordered) - np.nanmin(r_ordered)) / 2.0
+    kappa = ((np.nanmax(z_ordered) - np.nanmin(z_ordered)) / 2.0) / r
+    rc = np.where((r_ordered - r0) / r > 1.0, 1.0, np.where((r_ordered - r0) / r < -1.0, -1.0, (r_ordered - r0) / r))
+    angle_ordered_r = np.where(z_ordered[:-1] < z_ref, 2.0 * np.pi - np.arccos(rc[:-1]), np.arccos(rc[:-1]))
+    angle_ordered_r = np.concatenate([angle_ordered_r, [angle_ordered_r[0] + 2.0 * np.pi]])
+    zc = np.where((z_ordered - z0) / (kappa * r) > 1.0, 1.0, np.where((z_ordered - z0) / (kappa * r) < -1.0, -1.0, (z_ordered - z0) / (kappa * r)))
+    angle_ordered_z = np.where(r_ordered[:-1] < r_ref, np.pi - np.arcsin(zc[:-1]), np.arcsin(zc[:-1]))
+    angle_ordered_z = np.where(angle_ordered_z < 0.0, 2.0 * np.pi + angle_ordered_z, angle_ordered_z)
+    angle_ordered_z = np.concatenate([angle_ordered_z, [angle_ordered_z[0] + 2.0 * np.pi]])
+    sinc = np.zeros((n_coeff + 1, ))
+    cosc = np.zeros((n_coeff + 1, ))
+    for i in range(n_coeff + 1):
+        sinc[i] = quad(np.interp, 0.0, 2.0 * np.pi, weight='sin', wvar=i, args=(angle_ordered_z, angle_ordered_r - angle_ordered_z))[0] / np.pi
+        cosc[i] = quad(np.interp, 0.0, 2.0 * np.pi, weight='cos', wvar=i, args=(angle_ordered_z, angle_ordered_r - angle_ordered_z))[0] / np.pi
+    cosc[0] /= 2.0
+    return {'r0': np.array([r0]).flatten(), 'z0': np.array([z0]).flatten(), 'r': np.array([r]).flatten(), 'kappa': np.array([kappa]), 'cos_coeffs': cosc.flatten(), 'sin_coeffs': sinc.flatten()}
 
 
 def compute_contours_from_mxh_coefficients(mxh, theta):
