@@ -31,12 +31,12 @@ def generate_bounded_1d_spline(y, xnorm=None, symmetrical=True, smooth=False):
     xn = np.linspace(0.0, 1.0, len(yn))
     if isinstance(xnorm, np.ndarray) and len(xnorm) == len(yn):
         xn = copy.deepcopy(xnorm)
-    b = (0.0, 1.0)
+    b = (xn[0], xn[-1])
     xn_mirror = []
     yn_mirror = []
     w_mirror = [] if w is not None else None
     if symmetrical:
-        b = (-1.0, 1.0)
+        b = (-xn[-1], xn[-1])
         xn_mirror = -xn[::-1]
         yn_mirror = yn[::-1]
         w_mirror = w[::-1] if w is not None else None
@@ -1108,7 +1108,7 @@ def compute_mxh_coefficients_from_contours(fs, r_reference=None, z_reference=Non
         sinc[i] = quad(np.interp, 0.0, 2.0 * np.pi, weight='sin', wvar=i, args=(angle_ordered_z, angle_ordered_r - angle_ordered_z))[0] / np.pi
         cosc[i] = quad(np.interp, 0.0, 2.0 * np.pi, weight='cos', wvar=i, args=(angle_ordered_z, angle_ordered_r - angle_ordered_z))[0] / np.pi
     cosc[0] /= 2.0
-    return {'r0': r0, 'z0': z0, 'r': r, 'kappa': kappa, 'cos_coeffs': cosc, 'sin_coeffs': sinc}
+    return {'r0': np.array([r0]).flatten(), 'z0': np.array([z0]).flatten(), 'r': np.array([r]).flatten(), 'kappa': np.array([kappa]), 'cos_coeffs': cosc.flatten(), 'sin_coeffs': sinc.flatten()}
 
 
 def compute_contours_from_mxh_coefficients(mxh, theta):
