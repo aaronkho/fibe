@@ -53,12 +53,12 @@ def generate_bounded_1d_spline(y, xnorm=None, symmetrical=True, smooth=False):
     return {'tck': splrep(xn_fit, yn_fit, w_fit, xb=b[0], xe=b[-1], k=3, quiet=1), 'bounds': b}
 
 
-def generate_2d_spline(x, y, z):
+def generate_2d_spline(x, y, z, s=0):
     xmin = np.nanmin(x)
     xmax = np.nanmax(x)
     ymin = np.nanmin(y)
     ymax = np.nanmax(y)
-    z_spline = RectBivariateSpline(x, y, z)
+    z_spline = RectBivariateSpline(x, y, z, s=s)
     tr, tz, c = z_spline.tck
     kr, kz = z_spline.degrees
     return {'tck': (tr, tz, c, kr, kz), 'bounds': (xmin, ymin, xmax, ymax)}
@@ -856,7 +856,7 @@ def compute_gradients_at_boundary(rvec, zvec, flat_psi, inout, ijedge, a1, a2, b
     return rgradr, zgradr, gradr, rgradz, zgradz, gradz
 
 
-def generate_boundary_gradient_spline(r_points, z_points, grad_points, r_reference, z_reference, tol=1.0e-6):
+def generate_boundary_gradient_spline(r_points, z_points, grad_points, r_reference, z_reference, s=0, tol=1.0e-6):
 
     # SPLINE GRAD PSI AS A FUNCTION OF ANGLE ALONG BOUNDARY
     # USING MAGNETIC AXIS AS CENTER
@@ -878,7 +878,7 @@ def generate_boundary_gradient_spline(r_points, z_points, grad_points, r_referen
     angle_ordered = np.concatenate(([-np.pi], angle_ordered, [np.pi]))
     grad_ordered = np.concatenate(([yy], grad_ordered, [yy]))
     b = (-np.pi, np.pi)
-    return {'tck': splrep(angle_ordered, grad_ordered, xb=b[0], xe=b[-1], k=3, per=True, quiet=1), 'bounds': b}
+    return {'tck': splrep(angle_ordered, grad_ordered, xb=b[0], xe=b[-1], k=3, s=s, per=True, quiet=1), 'bounds': b}
 
 
 def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gradr_tck, gradz_tck):
@@ -889,6 +889,8 @@ def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gr
     vb0 = vbdry[:-1]
     vb1 = vbdry[1:]
     dvb = vb1 - vb0
+    cb = vb0 - vmagx
+    dcb = 0.5 * np.abs(cb[1] - cb[-1])
 
     # VECTORS TO EXTERIOR GRID POINTS
     nr = rvec.size
@@ -901,7 +903,7 @@ def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gr
 
     ## VECTORS BETWEEN EXTERIOR POINTS AND BOUNDARY POINTS
     for k in range(dvb.size):
-        c0 = vb0[k] - vmagx
+        c0 = cb[k]
         angmin = np.angle(c0)
         angmax = np.angle(vb1[k] - vmagx)
         angvec = np.angle(vvec - vmagx)
@@ -911,7 +913,7 @@ def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gr
             angvec >= angmin,
             angvec < angmax
         )
-        if np.abs(angmax - angmin) > (1.9 * np.pi):
+        if np.abs(angmax - angmin) > (2.0 * np.pi - 2.0 * dcb):
             mask = np.logical_or(
                 angvec >= angmin,
                 angvec < angmax
@@ -1084,22 +1086,20 @@ def compute_adjusted_contour_resolution(r_axis, z_axis, r_boundary, z_boundary, 
     return npoints
 
 
-def compute_mxh_coefficients_from_contours(fs, r_reference=None, z_reference=None, n_coeff=6):
-    r_ref = r_reference if isinstance(r_reference, (float, int)) else np.nanmean(fs['r'])
-    z_ref = z_reference if isinstance(z_reference, (float, int)) else np.nanmean(fs['z'])
-    r_ordered, z_ordered, angle_ordered, _ = order_contour_points_by_angle(fs['r'], fs['z'], r_ref, z_ref, close_contour=True)
+def compute_mxh_coefficients_from_contours(fs, n_coeff=6):
+    r0 = (np.nanmax(fs['r']) + np.nanmin(fs['r'])) / 2.0
+    z0 = (np.nanmax(fs['z']) + np.nanmin(fs['z'])) / 2.0
+    r_ordered, z_ordered, angle_ordered, _ = order_contour_points_by_angle(fs['r'], fs['z'], float(r0), float(z0), close_contour=True)
     v_ordered = r_ordered + 1.0j * z_ordered
-    v_ref = r_ref + 1.0j * z_ref
-    length_ordered = np.abs(v_ordered - v_ref)
-    r0 = (np.nanmax(r_ordered) + np.nanmin(r_ordered)) / 2.0
-    z0 = (np.nanmax(z_ordered) + np.nanmin(z_ordered)) / 2.0
+    v0 = r0 + 1.0j * z0
+    length_ordered = np.abs(v_ordered - v0)
     r = (np.nanmax(r_ordered) - np.nanmin(r_ordered)) / 2.0
     kappa = ((np.nanmax(z_ordered) - np.nanmin(z_ordered)) / 2.0) / r
-    rc = np.where((r_ordered - r0) / r > 1.0, 1.0, np.where((r_ordered - r0) / r < -1.0, -1.0, (r_ordered - r0) / r))
-    angle_ordered_r = np.where(z_ordered[:-1] < z_ref, 2.0 * np.pi - np.arccos(rc[:-1]), np.arccos(rc[:-1]))
+    rc = np.clip((r_ordered - r0) / r, -1.0, 1.0)
+    angle_ordered_r = np.where(z_ordered[:-1] < z0, 2.0 * np.pi - np.arccos(rc[:-1]), np.arccos(rc[:-1]))
     angle_ordered_r = np.concatenate([angle_ordered_r, [angle_ordered_r[0] + 2.0 * np.pi]])
-    zc = np.where((z_ordered - z0) / (kappa * r) > 1.0, 1.0, np.where((z_ordered - z0) / (kappa * r) < -1.0, -1.0, (z_ordered - z0) / (kappa * r)))
-    angle_ordered_z = np.where(r_ordered[:-1] < r_ref, np.pi - np.arcsin(zc[:-1]), np.arcsin(zc[:-1]))
+    zc = np.clip((z_ordered - z0) / (kappa * r), -1.0, 1.0)
+    angle_ordered_z = np.where(r_ordered[:-1] < r0, np.pi - np.arcsin(zc[:-1]), np.arcsin(zc[:-1]))
     angle_ordered_z = np.where(angle_ordered_z < 0.0, 2.0 * np.pi + angle_ordered_z, angle_ordered_z)
     angle_ordered_z = np.concatenate([angle_ordered_z, [angle_ordered_z[0] + 2.0 * np.pi]])
     sinc = np.zeros((n_coeff + 1, ))
