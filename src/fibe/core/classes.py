@@ -1150,6 +1150,7 @@ class FixedBoundaryEquilibrium():
 
 
     def plot_contour(self, save=None):
+        debug = True
         if 'rleft' in self._data and 'rdim' in self._data and 'zmid' in self._data and 'zdim' in self._data:
             lvec = np.array([0.01, 0.04, 0.09, 0.15, 0.22, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999, 1.0, 1.02, 1.05, 1.1, 1.2])
             import matplotlib.pyplot as plt
@@ -1176,6 +1177,16 @@ class FixedBoundaryEquilibrium():
             if 'xpoints' in self._data and len(self._data['xpoints']) > 0:
                 xparr = np.atleast_2d(self._data['xpoints'])
                 ax.scatter(xparr[:, 0], xparr[:, 1], marker='x', facecolors='r', label='X-points')
+            if debug:
+                if 'inout' in self._data:
+                    mask = self._data['inout'] == 0
+                    ax.scatter(rmesh.ravel()[~mask], zmesh.ravel()[~mask], c='g', marker='.', s=0.1)
+                    ax.scatter(rmesh.ravel()[mask], zmesh.ravel()[mask], c='k', marker='x')
+                if 'gradr_bdry' in self._fit and 'gradz_bdry' in self._fit:
+                    abdry = np.angle(self._data['rbdry'] + 1.0j * self._data['zbdry'])
+                    mag_grad_psi = splev(abdry, self._fit['gradr_bdry']['tck']) ** 2 + splev(abdry, self._fit['gradz_bdry']['tck']) ** 2
+                    mag_grad_psi_norm = mag_grad_psi / (np.nanmax(mag_grad_psi) - np.nanmin(mag_grad_psi))
+                    ax.scatter(self._data['rbdry'], self._data['zbdry'], c=mag_grad_psi_norm, cmap='cividis')
             ax.set_xlim(rmin, rmax)
             ax.set_ylim(zmin, zmax)
             ax.set_xlabel('R [m]')
