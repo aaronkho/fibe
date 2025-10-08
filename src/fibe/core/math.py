@@ -571,18 +571,22 @@ def generate_x_point_candidates(rbdry, zbdry, rmagx, zmagx, psi_tck, dr, dz):
     return xpoint_candidates
 
 
-def compute_intersection_from_line_segment_complex(p1s, p1e, p2s, p2e):
-    # u = (x1 - x3 + t * (x2 - x1)) / (x4 - x3)
-    # t * (y2 - y1 - (x2 - x1) * (y4 - y3) / (x4 - x3)) = y3 - y1 - (x3 - x1) * (y4 - y3) / (x4 - x3)
-    d1 = p1e - p1s
-    d2 = p2e - p2s
+def compute_intersection_from_ray_complex(p1s, p1d, p2s, p2d):
     dx = p2s - p1s
     l1 = np.nan
     l2 = np.nan
-    if not np.isclose(d1.imag * d2.real - d1.real * d2.imag, 0.0):
-        l1 = (dx.imag * d2.real - dx.real * d2.imag) / (d1.imag * d2.real - d1.real * d2.imag)
-        l2 = (dx.imag * d1.real - dx.real * d1.imag) / (d1.imag * d2.real - d1.real * d2.imag)
+    if not np.isclose(p1d.imag * p2d.real - p1d.real * p2d.imag, 0.0):
+        l1 = (dx.imag * p2d.real - dx.real * p2d.imag) / (p1d.imag * p2d.real - p1d.real * p2d.imag)
+        l2 = (dx.imag * p1d.real - dx.real * p1d.imag) / (p1d.imag * p2d.real - p1d.real * p2d.imag)
     return l1, l2
+
+
+def compute_intersection_from_line_segment_complex(p1s, p1e, p2s, p2e):
+    # u = (x1 - x3 + t * (x2 - x1)) / (x4 - x3)
+    # t * (y2 - y1 - (x2 - x1) * (y4 - y3) / (x4 - x3)) = y3 - y1 - (x3 - x1) * (y4 - y3) / (x4 - x3)
+    p1d = p1e - p1s
+    p2d = p2e - p2s
+    return compute_intersection_from_ray_complex(p1s, p1d, p2, p2d)
 
 
 def compute_intersection_from_line_segment_coordinates(r1s, z1s, r1e, z1e, r2s, z2s, r2e, z2e):
@@ -901,7 +905,6 @@ def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gr
     vb0 = vbdry[:-1]
     vb1 = vbdry[1:]
     dvb = vb1 - vb0
-    nvb = -1.0j * dvb / np.abs(dvb)
     cb = vb0 - vmagx
     dcb = 2.0 * np.pi / float(len(rbdry) - 1)
 
@@ -946,6 +949,54 @@ def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gr
     psi.ravel().put(ijout, psiout)
 
     return psi
+
+
+def compute_psi_extension_modified():
+
+    # VECTORS TO AND BETWEEN BOUNDARY POINTS
+    vmagx = rmagx + 1.0j * zmagx
+    vbdry = rbdry + 1.0j * zbdry
+    vb0 = vbdry[:-1]
+    vb1 = vbdry[1:]
+    dvb = vb1 - vb0
+    nvb = -1.0j * dvb / np.abs(dvb)
+    nbdry = np.concatenate([nvb[:-1] + nvb[1:], nvb[-1] + nvb[0]])
+    for k in range(nbdry.size):
+        if k == 0:
+            nbdry[k] /= np.abs(nbdry[k])
+        else:
+            _, nfac = compute_intersection_from_ray_complex(vbdry[k - 1] + nbdry[k - 1], dvb[k - 1], vbdry[k], nbdry[k])
+            nbdry[k] *= nfac
+
+    # VECTORS TO EXTERIOR GRID POINTS
+    nr = rvec.size
+    jout = ijout // nr
+    iout = ijout - nr * jout
+    vvec = rvec.take(iout) + 1.0j * zvec.take(jout)
+
+    psiout = np.zeros(vvec.shape, dtype=float)
+    ivvec = np.arange(vvec.size)
+
+    ## VECTORS BETWEEN EXTERIOR POINTS AND BOUNDARY POINTS
+    for k in range(dvb.size):
+        angmin = np.angle(vvec - vb0[k]) - np.angle(nbdry[k])
+        angminu = (angmin > (2.0 * np.pi))
+        angminl = (angmin < (-2.0 * np.pi))
+        if np.any(angminu):
+            angmin[angminu] = angmin[angminu] - 2.0 * np.pi
+        if np.any(angminl):
+            angmin[angminl] = angmin[angminl] + 2.0 * np.pi
+        angmax = np.angle(vvec - vb1[k]) - np.angle(nbdry[k + 1])
+        angmaxu = (angmax > (2.0 * np.pi))
+        angmaxl = (angmax < (-2.0 * np.pi))
+        if np.any(angmaxu):
+            angmax[angmaxu] = angmax[angmaxu] - 2.0 * np.pi
+        if np.any(angminl):
+            angmin[angmaxl] = angmin[angmaxl] + 2.0 * np.pi
+        mask = np.logical_and(
+            angmin >= 0.0,
+            angmax < 0.0
+        )
 
 
 def compute_flux_surface_quantities(psinorm, r_contour, z_contour, psi_tck=None, fpol_tck=None):
