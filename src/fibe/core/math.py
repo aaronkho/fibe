@@ -41,9 +41,6 @@ def generate_bounded_1d_spline(y, xnorm=None, symmetrical=True, smooth=False):
         yn_mirror = yn[::-1]
         w_mirror = w[::-1] if w is not None else None
         if np.isclose(xn[0], xn_mirror[-1]):
-            #xn = xn[1:]
-            #yn = yn[1:]
-            #w = w[1:] if w is not None else None
             xn_mirror = xn_mirror[:-1]
             yn_mirror = yn_mirror[:-1]
             w_mirror = w_mirror[:-1] if w_mirror is not None else None
@@ -161,17 +158,6 @@ def generate_boundary_maps(rvec, zvec, rbdry, zbdry):
 
     ijout = np.arange(nr * nz).astype(int).compress(inout == 0)
     ijedge = np.arange(nr * nz).astype(int).compress(inout > 1)
-
-    #ijoutl = ijout.compress(inout.take((ijout - 1) % (nr * nz)) > 0)
-    #ijoutr = ijout.compress(inout.take((ijout + 1) % (nr * nz)) > 0)
-    #ijoutb = ijout.compress(inout.take((ijout - nr) % (nr * nz)) > 0)
-    #ijouta = ijout.compress(inout.take((ijout + nr) % (nr * nz)) > 0)
-    #inout.put(ijoutl, inout.take(ijoutl) | -0b1)
-    #inout.put(ijoutr, inout.take(ijoutl) | -0b10)
-    #inout.put(ijoutb, inout.take(ijoutl) | -0b100)
-    #inout.put(ijouta, inout.take(ijoutl) | -0b1000)
-    #ijskin = np.arange(nr * nz).astype(int).compress(inout < 0)
-    #inout.put(inout < 0, 0)
 
     return inout, ijin, ijout, ijedge
 
@@ -317,7 +303,6 @@ def generate_finite_difference_grid(rvec, zvec, rbdry, zbdry):
         'ijin': ijin,
         'ijout': ijout,
         'ijedge': ijedge,
-        #'ijskin': ijskin,
     }
     out['matrix'] = compute_finite_difference_matrix(nr, nz, s1, s2, s3, s4)
 
@@ -546,11 +531,6 @@ def generate_x_point_candidates(rbdry, zbdry, rmagx, zmagx, psi_tck, dr, dz):
         p1, p2 = lines[-1]
         p3, p4 = split_lines[i + 1][0] if i + 1 < len(split_lines) else split_lines[0][0]
         ta, tb = compute_intersection_from_line_segment_complex(p1, p2, p3, p4)
-        #da = p2 - p1
-        #db = p4 - p3
-        #dx = p3 - p1
-        #ta = (dx.imag * db.real - dx.real * db.imag) / (da.imag * db.real - da.real * db.imag)
-        #tb = (dx.imag * da.real - dx.real * da.imag) / (da.imag * db.real - da.real * db.imag)
         px = p1 + ta * (p2 - p1)
         if not np.isclose(np.abs(px - (p3 + tb * (p4 - p3))), 0.0):
             logger.error('Intersection error')
@@ -562,10 +542,6 @@ def generate_x_point_candidates(rbdry, zbdry, rmagx, zmagx, psi_tck, dr, dz):
         dzb = bisplev(inter[0], inter[1] - dz, psi_tck, dy=1)
         dza = bisplev(inter[0], inter[1] + dz, psi_tck, dy=1)
         if drl * drr <= 0.0 and dzb * dza <= 0.0:
-            #rxp = inter[0] - dr - drl * (2.0 * dr) / (drl - drr)
-            #zxp = inter[1] - dz - dzb * (2.0 * dz) / (dzb - dza)
-            #xp = np.array([rxp, zxp])
-            #xpoint_candidates.append(xp)
             xpoint_candidates.append(inter)
 
     return xpoint_candidates
@@ -582,6 +558,7 @@ def compute_intersection_from_ray_complex(p1s, p1d, p2s, p2d):
 
 
 def compute_intersection_from_line_segment_complex(p1s, p1e, p2s, p2e):
+    # Implemented equations:
     # u = (x1 - x3 + t * (x2 - x1)) / (x4 - x3)
     # t * (y2 - y1 - (x2 - x1) * (y4 - y3) / (x4 - x3)) = y3 - y1 - (x3 - x1) * (y4 - y3) / (x4 - x3)
     p1d = p1e - p1s
@@ -627,19 +604,12 @@ def avoid_convex_curvature(r_contour, z_contour, r_point, z_point, r_reference=N
             jangle = sign_ddangle[0] + 1 if (sign_ddangle[0] + 2) < len(dangle_ordered) else -1
         else:
             iangle = sign_ddangle[0]
-    #da = vxp - vbase
     i0 = r_ordered[iangle - 1] + 1.0j * z_ordered[iangle - 1]
     i1 = r_ordered[iangle] + 1.0j * z_ordered[iangle]
     tai, tbi = compute_intersection_from_line_segment_complex(v_vertex, v_point, i0, i1)
-    #dbi = i1 - i0
-    #dxi = i0 - vbase
-    #tai = (dxi.imag * dbi.real - dxi.real * dbi.imag) / (da.imag * dbi.real - da.real * dbi.imag)
     j0 = r_ordered[jangle + 1] + 1.0j * z_ordered[jangle + 1]
     j1 = r_ordered[jangle] + 1.0j * z_ordered[jangle]
     taj, tbj = compute_intersection_from_line_segment_complex(v_vertex, v_point, j0, j1)
-    #dbj = j1 - j0
-    #dxj = j0 - vbase
-    #taj = (dxj.imag * dbj.real - dxj.real * dbj.imag) / (da.imag * dbj.real - da.real * dbj.imag)
     ta = np.nanmin([tai, taj])
     if ta < 1.0:
         v_new = v_vertex + 0.99 * ta * (v_point - v_vertex)
@@ -738,11 +708,6 @@ def generate_boundary_splines(rbdry, zbdry, rmagx, zmagx, xpoints, enforce_conca
                     r_segment[j - 1],
                     z_segment[j - 1]
                 )
-                #da = p2 - p1
-                #db = p4 - p3
-                #dx = p3 - p1
-                #ta = (dx.imag * db.real - dx.real * db.imag) / (da.imag * db.real - da.real * db.imag)
-                #tb = (dx.imag * da.real - dx.real * da.imag) / (da.imag * db.real - da.real * db.imag)
                 if tb > 1.0:
                     newp = vmagx + tb * (r_segment[j - 1] + 1.0j * z_segment[j - 1] - vmagx) / 0.99
                     r_segment[j - 1] = newp.real
@@ -796,11 +761,9 @@ def find_extrema_with_taylor_expansion(rvec, zvec, psi):
 
 def compute_gradients_at_boundary(rvec, zvec, flat_psi, inout, ijedge, a1, a2, b1, b2, tol=1.0e-6):
 
-    ijgradr = []
     rgradr = []
     zgradr = []
     gradr = []
-    ijgradz = []
     rgradz = []
     zgradz = []
     gradz = []
@@ -823,21 +786,18 @@ def compute_gradients_at_boundary(rvec, zvec, flat_psi, inout, ijedge, a1, a2, b
             if inout[ij] & 0b10 and inout[ij] & 0b100:
                 if (a1[ij] < tol or a2[ij] < tol): continue
                 # LEFT AND RIGHT OUT
-                ijgradr.extend([ij, ij])
                 rgradr.extend([vl.real, vr.real])
                 zgradr.extend([vl.imag, vr.imag])
                 gradr.extend([grad, -grad])
             elif inout[ij] & 0b10:
                 if (a1[ij] < tol): continue
                 # ONLY LEFT OUT
-                ijgradr.append(ij)
                 rgradr.append(vl.real)
                 zgradr.append(vl.imag)
                 gradr.append((grad - a1[ij] * flat_psi[ij + 1] / (1.0 + a1[ij])) / hr)
             else:
                 if (a2[ij] < tol): continue
                 # ONLY RIGHT OUT
-                ijgradr.append(ij)
                 rgradr.append(vr.real)
                 zgradr.append(vr.imag)
                 gradr.append((-grad + a2[ij] * flat_psi[ij - 1] / (1.0 + a2[ij])) / hr)
@@ -851,61 +811,28 @@ def compute_gradients_at_boundary(rvec, zvec, flat_psi, inout, ijedge, a1, a2, b
             if inout[ij] & 0b1000 and inout[ij] & 0b10000:
                 if (b1[ij] < tol or b2[ij] < tol): continue
                 # ABOVE AND BELOW OUT
-                ijgradz.extend([ij, ij])
                 rgradz.extend([vb.real, va.real])
                 zgradz.extend([vb.imag, va.imag])
                 gradz.extend([grad, -grad])
             elif inout[ij] & 0b1000:
                 if (b1[ij] < tol): continue
                 # ONLY BELOW OUT
-                ijgradz.append(ij)
                 rgradz.append(vb.real)
                 zgradz.append(vb.imag)
                 gradz.append((grad - b1[ij] * flat_psi[ij + nr] / (1.0 + b1[ij])) / hz)
             else:
                 if (b2[ij] < tol): continue
                 # ONLY ABOVE OUT
-                ijgradz.append(ij)
                 rgradz.append(va.real)
                 zgradz.append(va.imag)
                 gradz.append((-grad + b2[ij] * flat_psi[ij - nr] / (1.0 + b2[ij])) / hz)
 
-    ijgradr = np.array(ijgradr).astype(int)
     rgradr = np.array(rgradr)
     zgradr = np.array(zgradr)
     gradr = np.array(gradr)
-    ijgradz = np.array(ijgradz).astype(int)
     rgradz = np.array(rgradz)
     zgradz = np.array(zgradz)
     gradz = np.array(gradz)
-
-    # imask = ~np.isfinite(gradr)
-    # jgradr = ijgradr // nr
-    # igradr = ijgradr - nr * jgradr
-    # for i in range(nr):
-        # mask = (igradr == i)
-        # if ~np.any(mask): continue
-        # jmin = min(jgradr.compress(mask))
-        # jmax = max(jgradr.compress(mask))
-        # imask |= ((igradr == i) & (jgradr == jmin))
-        # imask |= ((igradr == i) & (jgradr == jmax))
-    # rgradr = rgradr.compress(imask)
-    # zgradr = zgradr.compress(imask)
-    # gradr = gradr.compress(imask)
-
-    # jmask = ~np.isfinite(gradz)
-    # jgradz = ijgradz // nr
-    # igradz = ijgradz - nr * jgradz
-    # for j in range(nz):
-        # mask = (jgradz == j)
-        # if ~np.any(mask): continue
-        # imin = min(igradz.compress(mask))
-        # imax = max(igradz.compress(mask))
-        # jmask |= ((jgradz == j) & (igradz == imin))
-        # jmask |= ((jgradz == j) & (igradz == imax))
-    # rgradz = rgradz.compress(jmask)
-    # zgradz = zgradz.compress(jmask)
-    # gradz = gradz.compress(jmask)
 
     return rgradr, zgradr, gradr, rgradz, zgradz, gradz
 
@@ -935,7 +862,7 @@ def generate_boundary_gradient_spline(r_points, z_points, grad_points, r_referen
     return {'tck': splrep(angle_ordered, grad_ordered, xb=b[0], xe=b[-1], k=3, s=s, per=True, quiet=1), 'bounds': b}
 
 
-def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gradr_tck, gradz_tck):
+def old_compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gradr_tck, gradz_tck):
 
     # VECTORS TO AND BETWEEN BOUNDARY POINTS
     vmagx = rmagx + 1.0j * zmagx
@@ -989,7 +916,7 @@ def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gr
     return psi
 
 
-def compute_psi_extension_modified(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gradr_tck, gradz_tck):
+def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gradr_tck, gradz_tck):
 
     # VECTORS TO AND BETWEEN BOUNDARY POINTS
     vmagx = rmagx + 1.0j * zmagx

@@ -16,26 +16,18 @@ from .math import (
     generate_bounded_1d_spline,
     generate_2d_spline,
     generate_optimal_grid,
-    generate_boundary_maps,
-    compute_grid_spacing,
     generate_finite_difference_grid,
     compute_jtor,
     compute_psi,
-    compute_finite_difference_matrix,
     generate_initial_psi,
     compute_grad_psi_vector_from_2d_spline,
-    order_contour_points_by_angle,
-    generate_segments,
     generate_x_point_candidates,
-    compute_intersection_from_line_segment_complex,
-    compute_intersection_from_line_segment_coordinates,
     avoid_convex_curvature,
     generate_boundary_splines,
     find_extrema_with_taylor_expansion,
     compute_gradients_at_boundary,
     generate_boundary_gradient_spline,
     compute_psi_extension,
-    compute_psi_extension_modified,
     compute_flux_surface_quantities,
     compute_safety_factor_contour_integral,
     compute_f_from_safety_factor_and_contour,
@@ -225,8 +217,11 @@ class FixedBoundaryEquilibrium():
 
     def initialize_profiles_with_minimal_input(self, pressure_axis, ip, bt):
         if 'pres' not in self._data and 'nr' in self._data:
-            pressure_span = 0.9
-            pressure = np.exp(-np.power(np.linspace(0.0, 1.0, self._data['nr']) / 0.5, 2.0)) * pressure_span * pressure_axis + (1.0 - pressure_span) * pressure_axis
+            #pressure_span = 0.9
+            #pressure = np.exp(-np.power(np.linspace(0.0, 1.0, self._data['nr']) / 0.2, 2.0)) * pressure_span * pressure_axis + (1.0 - pressure_span) * pressure_axis
+            # Cauchy distribution function has longer tails, better shape for generic initial pressure guess
+            gamma = 0.3
+            pressure = pressure_axis * (gamma ** 2) / (np.linspace(0.0, 1.0, self._data['nr']) ** 2 + gamma ** 2)
             self.define_pressure_profile(pressure)
             self._data['cpasma'] = ip
             self._data['bcentr'] = bt
@@ -317,11 +312,10 @@ class FixedBoundaryEquilibrium():
             self._data['rcentr'] = float(rcentr)
             self._data['bcentr'] = float(bcentr)
             if 'fpol' not in self._data:
+                # Linear function for generic initial guess is sufficient for now, needs more testing...
                 f_span = 0.005
                 f_axis = self._data['rcentr'] * self._data['bcentr']
                 f = np.linspace(f_axis, (1.0 - f_span) * f_axis, self._data['nr'])
-                #f_factor = 1.05 - 0.05 * np.tanh(np.linspace(-2.0, 1.5, self._data['nr']))
-                #f = f_factor * self._data['bcentr'] * self._data['rcentr']
                 self.define_f_profile(f, smooth=True)
 
 
@@ -355,12 +349,9 @@ class FixedBoundaryEquilibrium():
 
 
     def old_find_magnetic_axis(self):
-
         self.save_original_data(['simagx', 'rmagx', 'zmagx'])
-
         if 'psi_rz' not in self._fit:
             self.generate_psi_bivariate_spline()
-
         rmagx = self._data['rmagx'] if 'rmagx' in self._data else self._data['rleft'] + 0.5 * self._data['rdim']
         zmagx = self._data['zmagx'] if 'zmagx' in self._data else self._data['zmid']
         sol = root(lambda x: compute_grad_psi_vector_from_2d_spline(x, self._fit['psi_rz']['tck']), np.array([rmagx, zmagx]).flatten())
@@ -374,14 +365,11 @@ class FixedBoundaryEquilibrium():
 
 
     def old_find_x_points(self, sanitize=False):
-
         self.save_original_data(['xpoints'])
-
         if 'psi_rz' not in self._fit:
             self.generate_psi_bivariate_spline()
         if 'rmagx' not in self._data or 'zmagx' not in self._data:
             self.find_magnetic_axis()
-
         hr = self._data['hr'] if 'hr' in self._data else self._data['rdim'] / float(self._data['nr'] - 1)
         hz = self._data['hz'] if 'hz' in self._data else self._data['zdim'] / float(self._data['nz'] - 1)
         xpoint_candidates = generate_x_point_candidates(
@@ -393,7 +381,6 @@ class FixedBoundaryEquilibrium():
             0.03 * float(self._data['nr']) * hr,
             0.03 * float(self._data['nz']) * hz
         )
-
         xpoints = []
         for xpc in xpoint_candidates:
             sol = root(lambda x: compute_grad_psi_vector_from_2d_spline(x, self._fit['psi_rz']['tck']), xpc)
@@ -420,7 +407,6 @@ class FixedBoundaryEquilibrium():
                     zbase
                 )
                 xpoints[i] = np.array([rnewxp, znewxp])
-
         self._data['xpoints'] = xpoints
 
 
@@ -449,12 +435,9 @@ class FixedBoundaryEquilibrium():
 
 
     def refine_boundary_by_grid_trace(self):
-
         if 'rvec' not in self._data or 'zvec' not in self._data:
             self.create_grid_basis_vectors()
-
         self.save_original_data(['nbdry', 'rbdry', 'zbdry'])
-
         boundary = trace_contour_with_megpy(
             self._data['rvec'],
             self._data['zvec'],
@@ -472,9 +455,7 @@ class FixedBoundaryEquilibrium():
 
 
     def create_boundary_splines(self, enforce_concave=False, old_method=False):
-
         self.save_original_fit(['lseg_abdry'])
-
         if 'xpoints' not in self._data:
             if old_method:
                 self.old_find_x_points()
@@ -482,7 +463,6 @@ class FixedBoundaryEquilibrium():
                 self.find_x_points()
         if self._data['nbdry'] < 51 and not old_method:
             self.refine_boundary_by_grid_trace()
-
         splines = generate_boundary_splines(
             self._data['rbdry'],
             self._data['zbdry'],
@@ -496,12 +476,9 @@ class FixedBoundaryEquilibrium():
 
 
     def refine_boundary_with_splines(self, nbdry=501):
-
         self.save_original_data(['nbdry', 'rbdry', 'zbdry'])
-
         if 'lseg_abdry' not in self._fit:
             self.create_boundary_splines()
-
         boundary = []
         for i, spline in enumerate(self._fit['lseg_abdry']):
             vmagx = self._data['rmagx'] + 1.0j * self._data['zmagx']
@@ -552,19 +529,6 @@ class FixedBoundaryEquilibrium():
     def zero_magnetic_boundary(self):
         self.save_original_data(['simagx', 'sibdry'])
         self._data['sibdry'] = 0.0
-
-
-    def find_x_points_from_grid(self):
-        # Not currently used
-        self.save_original_fit(['gradr_bdry', 'gradz_bdry'])
-        self.create_boundary_gradient_splines()
-        abdry = np.linspace(0.0, 2.0 * np.pi, 5000)
-        mag_grad_psi = splev(abdry, self._fit['gradr_bdry']['tck']) ** 2 + splev(abdry, self._fit['gradz_bdry']['tck']) ** 2
-        axs = []
-        for i, magnitude in enumerate(mag_grad_psi):
-            if magnitude < 1.0e-2:
-                axs.append(abdry[i])
-        #self._data['theta_xpoint'] = np.array(axs)
 
 
     def regrid(
@@ -670,7 +634,7 @@ class FixedBoundaryEquilibrium():
             tol=tol
         )
         #s = len(gradr) + int(np.sqrt(2 * len(gradz))) if smooth else 0
-        s = 8 * (len(gradr) + len(gradz))
+        s = 4 * (len(gradr) + len(gradz)) if smooth else 0
         self._fit['gradr_bdry'] = generate_boundary_gradient_spline(rgradr, zgradr, gradr, self._data['rmagx'], self._data['zmagx'], s=s, tol=tol)
         self._fit['gradz_bdry'] = generate_boundary_gradient_spline(rgradz, zgradz, gradz, self._data['rmagx'], self._data['zmagx'], s=s, tol=tol)
 
@@ -678,8 +642,7 @@ class FixedBoundaryEquilibrium():
     def extend_psi_beyond_boundary(self):
         if 'gradr_bdry' not in self._fit or 'gradz_bdry' not in self._fit:
             self.create_boundary_gradient_splines(smooth=True)
-        #self._data['psi'] = compute_psi_extension(
-        self._data['psi'] = compute_psi_extension_modified(
+        self._data['psi'] = compute_psi_extension(
             self._data['rvec'],
             self._data['zvec'],
             self._data['rbdry'],
@@ -691,12 +654,6 @@ class FixedBoundaryEquilibrium():
             self._fit['gradr_bdry']['tck'],
             self._fit['gradz_bdry']['tck']
         )
-        #m = self._data['nr'] + self._data['nz']
-        #self.generate_psi_bivariate_spline(s=int(2 * m + np.sqrt(2 * m)))
-        #smoothed_psi = bisplev(self._data['rvec'], self._data['zvec'], self._fit['psi_rz']['tck']).T
-        ##self._data['psi'].put(self._data['ijout'], smoothed_psi.compress(self._data['inout'] == 0))
-        ##self._data['psi'].put(self._data['ijedge'], smoothed_psi.compress(self._data['inout'] > 1))
-        #self._data['psi'] = smoothed_psi
         self.generate_psi_bivariate_spline()
 
 
@@ -845,7 +802,6 @@ class FixedBoundaryEquilibrium():
         self.save_original_fit(['qpsi_fs'])
         if self._data['psi'][0, 0] == self._data['psi'][-1, -1] and self._data['psi'][0, -1] == self._data['psi'][-1, 0]:
             self.extend_psi_beyond_boundary()
-        #self._fs = self.trace_fine_flux_surfaces(71, 71)
         self._fs = self.trace_flux_surfaces()
         psinorm = np.zeros((len(self._fs), ), dtype=float)
         qpsi = np.zeros_like(psinorm)
@@ -907,7 +863,7 @@ class FixedBoundaryEquilibrium():
         if relax > 0.0 and relax < 1.0:
             q_new = q_old + relax * (q_new - q_old)
         self._data['q_error'] = np.nanmax((np.abs(self._data['qpsi_target'] - q_new) / np.abs(self._data['qpsi_target']))[:-1])
-        #print(q_error, self._data['fpol'][0], self._data['fpol'][-1])
+        logger.debug(f'Error in q: {self._data["q_error"]}, {self._data["fpol"][0]}, {self._data["fpol"][-1]}')
         self._data['qpsi'] = copy.deepcopy(q_new)
 
 
@@ -936,8 +892,8 @@ class FixedBoundaryEquilibrium():
             self._options['pnaxis'] = pnaxis
         elif self.scratch:
             self._options['pnaxis'] = 0.1
-            #print('fprime: ', splev(self._options['pnaxis'], self._fit['fpol_fs']['tck'], der=1) / splev(self._options['pnaxis'], self._fit['fpol_fs']['tck']))
-            #print('pprime: ', splev(self._options['pnaxis'], self._fit['pres_fs']['tck'], der=1) / splev(self._options['pnaxis'], self._fit['pres_fs']['tck']))
+            #logger.debug('fprime: ', splev(self._options['pnaxis'], self._fit['fpol_fs']['tck'], der=1) / splev(self._options['pnaxis'], self._fit['fpol_fs']['tck']))
+            #logger.debug('pprime: ', splev(self._options['pnaxis'], self._fit['pres_fs']['tck'], der=1) / splev(self._options['pnaxis'], self._fit['pres_fs']['tck']))
         else:
             self._options['pnaxis'] = 1.0 / float(self._data['nr_orig']) if 'nr_orig' in self._data else 1.0 / float(self._data['nr'])
 
@@ -961,8 +917,10 @@ class FixedBoundaryEquilibrium():
         #self.rescale_kinetic_profiles()
         #self.recompute_f_profile()
         #self.recompute_pressure_profile()
+        self.create_boundary_gradient_splines(smooth=True)
         self.extend_psi_beyond_boundary()
-        self.normalize_psi_to_original()
+        if not self.scratch:
+            self.normalize_psi_to_original()
         self.generate_psi_bivariate_spline()
         self.find_magnetic_axis()
         self.recompute_q_profile_from_scratch(approximate_lcfs=approxq)
@@ -1030,7 +988,7 @@ class FixedBoundaryEquilibrium():
         cur = self._data['s5'] * self._data['cur']
         curmax = np.abs(cur).max()
         errds  = np.abs(cur - ds).max() / curmax
-        #print('max(-Delta*psi-mu0RJ)/max(mu0RJ) = %8.2e'%(errds))
+        logger.debug(f'max(-Delta*psi-mu0RJ) / max(mu0RJ) = {errds}')
         return errds
 
 
@@ -1048,8 +1006,6 @@ class FixedBoundaryEquilibrium():
     def compute_mxh_parameters(self, n_coeff=6):
         if 'rvec' not in self._data or 'zvec' not in self._data:
             self.create_grid_basis_meshes()
-        #if 'xpsi' not in self._data:
-        #    self.compute_normalized_psi_map()
         if self._fs is None:
             self._fs = self.trace_flux_surfaces()
         r0 = []
@@ -1148,7 +1104,7 @@ class FixedBoundaryEquilibrium():
 
 
     def plot_contour(self, save=None):
-        debug = True
+        debug = False
         if 'rleft' in self._data and 'rdim' in self._data and 'zmid' in self._data and 'zdim' in self._data:
             lvec = np.array([0.01, 0.04, 0.09, 0.15, 0.22, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999, 1.0, 1.02, 1.05, 1.1, 1.2])
             import matplotlib.pyplot as plt
