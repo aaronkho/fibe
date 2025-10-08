@@ -35,6 +35,7 @@ from .math import (
     compute_gradients_at_boundary,
     generate_boundary_gradient_spline,
     compute_psi_extension,
+    compute_psi_extension_modified,
     compute_flux_surface_quantities,
     compute_safety_factor_contour_integral,
     compute_f_from_safety_factor_and_contour,
@@ -685,7 +686,8 @@ class FixedBoundaryEquilibrium():
     def extend_psi_beyond_boundary(self):
         if 'gradr_bdry' not in self._fit or 'gradz_bdry' not in self._fit:
             self.create_boundary_gradient_splines()
-        self._data['psi'] = compute_psi_extension(
+        #self._data['psi'] = compute_psi_extension(
+        self._data['psi'] = compute_psi_extension_modified(
             self._data['rvec'],
             self._data['zvec'],
             self._data['rbdry'],
@@ -697,13 +699,13 @@ class FixedBoundaryEquilibrium():
             self._fit['gradr_bdry']['tck'],
             self._fit['gradz_bdry']['tck']
         )
-        m = self._data['nr'] + self._data['nz']
-        self.generate_psi_bivariate_spline(s=int(2 * m + np.sqrt(2 * m)))
-        smoothed_psi = bisplev(self._data['rvec'], self._data['zvec'], self._fit['psi_rz']['tck']).T
-        #self._data['psi'].put(self._data['ijout'], smoothed_psi.compress(self._data['inout'] == 0))
-        #self._data['psi'].put(self._data['ijedge'], smoothed_psi.compress(self._data['inout'] > 1))
-        self._data['psi'] = smoothed_psi
-        #self.generate_psi_bivariate_spline()
+        #m = self._data['nr'] + self._data['nz']
+        #self.generate_psi_bivariate_spline(s=int(2 * m + np.sqrt(2 * m)))
+        #smoothed_psi = bisplev(self._data['rvec'], self._data['zvec'], self._fit['psi_rz']['tck']).T
+        ##self._data['psi'].put(self._data['ijout'], smoothed_psi.compress(self._data['inout'] == 0))
+        ##self._data['psi'].put(self._data['ijedge'], smoothed_psi.compress(self._data['inout'] > 1))
+        #self._data['psi'] = smoothed_psi
+        self.generate_psi_bivariate_spline()
 
 
     def trace_rough_flux_surfaces(self):

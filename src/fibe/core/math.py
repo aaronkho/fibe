@@ -162,18 +162,18 @@ def generate_boundary_maps(rvec, zvec, rbdry, zbdry):
     ijout = np.arange(nr * nz).astype(int).compress(inout == 0)
     ijedge = np.arange(nr * nz).astype(int).compress(inout > 1)
 
-    ijoutl = ijout.compress(inout.take((ijout - 1) % (nr * nz)) > 0)
-    ijoutr = ijout.compress(inout.take((ijout + 1) % (nr * nz)) > 0)
-    ijoutb = ijout.compress(inout.take((ijout - nr) % (nr * nz)) > 0)
-    ijouta = ijout.compress(inout.take((ijout + nr) % (nr * nz)) > 0)
-    inout.put(ijoutl, inout.take(ijoutl) | -0b1)
-    inout.put(ijoutr, inout.take(ijoutl) | -0b10)
-    inout.put(ijoutb, inout.take(ijoutl) | -0b100)
-    inout.put(ijouta, inout.take(ijoutl) | -0b1000)
-    ijskin = np.arange(nr * nz).astype(int).compress(inout < 0)
-    inout.put(inout < 0, 0)
+    #ijoutl = ijout.compress(inout.take((ijout - 1) % (nr * nz)) > 0)
+    #ijoutr = ijout.compress(inout.take((ijout + 1) % (nr * nz)) > 0)
+    #ijoutb = ijout.compress(inout.take((ijout - nr) % (nr * nz)) > 0)
+    #ijouta = ijout.compress(inout.take((ijout + nr) % (nr * nz)) > 0)
+    #inout.put(ijoutl, inout.take(ijoutl) | -0b1)
+    #inout.put(ijoutr, inout.take(ijoutl) | -0b10)
+    #inout.put(ijoutb, inout.take(ijoutl) | -0b100)
+    #inout.put(ijouta, inout.take(ijoutl) | -0b1000)
+    #ijskin = np.arange(nr * nz).astype(int).compress(inout < 0)
+    #inout.put(inout < 0, 0)
 
-    return inout, ijin, ijout, ijedge, ijskin
+    return inout, ijin, ijout, ijedge
 
 
 def compute_grid_spacing(rvec, zvec):
@@ -202,7 +202,7 @@ def generate_finite_difference_grid(rvec, zvec, rbdry, zbdry):
 
     hr, hrm1, hrm2, hz, hzm1, hzm2 = compute_grid_spacing(rvec, zvec)
 
-    inout, ijin, ijout, ijedge, ijskin = generate_boundary_maps(rvec, zvec, rbdry, zbdry)
+    inout, ijin, ijout, ijedge = generate_boundary_maps(rvec, zvec, rbdry, zbdry)
 
     nrz = nr * nz
     hrz = hr * hz
@@ -317,7 +317,7 @@ def generate_finite_difference_grid(rvec, zvec, rbdry, zbdry):
         'ijin': ijin,
         'ijout': ijout,
         'ijedge': ijedge,
-        'ijskin': ijskin,
+        #'ijskin': ijskin,
     }
     out['matrix'] = compute_finite_difference_matrix(nr, nz, s1, s2, s3, s4)
 
@@ -951,16 +951,15 @@ def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gr
     return psi
 
 
-def compute_psi_extension_modified():
+def compute_psi_extension_modified(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gradr_tck, gradz_tck):
 
     # VECTORS TO AND BETWEEN BOUNDARY POINTS
     vmagx = rmagx + 1.0j * zmagx
     vbdry = rbdry + 1.0j * zbdry
-    vb0 = vbdry[:-1]
-    vb1 = vbdry[1:]
-    dvb = vb1 - vb0
+    abdry = np.angle(vbdry - vmagx)
+    dvb = vbdry[1:] - vbdry[:-1]
     nvb = -1.0j * dvb / np.abs(dvb)
-    nbdry = np.concatenate([nvb[:-1] + nvb[1:], nvb[-1] + nvb[0]])
+    nbdry = np.concatenate([[nvb[0] + nvb[-1]], nvb[1:] + nvb[:-1], [nvb[-1] + nvb[0]]])
     for k in range(nbdry.size):
         if k == 0:
             nbdry[k] /= np.abs(nbdry[k])
@@ -973,30 +972,38 @@ def compute_psi_extension_modified():
     jout = ijout // nr
     iout = ijout - nr * jout
     vvec = rvec.take(iout) + 1.0j * zvec.take(jout)
+    gbdry = splev(abdry, gradr_tck) + 1.0j * splev(abdry, gradz_tck)
 
     psiout = np.zeros(vvec.shape, dtype=float)
     ivvec = np.arange(vvec.size)
 
     ## VECTORS BETWEEN EXTERIOR POINTS AND BOUNDARY POINTS
     for k in range(dvb.size):
-        angmin = np.angle(vvec - vb0[k]) - np.angle(nbdry[k])
-        angminu = (angmin > (2.0 * np.pi))
-        angminl = (angmin < (-2.0 * np.pi))
-        if np.any(angminu):
-            angmin[angminu] = angmin[angminu] - 2.0 * np.pi
-        if np.any(angminl):
-            angmin[angminl] = angmin[angminl] + 2.0 * np.pi
-        angmax = np.angle(vvec - vb1[k]) - np.angle(nbdry[k + 1])
-        angmaxu = (angmax > (2.0 * np.pi))
-        angmaxl = (angmax < (-2.0 * np.pi))
-        if np.any(angmaxu):
-            angmax[angmaxu] = angmax[angmaxu] - 2.0 * np.pi
-        if np.any(angminl):
-            angmin[angmaxl] = angmin[angmaxl] + 2.0 * np.pi
+        angmin = np.mod(np.angle(vvec - vbdry[k]) - np.angle(nbdry[k]), 2.0 * np.pi)
+        angmin[angmin > np.pi] = angmin[angmin > np.pi] - 2.0 * np.pi
+        angmax = np.mod(np.angle(vvec - vbdry[k + 1]) - np.angle(nbdry[k + 1]), 2.0 * np.pi)
+        angmax[angmax > np.pi] = angmax[angmax > np.pi] - 2.0 * np.pi
         mask = np.logical_and(
-            angmin >= 0.0,
-            angmax < 0.0
+            np.logical_and(angmin >= 0.0, angmin <= (0.5 * np.pi)),
+            np.logical_and(angmax < 0.0, angmax >= (-0.5 * np.pi))
         )
+        if not np.any(mask): continue
+        vvecc = vvec.compress(mask)
+        ivvecc = ivvec.compress(mask)
+        if vvecc.size > 0:
+            _, t = compute_intersection_from_ray_complex(vvecc, dvb[k], vbdry[k], nbdry[k])
+            vlevel = vbdry[k] + t * nbdry[k]
+            s, _ = compute_intersection_from_ray_complex(vlevel, dvb[k], vvecc, nvb[k])
+            vgradc = gbdry[k] + s * (gbdry[k + 1] - gbdry[k])
+            dv = vvecc - (vbdry[k] + s * dvb[k])
+            psie = (vgradc * np.conj(dv)).real
+            psiout.put(ivvecc, psie)
+            vvec = vvec.compress(np.logical_not(mask))
+            ivvec = ivvec.compress(np.logical_not(mask))
+        if vvec.size == 0: break
+    psi.ravel().put(ijout, psiout)
+
+    return psi
 
 
 def compute_flux_surface_quantities(psinorm, r_contour, z_contour, psi_tck=None, fpol_tck=None):
