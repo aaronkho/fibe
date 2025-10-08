@@ -162,7 +162,18 @@ def generate_boundary_maps(rvec, zvec, rbdry, zbdry):
     ijout = np.arange(nr * nz).astype(int).compress(inout == 0)
     ijedge = np.arange(nr * nz).astype(int).compress(inout > 1)
 
-    return inout, ijin, ijout, ijedge
+    ijoutl = ijout.compress(inout.take((ijout - 1) % (nr * nz)) > 0)
+    ijoutr = ijout.compress(inout.take((ijout + 1) % (nr * nz)) > 0)
+    ijoutb = ijout.compress(inout.take((ijout - nr) % (nr * nz)) > 0)
+    ijouta = ijout.compress(inout.take((ijout + nr) % (nr * nz)) > 0)
+    inout.put(ijoutl, inout.take(ijoutl) | -0b1)
+    inout.put(ijoutr, inout.take(ijoutl) | -0b10)
+    inout.put(ijoutb, inout.take(ijoutl) | -0b100)
+    inout.put(ijouta, inout.take(ijoutl) | -0b1000)
+    ijskin = np.arange(nr * nz).astype(int).compress(inout < 0)
+    inout.put(inout < 0, 0)
+
+    return inout, ijin, ijout, ijedge, ijskin
 
 
 def compute_grid_spacing(rvec, zvec):
@@ -191,7 +202,7 @@ def generate_finite_difference_grid(rvec, zvec, rbdry, zbdry):
 
     hr, hrm1, hrm2, hz, hzm1, hzm2 = compute_grid_spacing(rvec, zvec)
 
-    inout, ijin, ijout, ijedge = generate_boundary_maps(rvec, zvec, rbdry, zbdry)
+    inout, ijin, ijout, ijedge, ijskin = generate_boundary_maps(rvec, zvec, rbdry, zbdry)
 
     nrz = nr * nz
     hrz = hr * hz
@@ -306,6 +317,7 @@ def generate_finite_difference_grid(rvec, zvec, rbdry, zbdry):
         'ijin': ijin,
         'ijout': ijout,
         'ijedge': ijedge,
+        'ijskin': ijskin,
     }
     out['matrix'] = compute_finite_difference_matrix(nr, nz, s1, s2, s3, s4)
 
@@ -889,8 +901,9 @@ def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gr
     vb0 = vbdry[:-1]
     vb1 = vbdry[1:]
     dvb = vb1 - vb0
+    nvb = -1.0j * dvb / np.abs(dvb)
     cb = vb0 - vmagx
-    dcb = 0.5 * np.abs(cb[1] - cb[-1])
+    dcb = 2.0 * np.pi / float(len(rbdry) - 1)
 
     # VECTORS TO EXTERIOR GRID POINTS
     nr = rvec.size
@@ -903,12 +916,11 @@ def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gr
 
     ## VECTORS BETWEEN EXTERIOR POINTS AND BOUNDARY POINTS
     for k in range(dvb.size):
-        c0 = cb[k]
-        angmin = np.angle(c0)
+        angmin = np.angle(cb[k])
         angmax = np.angle(vb1[k] - vmagx)
         angvec = np.angle(vvec - vmagx)
         angmask = np.isfinite(angvec)
-        numer = c0 * np.conj(dvb[k])
+        numer = cb[k] * np.conj(dvb[k])
         mask = np.logical_and(
             angvec >= angmin,
             angvec < angmax

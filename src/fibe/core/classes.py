@@ -684,7 +684,7 @@ class FixedBoundaryEquilibrium():
 
     def extend_psi_beyond_boundary(self):
         if 'gradr_bdry' not in self._fit or 'gradz_bdry' not in self._fit:
-            self.create_boundary_gradient_splines(smooth=True)
+            self.create_boundary_gradient_splines()
         self._data['psi'] = compute_psi_extension(
             self._data['rvec'],
             self._data['zvec'],
