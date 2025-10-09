@@ -6,7 +6,6 @@ from scipy.interpolate import (
     interp1d,
     splrep,
     splev,
-    bisplrep,
     bisplev,
     RectBivariateSpline,
     make_interp_spline,
@@ -312,13 +311,12 @@ def generate_finite_difference_grid(rvec, zvec, rbdry, zbdry):
 def compute_jtor(rpsi, ffprime, pprime):
     '''Compute current density over grid. Scale to Ip'''
     mu0 = 4.0e-7 * np.pi
-    jtor = ffprime / (mu0 * rpsi) + rpsi * pprime
+    jtor = -1.0 * (ffprime / (mu0 * rpsi) + rpsi * pprime)
     return jtor
 
 
-def compute_psi(solver, s5, current, flat_psi_old=None, relax=1.0):
-    return solver(s5 * current)
-    return flat_psi_new, flat_psi_error
+def compute_psi(solver, s5, current):
+    return -1.0 * solver(s5 * current)
 
 
 def compute_jpar(inout, btot, fpol, fprime, pprime):
@@ -372,6 +370,7 @@ def generate_initial_psi(rvec, zvec, rbdry, zbdry, ijin):
             db = rc[0] ** 2 + zc[0] ** 2 if (rc[0] * rp[i] + zc[0] * zp[j]) > 0 else rc[-1] ** 2 + zc[-1] ** 2
             rho = np.nanmin([np.sqrt((rp[i] ** 2 + zp[j] ** 2) / db), 1.0])
         flat_psi[k] = (1.0 - (rho ** 2)) ** 1.2   # Why 1.2?
+    flat_psi *= -1.0
     return flat_psi.reshape(nz, nr)
 
 

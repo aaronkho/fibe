@@ -108,15 +108,15 @@ class FixedBoundaryEquilibrium():
             self.scratch = False
 
 
-    def save_original_data(self, fields):
+    def save_original_data(self, fields, overwrite=False):
         for key in fields:
-            if f'{key}' in self._data and f'{key}_orig' not in self._data:
+            if f'{key}' in self._data and (overwrite or f'{key}_orig' not in self._data):
                 self._data[f'{key}_orig'] = copy.deepcopy(self._data[f'{key}'])
 
 
-    def save_original_fit(self, fields):
+    def save_original_fit(self, fields, overwrite=False):
         for key in fields:
-            if f'{key}' in self._fit and f'{key}_orig' not in self._fit:
+            if f'{key}' in self._fit and (overwrite or f'{key}_orig' not in self._fit):
                 self._fit[f'{key}_orig'] = copy.deepcopy(self._fit[f'{key}'])
 
 
@@ -240,7 +240,7 @@ class FixedBoundaryEquilibrium():
             self._data['ijin']
         )
         #self._data['simagx'] = np.nanmax(self._data['psi'])
-        self._data['simagx'] = 1.0
+        self._data['simagx'] = -1.0
         self._data['sibdry'] = 0.0
         self.find_magnetic_axis_from_grid()
         if 'fpol' not in self._data and 'bcentr' in self._data:
@@ -248,11 +248,13 @@ class FixedBoundaryEquilibrium():
         if 'cpasma' not in self._data:
             self.compute_normalized_psi_map()
             self.initialize_current()
-        psi_mult = 4.0e-7 * np.pi * float(self._data['cpasma']) * self._data['rvec'][0]
+        psi_mult = 4.0e-7 * np.pi * float(self._data['cpasma']) * 0.5 * self._data['rdim']
+        logger.debug(f'Psi initialization: {psi_mult}')
         self._data['psi'] *= psi_mult
         self._data['simagx'] *= psi_mult
         self._data['sibdry'] *= psi_mult
         self.old_find_magnetic_axis()
+        self.save_original_data(['simagx', 'rmagx', 'zmagx', 'sibdry'], overwrite=True)
         self.extend_psi_beyond_boundary()
         self.compute_normalized_psi_map()
         self.create_boundary_splines()
@@ -262,8 +264,9 @@ class FixedBoundaryEquilibrium():
         if 'inout' not in self._data:
             self.create_finite_difference_grid()
         self._data['curscale'] = 1.0
+        dpsi = np.sign(self._data['sibdry'] - self._data['simagx'])  # d(psi) / d(psinorm)
         ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'])
-        self._data['cur'] = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp.ravel(), pp.ravel()))
+        self._data['cur'] = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), dpsi * ffp.ravel(), dpsi * pp.ravel()))
         self._data['cpasma'] = float(np.sum(self._data['cur']) * self._data['hrz'])
 
 
@@ -828,8 +831,8 @@ class FixedBoundaryEquilibrium():
             self.find_magnetic_axis()
         if 'qpsi' in self._data:
             psi = np.linspace(0.0, 1.0, self._data['nr']) * (self._data['sibdry'] - self._data['simagx']) + self._data['simagx']
-            psi_sign = np.sign(self._data['sibdry'] - self._data['simagx'])
-            self._data['phi'] = psi_sign * cumulative_simpson(self._data['qpsi'], x=psi_sign * psi, initial=0.0)
+            psisign = np.sign(self._data['sibdry'] - self._data['simagx'])
+            self._data['phi'] = cumulative_simpson(psisign * self._data['qpsi'], x=psisign * psi, initial=0.0)
 
 
     def renormalize_psi(self, simagx=None, sibdry=None):
@@ -841,8 +844,12 @@ class FixedBoundaryEquilibrium():
 
 
     def normalize_psi_to_original(self):
-        if 'simagx_orig' in self._data and 'sibdry_orig' in self._data:
+        if not self.scratch and 'simagx_orig' in self._data and 'sibdry_orig' in self._data:
             self.renormalize_psi(self._data['simagx_orig'], self._data['sibdry_orig'])
+        else:
+            self.save_original_data(['simagx', 'sibdry'], overwrite=True)
+            self.scratch = False
+
 
 
     def _update_current(self, current_new, relax=1.0):
@@ -905,8 +912,9 @@ class FixedBoundaryEquilibrium():
             self.define_current(self._data['cpasma'])
         self._data['psi_error'] = 0.0
         for n in range(self._options['nxiter']):
+            dpsi = np.sign(self._data['sibdry'] - self._data['simagx'])  # d(psi)/d(psinorm)
             ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
-            cur_new = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp.ravel(), pp.ravel()))
+            cur_new = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), dpsi * ffp.ravel(), dpsi * pp.ravel()))
             self._update_current(cur_new, relax=self._options['relaxj'] if n > 0 else 1.0)
             psi_new = compute_psi(self.solver, self._data['s5'], self._data['cur'])
             self._update_psi(psi_new, relax=self._options['relax'])
@@ -917,10 +925,10 @@ class FixedBoundaryEquilibrium():
         #self.rescale_kinetic_profiles()
         #self.recompute_f_profile()
         #self.recompute_pressure_profile()
+        self.normalize_psi_to_original()
         self.create_boundary_gradient_splines(smooth=True)
         self.extend_psi_beyond_boundary()
-        if not self.scratch:
-            self.normalize_psi_to_original()
+        self.compute_normalized_psi_map()
         self.generate_psi_bivariate_spline()
         self.find_magnetic_axis()
         self.recompute_q_profile_from_scratch(approximate_lcfs=approxq)
@@ -1071,8 +1079,13 @@ class FixedBoundaryEquilibrium():
 
     def extract_geqdsk_dict(self, cocos=None):
         geqdsk_dict = {k: v for k, v in self._data.items() if k in self.geqdsk_fields}
+        dpsi = np.sign(geqdsk_dict['sibdry'] - geqdsk_dict['simagx'])
+        if 'pprime' in geqdsk_dict:
+            geqdsk_dict['pprime'] *= dpsi
+        if 'ffprim' in geqdsk_dict:
+            geqdsk_dict['ffprim'] *= dpsi
         geqdsk_dict['gcase'] = 'FiBE'
-        geqdsk_dict['gid'] = 0
+        geqdsk_dict['gid'] = 1
         if isinstance(cocos, int):
             current_cocos = detect_cocos(geqdsk_dict)
             geqdsk_dict = convert_cocos(geqdsk_dict, current_cocos, cocos)
@@ -1085,12 +1098,7 @@ class FixedBoundaryEquilibrium():
 
 
     def to_geqdsk(self, path, cocos=None):
-        geqdsk = {k: v for k, v in self._data.items() if k in self.geqdsk_fields}
-        geqdsk['gcase'] = 'FiBE'
-        geqdsk['gid'] = 0
-        if isinstance(cocos, int):
-            current_cocos = detect_cocos(geqdsk)
-            geqdsk = convert_cocos(geqdsk, current_cocos, cocos)
+        geqdsk = self.extract_geqdsk_dict(cocos=cocos)
         write_geqdsk_file(path, geqdsk)
 
 
@@ -1335,27 +1343,29 @@ class FixedBoundaryEquilibrium():
             ax1 = fig.add_subplot(121)
             ax2 = fig.add_subplot(122)
             psinorm = np.linspace(0.0, 1.0, self._data['nr'])
-            f_factor = np.sign(self._data['bcentr'])
+            dpsi = np.sign(self._data['sibdry'] - self._data['simagx'])  # d(psi)/d(psinorm)
+            f_factor = 1.0e-1 * np.sign(self._data['bcentr'])
             p_factor = 1.0e-5
             q_factor = np.sign(self._data['bcentr'] * self._data['cpasma'])
-            phi_factor = 1.0
+            phi_factor = np.sign(self._data['bcentr'])
+            d_factor = np.sign(self._data['cpasma'])
             ax1.plot(psinorm, f_factor * self._data['fpol'], c='b', label='F')
             if 'ffprime' in self._data:
-                ax2.plot(psinorm, f_factor * self._data['ffprime'] / self._data['fpol'], c='b', label='Fp')
+                ax2.plot(psinorm, f_factor * d_factor * dpsi * self._data['ffprime'] / self._data['fpol'], c='b', label='Fp')
             if 'fpol_fs' in self._fit:
                 ax1.plot(psinorm, f_factor * splev(psinorm, self._fit['fpol_fs']['tck']), c='b', ls='--', label='F Fit')
-                ax2.plot(psinorm, f_factor * splev(psinorm, self._fit['fpol_fs']['tck'], der=1), c='b', ls='--', label='Fp Fit')
+                ax2.plot(psinorm, f_factor * d_factor * dpsi * splev(psinorm, self._fit['fpol_fs']['tck'], der=1), c='b', ls='--', label='Fp Fit')
             ax1.plot(psinorm, p_factor * self._data['pres'], c='r', label='p')
             if 'pprime' in self._data:
-                ax2.plot(psinorm, p_factor * self._data['pprime'], c='r', label='pp')
+                ax2.plot(psinorm, p_factor * d_factor * dpsi * self._data['pprime'], c='r', label='pp')
             if 'pres_fs' in self._fit:
                 ax1.plot(psinorm, p_factor * splev(psinorm, self._fit['pres_fs']['tck']), c='r', ls='--', label='p Fit')
-                ax2.plot(psinorm, p_factor * splev(psinorm, self._fit['pres_fs']['tck'], der=1), c='r', ls='--', label='pp Fit')
+                ax2.plot(psinorm, p_factor * d_factor * dpsi * splev(psinorm, self._fit['pres_fs']['tck'], der=1), c='r', ls='--', label='pp Fit')
             if 'qpsi' in self._data:
                 ax1.plot(psinorm, q_factor * self._data['qpsi'], c='g', label='q')
                 if 'qpsi_fs' in self._fit:
                     ax1.plot(psinorm, q_factor * splev(psinorm, self._fit['qpsi_fs']['tck']), c='g', ls='--', label='q Fit')
-                    ax2.plot(psinorm, q_factor * splev(psinorm, self._fit['qpsi_fs']['tck'], der=1), c='g', ls='--', label='qp Fit')
+                    ax2.plot(psinorm, q_factor * d_factor * dpsi * splev(psinorm, self._fit['qpsi_fs']['tck'], der=1), c='g', ls='--', label='qp Fit')
             if 'phi' in self._data:
                 ax1.plot(psinorm, phi_factor * self._data['phi'], c='m', label='phi')
             ax1.set_xlim(0.0, 1.0)
