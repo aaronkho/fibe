@@ -4,8 +4,6 @@ from pathlib import Path
 from typing import Any, Final, Self
 from collections.abc import MutableMapping, Mapping, MutableSequence, Sequence, Iterable
 import numpy as np
-from eqdsk import EQDSKInterface
-from megpy import Equilibrium
 
 
 logger = logging.getLogger('fibe')
@@ -102,6 +100,7 @@ def write_geqdsk_file(fname, datadict, interface='megpy'):
 
 
 def read_geqdsk_file_eqdsk(fname):
+    from eqdsk import EQDSKInterface
     eqdsk_dict = EQDSKInterface.from_file(fname, no_cocos=True).to_dict()
     eq = {nk: copy.deepcopy(eqdsk_dict[k]) for k, nk in eqdsk_package_field_map.items() if k in eqdsk_dict and isinstance(nk, str)}
     if 'psi' in eq:
@@ -110,6 +109,7 @@ def read_geqdsk_file_eqdsk(fname):
 
 
 def write_geqdsk_file_eqdsk(fname, datadict):
+    from eqdsk import EQDSKInterface
     pkg_logger = logging.getLogger("EQDSK Logger")
     orig_level = pkg_logger.level
     pkg_logger.setLevel(logging.ERROR)
@@ -129,6 +129,7 @@ def write_geqdsk_file_eqdsk(fname, datadict):
 
 
 def read_geqdsk_file_megpy(fname):
+    from megpy import Equilibrium
     megpy_obj = Equilibrium(verbose=False)
     megpy_obj.read_geqdsk(fname)
     megpy_dict = megpy_obj.raw
@@ -137,6 +138,7 @@ def read_geqdsk_file_megpy(fname):
 
 
 def write_geqdsk_file_megpy(fname, datadict):
+    from megpy import Equilibrium
     if 'gcase' not in datadict:
         datadict['gcase'] = 'FiBE'
     if 'gid' not in datadict:
