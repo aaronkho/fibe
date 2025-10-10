@@ -1086,7 +1086,7 @@ class FixedBoundaryEquilibrium():
             self.scratch = False
 
 
-    def extract_geqdsk_dict(self, cocos=None):
+    def extract_geqdsk_dict(self, cocos=None, legacy_ip=False):
         geqdsk_dict = {k: v for k, v in self._data.items() if k in self.geqdsk_fields}
         dpsinorm_dpsi = 1.0 / (geqdsk_dict['sibdry'] - geqdsk_dict['simagx'])
         if 'pprime' in geqdsk_dict:
@@ -1099,6 +1099,8 @@ class FixedBoundaryEquilibrium():
             # FiBE should internally always be in COCOS=2
             current_cocos = detect_cocos(geqdsk_dict)
             geqdsk_dict = convert_cocos(geqdsk_dict, current_cocos, cocos)
+        if legacy_ip:
+            geqdsk_dict['cpasma'] *= -1.0
         return geqdsk_dict
 
 
@@ -1107,8 +1109,8 @@ class FixedBoundaryEquilibrium():
         return cls(geqdsk=path)
 
 
-    def to_geqdsk(self, path, cocos=None):
-        geqdsk = self.extract_geqdsk_dict(cocos=cocos)
+    def to_geqdsk(self, path, cocos=None, legacy_ip=False):
+        geqdsk = self.extract_geqdsk_dict(cocos=cocos, legacy_ip=legacy_ip)
         write_geqdsk_file(path, geqdsk)
 
 
