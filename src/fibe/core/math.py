@@ -6,7 +6,6 @@ from scipy.interpolate import (
     interp1d,
     splrep,
     splev,
-    bisplrep,
     bisplev,
     RectBivariateSpline,
     make_interp_spline,
@@ -41,9 +40,6 @@ def generate_bounded_1d_spline(y, xnorm=None, symmetrical=True, smooth=False):
         yn_mirror = yn[::-1]
         w_mirror = w[::-1] if w is not None else None
         if np.isclose(xn[0], xn_mirror[-1]):
-            #xn = xn[1:]
-            #yn = yn[1:]
-            #w = w[1:] if w is not None else None
             xn_mirror = xn_mirror[:-1]
             yn_mirror = yn_mirror[:-1]
             w_mirror = w_mirror[:-1] if w_mirror is not None else None
@@ -53,12 +49,12 @@ def generate_bounded_1d_spline(y, xnorm=None, symmetrical=True, smooth=False):
     return {'tck': splrep(xn_fit, yn_fit, w_fit, xb=b[0], xe=b[-1], k=3, quiet=1), 'bounds': b}
 
 
-def generate_2d_spline(x, y, z):
+def generate_2d_spline(x, y, z, s=0):
     xmin = np.nanmin(x)
     xmax = np.nanmax(x)
     ymin = np.nanmin(y)
     ymax = np.nanmax(y)
-    z_spline = RectBivariateSpline(x, y, z)
+    z_spline = RectBivariateSpline(x, y, z, s=s)
     tr, tz, c = z_spline.tck
     kr, kz = z_spline.degrees
     return {'tck': (tr, tz, c, kr, kz), 'bounds': (xmin, ymin, xmax, ymax)}
@@ -315,13 +311,12 @@ def generate_finite_difference_grid(rvec, zvec, rbdry, zbdry):
 def compute_jtor(rpsi, ffprime, pprime):
     '''Compute current density over grid. Scale to Ip'''
     mu0 = 4.0e-7 * np.pi
-    jtor = ffprime / (mu0 * rpsi) + rpsi * pprime
+    jtor = -1.0 * (ffprime / (mu0 * rpsi) + rpsi * pprime)
     return jtor
 
 
-def compute_psi(solver, s5, current, flat_psi_old=None, relax=1.0):
-    return solver(s5 * current)
-    return flat_psi_new, flat_psi_error
+def compute_psi(solver, s5, current):
+    return -1.0 * solver(s5 * current)
 
 
 def compute_jpar(inout, btot, fpol, fprime, pprime):
@@ -375,6 +370,7 @@ def generate_initial_psi(rvec, zvec, rbdry, zbdry, ijin):
             db = rc[0] ** 2 + zc[0] ** 2 if (rc[0] * rp[i] + zc[0] * zp[j]) > 0 else rc[-1] ** 2 + zc[-1] ** 2
             rho = np.nanmin([np.sqrt((rp[i] ** 2 + zp[j] ** 2) / db), 1.0])
         flat_psi[k] = (1.0 - (rho ** 2)) ** 1.2   # Why 1.2?
+    flat_psi *= -1.0
     return flat_psi.reshape(nz, nr)
 
 
@@ -534,11 +530,6 @@ def generate_x_point_candidates(rbdry, zbdry, rmagx, zmagx, psi_tck, dr, dz):
         p1, p2 = lines[-1]
         p3, p4 = split_lines[i + 1][0] if i + 1 < len(split_lines) else split_lines[0][0]
         ta, tb = compute_intersection_from_line_segment_complex(p1, p2, p3, p4)
-        #da = p2 - p1
-        #db = p4 - p3
-        #dx = p3 - p1
-        #ta = (dx.imag * db.real - dx.real * db.imag) / (da.imag * db.real - da.real * db.imag)
-        #tb = (dx.imag * da.real - dx.real * da.imag) / (da.imag * db.real - da.real * db.imag)
         px = p1 + ta * (p2 - p1)
         if not np.isclose(np.abs(px - (p3 + tb * (p4 - p3))), 0.0):
             logger.error('Intersection error')
@@ -550,27 +541,28 @@ def generate_x_point_candidates(rbdry, zbdry, rmagx, zmagx, psi_tck, dr, dz):
         dzb = bisplev(inter[0], inter[1] - dz, psi_tck, dy=1)
         dza = bisplev(inter[0], inter[1] + dz, psi_tck, dy=1)
         if drl * drr <= 0.0 and dzb * dza <= 0.0:
-            #rxp = inter[0] - dr - drl * (2.0 * dr) / (drl - drr)
-            #zxp = inter[1] - dz - dzb * (2.0 * dz) / (dzb - dza)
-            #xp = np.array([rxp, zxp])
-            #xpoint_candidates.append(xp)
             xpoint_candidates.append(inter)
 
     return xpoint_candidates
 
 
-def compute_intersection_from_line_segment_complex(p1s, p1e, p2s, p2e):
-    # u = (x1 - x3 + t * (x2 - x1)) / (x4 - x3)
-    # t * (y2 - y1 - (x2 - x1) * (y4 - y3) / (x4 - x3)) = y3 - y1 - (x3 - x1) * (y4 - y3) / (x4 - x3)
-    d1 = p1e - p1s
-    d2 = p2e - p2s
+def compute_intersection_from_ray_complex(p1s, p1d, p2s, p2d):
     dx = p2s - p1s
     l1 = np.nan
     l2 = np.nan
-    if not np.isclose(d1.imag * d2.real - d1.real * d2.imag, 0.0):
-        l1 = (dx.imag * d2.real - dx.real * d2.imag) / (d1.imag * d2.real - d1.real * d2.imag)
-        l2 = (dx.imag * d1.real - dx.real * d1.imag) / (d1.imag * d2.real - d1.real * d2.imag)
+    if not np.isclose(p1d.imag * p2d.real - p1d.real * p2d.imag, 0.0):
+        l1 = (dx.imag * p2d.real - dx.real * p2d.imag) / (p1d.imag * p2d.real - p1d.real * p2d.imag)
+        l2 = (dx.imag * p1d.real - dx.real * p1d.imag) / (p1d.imag * p2d.real - p1d.real * p2d.imag)
     return l1, l2
+
+
+def compute_intersection_from_line_segment_complex(p1s, p1e, p2s, p2e):
+    # Implemented equations:
+    # u = (x1 - x3 + t * (x2 - x1)) / (x4 - x3)
+    # t * (y2 - y1 - (x2 - x1) * (y4 - y3) / (x4 - x3)) = y3 - y1 - (x3 - x1) * (y4 - y3) / (x4 - x3)
+    p1d = p1e - p1s
+    p2d = p2e - p2s
+    return compute_intersection_from_ray_complex(p1s, p1d, p2s, p2d)
 
 
 def compute_intersection_from_line_segment_coordinates(r1s, z1s, r1e, z1e, r2s, z2s, r2e, z2e):
@@ -611,19 +603,12 @@ def avoid_convex_curvature(r_contour, z_contour, r_point, z_point, r_reference=N
             jangle = sign_ddangle[0] + 1 if (sign_ddangle[0] + 2) < len(dangle_ordered) else -1
         else:
             iangle = sign_ddangle[0]
-    #da = vxp - vbase
     i0 = r_ordered[iangle - 1] + 1.0j * z_ordered[iangle - 1]
     i1 = r_ordered[iangle] + 1.0j * z_ordered[iangle]
     tai, tbi = compute_intersection_from_line_segment_complex(v_vertex, v_point, i0, i1)
-    #dbi = i1 - i0
-    #dxi = i0 - vbase
-    #tai = (dxi.imag * dbi.real - dxi.real * dbi.imag) / (da.imag * dbi.real - da.real * dbi.imag)
     j0 = r_ordered[jangle + 1] + 1.0j * z_ordered[jangle + 1]
     j1 = r_ordered[jangle] + 1.0j * z_ordered[jangle]
     taj, tbj = compute_intersection_from_line_segment_complex(v_vertex, v_point, j0, j1)
-    #dbj = j1 - j0
-    #dxj = j0 - vbase
-    #taj = (dxj.imag * dbj.real - dxj.real * dbj.imag) / (da.imag * dbj.real - da.real * dbj.imag)
     ta = np.nanmin([tai, taj])
     if ta < 1.0:
         v_new = v_vertex + 0.99 * ta * (v_point - v_vertex)
@@ -722,11 +707,6 @@ def generate_boundary_splines(rbdry, zbdry, rmagx, zmagx, xpoints, enforce_conca
                     r_segment[j - 1],
                     z_segment[j - 1]
                 )
-                da = p2 - p1
-                db = p4 - p3
-                dx = p3 - p1
-                ta = (dx.imag * db.real - dx.real * db.imag) / (da.imag * db.real - da.real * db.imag)
-                tb = (dx.imag * da.real - dx.real * da.imag) / (da.imag * db.real - da.real * db.imag)
                 if tb > 1.0:
                     newp = vmagx + tb * (r_segment[j - 1] + 1.0j * z_segment[j - 1] - vmagx) / 0.99
                     r_segment[j - 1] = newp.real
@@ -856,7 +836,7 @@ def compute_gradients_at_boundary(rvec, zvec, flat_psi, inout, ijedge, a1, a2, b
     return rgradr, zgradr, gradr, rgradz, zgradz, gradz
 
 
-def generate_boundary_gradient_spline(r_points, z_points, grad_points, r_reference, z_reference, tol=1.0e-6):
+def generate_boundary_gradient_spline(r_points, z_points, grad_points, r_reference, z_reference, s=0, tol=1.0e-6):
 
     # SPLINE GRAD PSI AS A FUNCTION OF ANGLE ALONG BOUNDARY
     # USING MAGNETIC AXIS AS CENTER
@@ -878,10 +858,10 @@ def generate_boundary_gradient_spline(r_points, z_points, grad_points, r_referen
     angle_ordered = np.concatenate(([-np.pi], angle_ordered, [np.pi]))
     grad_ordered = np.concatenate(([yy], grad_ordered, [yy]))
     b = (-np.pi, np.pi)
-    return {'tck': splrep(angle_ordered, grad_ordered, xb=b[0], xe=b[-1], k=3, per=True, quiet=1), 'bounds': b}
+    return {'tck': splrep(angle_ordered, grad_ordered, xb=b[0], xe=b[-1], k=3, s=s, per=True, quiet=1), 'bounds': b}
 
 
-def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gradr_tck, gradz_tck):
+def old_compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gradr_tck, gradz_tck):
 
     # VECTORS TO AND BETWEEN BOUNDARY POINTS
     vmagx = rmagx + 1.0j * zmagx
@@ -889,6 +869,8 @@ def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gr
     vb0 = vbdry[:-1]
     vb1 = vbdry[1:]
     dvb = vb1 - vb0
+    cb = vb0 - vmagx
+    dcb = 2.0 * np.pi / float(len(rbdry) - 1)
 
     # VECTORS TO EXTERIOR GRID POINTS
     nr = rvec.size
@@ -901,17 +883,16 @@ def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gr
 
     ## VECTORS BETWEEN EXTERIOR POINTS AND BOUNDARY POINTS
     for k in range(dvb.size):
-        c0 = vb0[k] - vmagx
-        angmin = np.angle(c0)
+        angmin = np.angle(cb[k])
         angmax = np.angle(vb1[k] - vmagx)
         angvec = np.angle(vvec - vmagx)
         angmask = np.isfinite(angvec)
-        numer = c0 * np.conj(dvb[k])
+        numer = cb[k] * np.conj(dvb[k])
         mask = np.logical_and(
             angvec >= angmin,
             angvec < angmax
         )
-        if np.abs(angmax - angmin) > (1.9 * np.pi):
+        if np.abs(angmax - angmin) > (2.0 * np.pi - 2.0 * dcb):
             mask = np.logical_or(
                 angvec >= angmin,
                 angvec < angmax
@@ -924,6 +905,61 @@ def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gr
             dvvecc = vvecc - vmagx
             dv = dvvecc * (1.0 - numer.imag / (dvvecc * np.conj(dvb[k])).imag)
             vgradc = splev(ang, gradr_tck) + 1.0j * splev(ang, gradz_tck)
+            psie = (vgradc * np.conj(dv)).real
+            psiout.put(ivvecc, psie)
+            vvec = vvec.compress(np.logical_not(mask))
+            ivvec = ivvec.compress(np.logical_not(mask))
+        if vvec.size == 0: break
+    psi.ravel().put(ijout, psiout)
+
+    return psi
+
+
+def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gradr_tck, gradz_tck):
+
+    # VECTORS TO AND BETWEEN BOUNDARY POINTS
+    vmagx = rmagx + 1.0j * zmagx
+    vbdry = rbdry + 1.0j * zbdry
+    abdry = np.angle(vbdry - vmagx)
+    dvb = vbdry[1:] - vbdry[:-1]
+    nvb = -1.0j * dvb / np.abs(dvb)
+    nbdry = np.concatenate([[nvb[0] + nvb[-1]], nvb[1:] + nvb[:-1], [nvb[-1] + nvb[0]]])
+    for k in range(nbdry.size):
+        if k == 0:
+            nbdry[k] /= np.abs(nbdry[k])
+        else:
+            _, nfac = compute_intersection_from_ray_complex(vbdry[k - 1] + nbdry[k - 1], dvb[k - 1], vbdry[k], nbdry[k])
+            nbdry[k] *= nfac
+
+    # VECTORS TO EXTERIOR GRID POINTS
+    nr = rvec.size
+    jout = ijout // nr
+    iout = ijout - nr * jout
+    vvec = rvec.take(iout) + 1.0j * zvec.take(jout)
+    gbdry = splev(abdry, gradr_tck) + 1.0j * splev(abdry, gradz_tck)
+
+    psiout = np.zeros(vvec.shape, dtype=float)
+    ivvec = np.arange(vvec.size)
+
+    ## VECTORS BETWEEN EXTERIOR POINTS AND BOUNDARY POINTS
+    for k in range(dvb.size):
+        angmin = np.mod(np.angle(vvec - vbdry[k]) - np.angle(nbdry[k]), 2.0 * np.pi)
+        angmin[angmin > np.pi] = angmin[angmin > np.pi] - 2.0 * np.pi
+        angmax = np.mod(np.angle(vvec - vbdry[k + 1]) - np.angle(nbdry[k + 1]), 2.0 * np.pi)
+        angmax[angmax > np.pi] = angmax[angmax > np.pi] - 2.0 * np.pi
+        mask = np.logical_and(
+            np.logical_and(angmin >= 0.0, angmin <= (0.5 * np.pi)),
+            np.logical_and(angmax < 0.0, angmax >= (-0.5 * np.pi))
+        )
+        if not np.any(mask): continue
+        vvecc = vvec.compress(mask)
+        ivvecc = ivvec.compress(mask)
+        if vvecc.size > 0:
+            _, t = compute_intersection_from_ray_complex(vvecc, dvb[k], vbdry[k], nbdry[k])
+            vlevel = vbdry[k] + t * nbdry[k]
+            s, _ = compute_intersection_from_ray_complex(vlevel, dvb[k], vvecc, nvb[k])
+            vgradc = gbdry[k] + s * (gbdry[k + 1] - gbdry[k])
+            dv = vvecc - (vbdry[k] + s * dvb[k])
             psie = (vgradc * np.conj(dv)).real
             psiout.put(ivvecc, psie)
             vvec = vvec.compress(np.logical_not(mask))
@@ -953,7 +989,29 @@ def compute_flux_surface_quantities(psinorm, r_contour, z_contour, psi_tck=None,
     return out
 
 
-def compute_safety_factor_contour_integral(contour):
+def compute_flux_surface_quantities_boundary(psinorm, r_contour, z_contour, r_reference, z_reference, gradr_tck=None, gradz_tck=None, fpol_tck=None):
+    fpol = splev(psinorm, fpol_tck) if fpol_tck is not None else 0.0
+    gradr_contour = np.array([0.0])
+    gradz_contour = np.array([0.0])
+    if len(r_contour) > 1 and len(z_contour) > 1:
+        a_contour = np.angle(r_contour + 1.0j * z_contour - r_reference - 1.0j * z_reference)
+        if gradr_tck is not None:
+            gradr_contour = splev(a_contour, gradr_tck)
+        if gradz_tck is not None:
+            gradz_contour = splev(a_contour, gradz_tck)
+    out = {
+        'r': r_contour,
+        'z': z_contour,
+        'fpol': np.array([fpol]).flatten(),
+        'bpol': np.sqrt(np.power(gradr_contour, 2.0) + np.power(gradz_contour, 2.0)) / r_contour,
+        'btor': fpol / r_contour,
+        'dpsidr': gradr_contour,
+        'dpsidz': gradz_contour,
+    }
+    return out
+
+
+def compute_safety_factor_contour_integral(contour, current_inside=None):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
         dl = np.sqrt(np.square(np.diff(contour['r'])) + np.square(np.diff(contour['z']))).flatten()
@@ -963,8 +1021,12 @@ def compute_safety_factor_contour_integral(contour):
         #btm = 0.5 * (contour['btor'][1:] + contour['btor'][:-1]).flatten()
         dl_over_bp = dl / bpm
         vp = np.sum(dl_over_bp)
-        rm2 = np.sum(dl_over_bp / np.square(rcm)) / vp
-        val = contour['fpol'].item() * vp * rm2 / (2.0 * np.pi)
+        ir2 = np.sum(dl_over_bp / np.square(rcm)) / np.sum(dl_over_bp)
+        bp2 = np.sum(dl_over_bp * np.square(bpm)) / np.sum(dl_over_bp)
+        val = (0.5 * contour['fpol'].item() * ir2 / np.pi) * vp
+        # Current constraint needs more testing, advised NOT to use
+        if isinstance(current_inside, float):
+            val = (0.5 * contour['fpol'].item() * ir2 / np.pi) * np.square(vp) * bp2 / (4.0e-7 * np.pi * current_inside)
     return val
 
 
@@ -1084,22 +1146,20 @@ def compute_adjusted_contour_resolution(r_axis, z_axis, r_boundary, z_boundary, 
     return npoints
 
 
-def compute_mxh_coefficients_from_contours(fs, r_reference=None, z_reference=None, n_coeff=6):
-    r_ref = r_reference if isinstance(r_reference, (float, int)) else np.nanmean(fs['r'])
-    z_ref = z_reference if isinstance(z_reference, (float, int)) else np.nanmean(fs['z'])
-    r_ordered, z_ordered, angle_ordered, _ = order_contour_points_by_angle(fs['r'], fs['z'], r_ref, z_ref, close_contour=True)
+def compute_mxh_coefficients_from_contours(fs, n_coeff=6):
+    r0 = (np.nanmax(fs['r']) + np.nanmin(fs['r'])) / 2.0
+    z0 = (np.nanmax(fs['z']) + np.nanmin(fs['z'])) / 2.0
+    r_ordered, z_ordered, angle_ordered, _ = order_contour_points_by_angle(fs['r'], fs['z'], float(r0), float(z0), close_contour=True)
     v_ordered = r_ordered + 1.0j * z_ordered
-    v_ref = r_ref + 1.0j * z_ref
-    length_ordered = np.abs(v_ordered - v_ref)
-    r0 = (np.nanmax(r_ordered) + np.nanmin(r_ordered)) / 2.0
-    z0 = (np.nanmax(z_ordered) + np.nanmin(z_ordered)) / 2.0
+    v0 = r0 + 1.0j * z0
+    length_ordered = np.abs(v_ordered - v0)
     r = (np.nanmax(r_ordered) - np.nanmin(r_ordered)) / 2.0
     kappa = ((np.nanmax(z_ordered) - np.nanmin(z_ordered)) / 2.0) / r
-    rc = np.where((r_ordered - r0) / r > 1.0, 1.0, np.where((r_ordered - r0) / r < -1.0, -1.0, (r_ordered - r0) / r))
-    angle_ordered_r = np.where(z_ordered[:-1] < z_ref, 2.0 * np.pi - np.arccos(rc[:-1]), np.arccos(rc[:-1]))
+    rc = np.clip((r_ordered - r0) / r, -1.0, 1.0)
+    angle_ordered_r = np.where(z_ordered[:-1] < z0, 2.0 * np.pi - np.arccos(rc[:-1]), np.arccos(rc[:-1]))
     angle_ordered_r = np.concatenate([angle_ordered_r, [angle_ordered_r[0] + 2.0 * np.pi]])
-    zc = np.where((z_ordered - z0) / (kappa * r) > 1.0, 1.0, np.where((z_ordered - z0) / (kappa * r) < -1.0, -1.0, (z_ordered - z0) / (kappa * r)))
-    angle_ordered_z = np.where(r_ordered[:-1] < r_ref, np.pi - np.arcsin(zc[:-1]), np.arcsin(zc[:-1]))
+    zc = np.clip((z_ordered - z0) / (kappa * r), -1.0, 1.0)
+    angle_ordered_z = np.where(r_ordered[:-1] < r0, np.pi - np.arcsin(zc[:-1]), np.arcsin(zc[:-1]))
     angle_ordered_z = np.where(angle_ordered_z < 0.0, 2.0 * np.pi + angle_ordered_z, angle_ordered_z)
     angle_ordered_z = np.concatenate([angle_ordered_z, [angle_ordered_z[0] + 2.0 * np.pi]])
     sinc = np.zeros((n_coeff + 1, ))
