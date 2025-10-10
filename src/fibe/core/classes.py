@@ -88,6 +88,7 @@ class FixedBoundaryEquilibrium():
     def __init__(
         self,
         geqdsk=None,
+        legacy_ip=False,
     ):
         self.scratch = True
         self._data = {}
@@ -105,6 +106,8 @@ class FixedBoundaryEquilibrium():
         self._fs = None
         if isinstance(geqdsk, (str, Path)):
             self._data.update(read_geqdsk_file(geqdsk))
+            if 'cpasma' in self._data and legacy_ip:
+                self._data['cpasma'] *= -1.0
             self.enforce_boundary_duplicate_at_end()
             self.scratch = False
 
@@ -216,7 +219,7 @@ class FixedBoundaryEquilibrium():
         self._data['zdim'] = zmax - zmin
 
 
-    def initialize_profiles_with_minimal_input(self, pressure_axis, ip, bt):
+    def initialize_profiles_with_minimal_input(self, pressure_axis, ip, bt, legacy_ip=False):
         if 'pres' not in self._data and 'nr' in self._data:
             #pressure_span = 0.9
             #pressure = np.exp(-np.power(np.linspace(0.0, 1.0, self._data['nr']) / 0.2, 2.0)) * pressure_span * pressure_axis + (1.0 - pressure_span) * pressure_axis
@@ -226,6 +229,8 @@ class FixedBoundaryEquilibrium():
             self.define_pressure_profile(pressure)
             self._data['cpasma'] = ip
             self._data['bcentr'] = bt
+            if legacy_ip:
+                self._data['cpasma'] *= -1.0
 
 
     def initialize_psi(self):
@@ -296,13 +301,15 @@ class FixedBoundaryEquilibrium():
             self._data['qpsi'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['qpsi_fs']['tck'])
 
 
-    def define_current(self, cpasma):
+    def define_current(self, cpasma, legacy_ip=False):
         if isinstance(cpasma, (float, int)):
             if 'inout' not in self._data:
                 self.create_finite_difference_grid()
             self._data['cpasma'] = float(cpasma)
             self._data['curscale'] = 1.0
             self._data['cur'] = np.where(self._data['inout'] == 0, 0.0, self._data['cpasma'] / (self._data['hrz'] * float(len(self._data['ijin']))))
+            if legacy_ip:
+                self._data['cpasma'] *= -1.0
 
 
     def define_toroidal_field(self, bcentr, rcentr=None):
@@ -1072,7 +1079,7 @@ class FixedBoundaryEquilibrium():
             self.scratch = False
 
 
-    def insert_geqdsk_dict(self, geqdsk_dict, clean=True):
+    def insert_geqdsk_dict(self, geqdsk_dict, clean=True, legacy_ip=False):
         if isinstance(geqdsk_dict, dict) and 'nr' in geqdsk_dict and 'nz' in geqdsk_dict and 'rbdry' in geqdsk_dict and 'zbdry' in geqdsk_dict:
             if clean:
                 self._data = {}
@@ -1082,6 +1089,8 @@ class FixedBoundaryEquilibrium():
                 self.converged = None
                 self.fs = None
             self._data.update(geqdsk_dict)
+            if 'cpasma' in self._data and legacy_ip:
+                self._data['cpasma'] *= -1.0
             self.enforce_boundary_duplicate_at_end()
             self.scratch = False
 
@@ -1105,8 +1114,8 @@ class FixedBoundaryEquilibrium():
 
 
     @classmethod
-    def from_geqdsk(cls, path):
-        return cls(geqdsk=path)
+    def from_geqdsk(cls, path, legacy_ip=False):
+        return cls(geqdsk=path, legacy_ip=legacy_ip)
 
 
     def to_geqdsk(self, path, cocos=None, legacy_ip=False):
