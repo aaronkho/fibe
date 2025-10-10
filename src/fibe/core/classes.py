@@ -29,6 +29,7 @@ from .math import (
     generate_boundary_gradient_spline,
     compute_psi_extension,
     compute_flux_surface_quantities,
+    compute_flux_surface_quantities_boundary,
     compute_safety_factor_contour_integral,
     compute_f_from_safety_factor_and_contour,
     trace_contours_with_contourpy,
@@ -177,31 +178,31 @@ class FixedBoundaryEquilibrium():
             self._data['zbdry'] = copy.deepcopy(boundary['z'].flatten())
             self._data['nbdry'] = len(self._data['rbdry'])
             self.enforce_boundary_duplicate_at_end()
-            a = copy.deepcopy(theta)
-            a_r = np.zeros_like(a)
-            a_t = np.ones_like(a)
-            for i in range(mxh['cos_coeffs'].shape[1]):
-                a += mxh['cos_coeffs'][:, i] * np.cos(float(i) * theta)
-                a_r += np.zeros_like(mxh['cos_coeffs'][:, i]) * np.cos(float(i) * theta)
-                a_t += mxh['cos_coeffs'][:, i] * float(-i) * np.sin(float(i) * theta)
-            for i in range(mxh['sin_coeffs'].shape[1]):
-                a += mxh['sin_coeffs'][:, i] * np.sin(float(i) * theta)
-                a_r += np.zeros_like(mxh['sin_coeffs'][:, i]) * np.sin(float(i) * theta)
-                a_t += mxh['sin_coeffs'][:, i] * float(i) * np.cos(float(i) * theta)
-            r = mxh['r0'] + mxh['r'] * np.cos(a)
-            r_r = np.zeros_like(mxh['r0']) + np.cos(a) - mxh['r'] * np.sin(a) * a_r
-            r_t = mxh['r'] * a_t * np.sin(a)
-            z = mxh['z0'] + mxh['kappa'] * mxh['r'] * np.sin(theta)
-            z_r = np.zeros_like(mxh['z0']) + mxh['kappa'] * (1.0 + np.zeros_like(mxh['kappa'])) * np.sin(theta)
-            z_t = mxh['kappa'] * mxh['r'] * np.cos(theta)
-            l_t = np.sqrt(np.power(r_t, 2.0) + np.power(z_t, 2.0))
-            j_r = r * (r_r * z_t - r_t * z_r)
-            inv_j_r = 1.0 / np.where(np.isclose(j_r, 0.0), 0.001, j_r)
-            grad_r = np.where(np.isclose(j_r, 0.0), 1.0, r * l_t * inv_j_r)
-            c = 2.0 * np.pi * np.sum((l_t / (r * grad_r))[:-1], axis=-1)
-            f = 2.0 * np.pi * mxh['r'] / (np.where(np.isclose(c, 0.0), 1.0, c) / 300.0)
+            #a = copy.deepcopy(theta)
+            #a_r = np.zeros_like(a)
+            #a_t = np.ones_like(a)
+            #for i in range(mxh['cos_coeffs'].shape[1]):
+            #    a += mxh['cos_coeffs'][:, i] * np.cos(float(i) * theta)
+            #    a_r += np.zeros_like(mxh['cos_coeffs'][:, i]) * np.cos(float(i) * theta)
+            #    a_t += mxh['cos_coeffs'][:, i] * float(-i) * np.sin(float(i) * theta)
+            #for i in range(mxh['sin_coeffs'].shape[1]):
+            #    a += mxh['sin_coeffs'][:, i] * np.sin(float(i) * theta)
+            #    a_r += np.zeros_like(mxh['sin_coeffs'][:, i]) * np.sin(float(i) * theta)
+            #    a_t += mxh['sin_coeffs'][:, i] * float(i) * np.cos(float(i) * theta)
+            #r = mxh['r0'] + mxh['r'] * np.cos(a)
+            #r_r = np.zeros_like(mxh['r0']) + np.cos(a) - mxh['r'] * np.sin(a) * a_r
+            #r_t = mxh['r'] * a_t * np.sin(a)
+            #z = mxh['z0'] + mxh['kappa'] * mxh['r'] * np.sin(theta)
+            #z_r = np.zeros_like(mxh['z0']) + mxh['kappa'] * (1.0 + np.zeros_like(mxh['kappa'])) * np.sin(theta)
+            #z_t = mxh['kappa'] * mxh['r'] * np.cos(theta)
+            #l_t = np.sqrt(np.power(r_t, 2.0) + np.power(z_t, 2.0))
+            #j_r = r * (r_r * z_t - r_t * z_r)
+            #inv_j_r = 1.0 / np.where(np.isclose(j_r, 0.0), 0.001, j_r)
+            #grad_r = np.where(np.isclose(j_r, 0.0), 1.0, r * l_t * inv_j_r)
+            #c = 2.0 * np.pi * np.sum((l_t / (r * grad_r))[:-1], axis=-1)
+            #f = 2.0 * np.pi * mxh['r'] / (np.where(np.isclose(c, 0.0), 1.0, c) / 300.0)
+            #self._data['mxh_f'] = f
             self._data['mxh_a'] = np.pi * np.power(mxh['r'], 2.0) / np.trapezoid(self._data['rbdry'], self._data['zbdry'])
-            self._data['mxh_f'] = f
 
 
     def define_grid_and_boundary_with_mxh(self, nr, nz, rgeo, zgeo, rminor, kappa, cos_coeffs, sin_coeffs, nbdry=301):
@@ -248,7 +249,7 @@ class FixedBoundaryEquilibrium():
         if 'cpasma' not in self._data:
             self.compute_normalized_psi_map()
             self.initialize_current()
-        psi_mult = 4.0e-7 * np.pi * float(self._data['cpasma']) * 0.5 * self._data['rdim']
+        psi_mult = 4.0e-7 * np.pi * -1.0 * float(self._data['cpasma']) * 0.5 * self._data['rdim']
         logger.debug(f'Psi initialization: {psi_mult}')
         self._data['psi'] *= psi_mult
         self._data['simagx'] *= psi_mult
@@ -264,9 +265,8 @@ class FixedBoundaryEquilibrium():
         if 'inout' not in self._data:
             self.create_finite_difference_grid()
         self._data['curscale'] = 1.0
-        dpsi = np.sign(self._data['sibdry'] - self._data['simagx'])  # d(psi) / d(psinorm)
         ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'])
-        self._data['cur'] = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), dpsi * ffp.ravel(), dpsi * pp.ravel()))
+        self._data['cur'] = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp.ravel(), pp.ravel()))
         self._data['cpasma'] = float(np.sum(self._data['cur']) * self._data['hrz'])
 
 
@@ -682,8 +682,8 @@ class FixedBoundaryEquilibrium():
         if 'fpol_fs' not in self._fit:
             self.recompute_f_profile()
         contours = self.trace_rough_flux_surfaces()
-        psisign = np.sign(self._data['sibdry'] - self._data['simagx'])
-        levels = np.sort(psisign * np.array(list(contours.keys())))
+        dpsi = self._data['sibdry'] - self._data['simagx']
+        levels = np.sort(np.sign(dpsi) * np.array(list(contours.keys())))
         fine_contours = {}
         fine_contours[float(self._data['simagx'])] = compute_flux_surface_quantities(
             0.0,
@@ -693,7 +693,7 @@ class FixedBoundaryEquilibrium():
             self._fit['fpol_fs']['tck']
         )
         for level in levels:
-            ll = psisign * level
+            ll = np.sign(dpsi) * level
             npoints = compute_adjusted_contour_resolution(
                 self._data['rmagx'], 
                 self._data['zmagx'], 
@@ -717,7 +717,7 @@ class FixedBoundaryEquilibrium():
                 resolution=251
             )
             if len(rc) > 3:
-                psin = np.abs((ll - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx']))
+                psin = np.abs((ll - self._data['simagx']) / dpsi)
                 fine_contours[float(ll)] = compute_flux_surface_quantities(
                     psin,
                     rc,
@@ -757,11 +757,21 @@ class FixedBoundaryEquilibrium():
                     self._fit['psi_rz']['tck'] if 'psi_rz' in self._fit else None,
                     self._fit['fpol_fs']['tck'] if 'fpol_fs' in self._fit else None
                 )
-        contours[float(self._data['sibdry'])] = compute_flux_surface_quantities(
+        #contours[float(self._data['sibdry'])] = compute_flux_surface_quantities(
+        #    psinorm[-1],
+        #    self._data['rbdry'],
+        #    self._data['zbdry'],
+        #    self._fit['psi_rz']['tck'] if 'psi_rz' in self._fit else None,
+        #    self._fit['fpol_fs']['tck'] if 'fpol_fs' in self._fit else None
+        #)
+        contours[float(self._data['sibdry'])] = compute_flux_surface_quantities_boundary(
             psinorm[-1],
             self._data['rbdry'],
             self._data['zbdry'],
-            self._fit['psi_rz']['tck'] if 'psi_rz' in self._fit else None,
+            self._data['rmagx'],
+            self._data['zmagx'],
+            self._fit['gradr_bdry']['tck'] if 'gradr_bdry' in self._fit else None,
+            self._fit['gradz_bdry']['tck'] if 'gradz_bdry' in self._fit else None,
             self._fit['fpol_fs']['tck'] if 'fpol_fs' in self._fit else None
         )
         return contours
@@ -830,9 +840,9 @@ class FixedBoundaryEquilibrium():
         if 'simagx' not in self._data or 'sibdry' not in self._data:
             self.find_magnetic_axis()
         if 'qpsi' in self._data:
-            psi = np.linspace(0.0, 1.0, self._data['nr']) * (self._data['sibdry'] - self._data['simagx']) + self._data['simagx']
-            psisign = np.sign(self._data['sibdry'] - self._data['simagx'])
-            self._data['phi'] = cumulative_simpson(psisign * self._data['qpsi'], x=psisign * psi, initial=0.0)
+            dpsi = self._data['sibdry'] - self._data['simagx']
+            psi = np.linspace(0.0, 1.0, self._data['nr']) * dpsi + self._data['simagx']
+            self._data['phi'] = cumulative_simpson(np.sign(dpsi) * self._data['qpsi'], x=np.sign(dpsi) * psi, initial=0.0)
 
 
     def renormalize_psi(self, simagx=None, sibdry=None):
@@ -849,7 +859,6 @@ class FixedBoundaryEquilibrium():
         else:
             self.save_original_data(['simagx', 'sibdry'], overwrite=True)
             self.scratch = False
-
 
 
     def _update_current(self, current_new, relax=1.0):
@@ -912,9 +921,8 @@ class FixedBoundaryEquilibrium():
             self.define_current(self._data['cpasma'])
         self._data['psi_error'] = 0.0
         for n in range(self._options['nxiter']):
-            dpsi = np.sign(self._data['sibdry'] - self._data['simagx'])  # d(psi)/d(psinorm)
             ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
-            cur_new = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), dpsi * ffp.ravel(), dpsi * pp.ravel()))
+            cur_new = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp.ravel(), pp.ravel()))
             self._update_current(cur_new, relax=self._options['relaxj'] if n > 0 else 1.0)
             psi_new = compute_psi(self.solver, self._data['s5'], self._data['cur'])
             self._update_psi(psi_new, relax=self._options['relax'])
@@ -1079,14 +1087,15 @@ class FixedBoundaryEquilibrium():
 
     def extract_geqdsk_dict(self, cocos=None):
         geqdsk_dict = {k: v for k, v in self._data.items() if k in self.geqdsk_fields}
-        dpsi = np.sign(geqdsk_dict['sibdry'] - geqdsk_dict['simagx'])
+        dpsinorm_dpsi = 1.0 / (geqdsk_dict['sibdry'] - geqdsk_dict['simagx'])
         if 'pprime' in geqdsk_dict:
-            geqdsk_dict['pprime'] *= dpsi
+            geqdsk_dict['pprime'] *= dpsinorm_dpsi
         if 'ffprim' in geqdsk_dict:
-            geqdsk_dict['ffprim'] *= dpsi
+            geqdsk_dict['ffprim'] *= dpsinorm_dpsi
         geqdsk_dict['gcase'] = 'FiBE'
-        geqdsk_dict['gid'] = 1
+        geqdsk_dict['gid'] = 2
         if isinstance(cocos, int):
+            # FiBE should internally always be in COCOS=2
             current_cocos = detect_cocos(geqdsk_dict)
             geqdsk_dict = convert_cocos(geqdsk_dict, current_cocos, cocos)
         return geqdsk_dict
@@ -1126,10 +1135,11 @@ class FixedBoundaryEquilibrium():
             zvec = zmin + np.linspace(0.0, 1.0, self._data['nz']) * (zmax - zmin)
             if 'psi' in self._data:
                 rmesh, zmesh = np.meshgrid(rvec, zvec)
-                psidiff = self._data['sibdry'] - self._data['simagx']
-                psisign = np.sign(psidiff)
-                levels = lvec * psidiff + self._data['simagx']
-                ax.contour(rmesh, zmesh, psisign * self._data['psi'], levels=psisign * levels)
+                dpsi = self._data['sibdry'] - self._data['simagx']
+                levels = lvec * dpsi + self._data['simagx']
+                if levels[0] > levels[-1]:
+                    levels = levels[::-1]
+                ax.contour(rmesh, zmesh, self._data['psi'], levels=levels)
             if 'rbdry' in self._data and 'zbdry' in self._data:
                 ax.plot(self._data['rbdry'], self._data['zbdry'], c='r', label='Boundary')
             if 'rlim' in self._data and 'zlim' in self._data:
@@ -1145,7 +1155,7 @@ class FixedBoundaryEquilibrium():
                     ax.scatter(rmesh.ravel()[~mask], zmesh.ravel()[~mask], c='g', marker='.', s=0.1)
                     ax.scatter(rmesh.ravel()[mask], zmesh.ravel()[mask], c='k', marker='x')
                 if 'gradr_bdry' in self._fit and 'gradz_bdry' in self._fit:
-                    abdry = np.angle(self._data['rbdry'] + 1.0j * self._data['zbdry'])
+                    abdry = np.angle(self._data['rbdry'] + 1.0j * self._data['zbdry'] - self._data['rmagx'] - 1.0j * self._data['zmagx'])
                     mag_grad_psi = splev(abdry, self._fit['gradr_bdry']['tck']) ** 2 + splev(abdry, self._fit['gradz_bdry']['tck']) ** 2
                     mag_grad_psi_norm = mag_grad_psi / (np.nanmax(mag_grad_psi) - np.nanmin(mag_grad_psi))
                     ax.scatter(self._data['rbdry'], self._data['zbdry'], c=mag_grad_psi_norm, cmap='cividis')
@@ -1229,10 +1239,11 @@ class FixedBoundaryEquilibrium():
             rvec_old = rmin_old + np.linspace(0.0, 1.0, nr_old) * (rmax_old - rmin_old)
             zvec_old = zmin_old + np.linspace(0.0, 1.0, nz_old) * (zmax_old - zmin_old)
             rmesh_old, zmesh_old = np.meshgrid(rvec_old, zvec_old)
-            psidiff_old = sibdry_old - simagx_old
-            psisign_old = np.sign(psidiff_old)
-            levels_old = lvec * psidiff_old + simagx_old
-            ax.contour(rmesh_old, zmesh_old, psisign_old * self._data['psi_orig'], levels=psisign_old * levels_old, colors='r', alpha=0.6)
+            dpsi_old = sibdry_old - simagx_old
+            levels_old = lvec * dpsi_old + simagx_old
+            if levels_old[0] > levels_old[-1]:
+                levels_old = levels_old[::-1]
+            ax.contour(rmesh_old, zmesh_old, self._data['psi_orig'], levels=levels_old, colors='r', alpha=0.6)
             if 'rbdry_orig' in self._data and 'zbdry_orig' in self._data:
                 ax.plot(self._data['rbdry_orig'], self._data['zbdry_orig'], c='r', label='Boundary (old)')
             elif 'rbdry' in self._data and 'zbdry' in self._data:
@@ -1254,10 +1265,11 @@ class FixedBoundaryEquilibrium():
             rvec_new = rmin_new + np.linspace(0.0, 1.0, nr_new) * (rmax_new - rmin_new)
             zvec_new = zmin_new + np.linspace(0.0, 1.0, nz_new) * (zmax_new - zmin_new)
             rmesh_new, zmesh_new = np.meshgrid(rvec_new, zvec_new)
-            psidiff_new = sibdry_new - simagx_new
-            psisign_new = np.sign(psidiff_new)
-            levels_new = lvec * psidiff_new + simagx_new
-            ax.contour(rmesh_new, zmesh_new, psisign_new * self._data['psi'], levels=psisign_new * levels_new, colors='b', alpha=0.6)
+            dpsi_new = sibdry_new - simagx_new
+            levels_new = lvec * dpsi_new + simagx_new
+            if levels_new[0] > levels_new[-1]:
+                levels_new = levels_new[::-1]
+            ax.contour(rmesh_new, zmesh_new, self._data['psi'], levels=levels_new, colors='b', alpha=0.6)
             if 'rbdry' in self._data and 'zbdry' in self._data:
                 ax.plot(self._data['rbdry'], self._data['zbdry'], c='b', label='Boundary (new)')
             if 'rmagx' in self._data and 'zmagx' in self._data:
@@ -1343,7 +1355,7 @@ class FixedBoundaryEquilibrium():
             ax1 = fig.add_subplot(121)
             ax2 = fig.add_subplot(122)
             psinorm = np.linspace(0.0, 1.0, self._data['nr'])
-            dpsi = np.sign(self._data['sibdry'] - self._data['simagx'])  # d(psi)/d(psinorm)
+            dpsinorm_dpsi = 1.0 / (self._data['sibdry'] - self._data['simagx'])
             f_factor = 1.0e-1 * np.sign(self._data['bcentr'])
             p_factor = 1.0e-5
             q_factor = np.sign(self._data['bcentr'] * self._data['cpasma'])
@@ -1351,21 +1363,21 @@ class FixedBoundaryEquilibrium():
             d_factor = np.sign(self._data['cpasma'])
             ax1.plot(psinorm, f_factor * self._data['fpol'], c='b', label='F')
             if 'ffprime' in self._data:
-                ax2.plot(psinorm, f_factor * d_factor * dpsi * self._data['ffprime'] / self._data['fpol'], c='b', label='Fp')
+                ax2.plot(psinorm, f_factor * d_factor * self._data['ffprime'] * dpsinorm_dpsi / self._data['fpol'], c='b', label='Fp')
             if 'fpol_fs' in self._fit:
                 ax1.plot(psinorm, f_factor * splev(psinorm, self._fit['fpol_fs']['tck']), c='b', ls='--', label='F Fit')
-                ax2.plot(psinorm, f_factor * d_factor * dpsi * splev(psinorm, self._fit['fpol_fs']['tck'], der=1), c='b', ls='--', label='Fp Fit')
+                ax2.plot(psinorm, f_factor * d_factor * splev(psinorm, self._fit['fpol_fs']['tck'], der=1) * dpsinorm_dpsi, c='b', ls='--', label='Fp Fit')
             ax1.plot(psinorm, p_factor * self._data['pres'], c='r', label='p')
             if 'pprime' in self._data:
-                ax2.plot(psinorm, p_factor * d_factor * dpsi * self._data['pprime'], c='r', label='pp')
+                ax2.plot(psinorm, p_factor * d_factor * self._data['pprime'] * dpsinorm_dpsi, c='r', label='pp')
             if 'pres_fs' in self._fit:
                 ax1.plot(psinorm, p_factor * splev(psinorm, self._fit['pres_fs']['tck']), c='r', ls='--', label='p Fit')
-                ax2.plot(psinorm, p_factor * d_factor * dpsi * splev(psinorm, self._fit['pres_fs']['tck'], der=1), c='r', ls='--', label='pp Fit')
+                ax2.plot(psinorm, p_factor * d_factor * splev(psinorm, self._fit['pres_fs']['tck'], der=1) * dpsinorm_dpsi, c='r', ls='--', label='pp Fit')
             if 'qpsi' in self._data:
                 ax1.plot(psinorm, q_factor * self._data['qpsi'], c='g', label='q')
                 if 'qpsi_fs' in self._fit:
                     ax1.plot(psinorm, q_factor * splev(psinorm, self._fit['qpsi_fs']['tck']), c='g', ls='--', label='q Fit')
-                    ax2.plot(psinorm, q_factor * d_factor * dpsi * splev(psinorm, self._fit['qpsi_fs']['tck'], der=1), c='g', ls='--', label='qp Fit')
+                    ax2.plot(psinorm, q_factor * d_factor * splev(psinorm, self._fit['qpsi_fs']['tck'], der=1) * dpsinorm_dpsi, c='g', ls='--', label='qp Fit')
             if 'phi' in self._data:
                 ax1.plot(psinorm, phi_factor * self._data['phi'], c='m', label='phi')
             ax1.set_xlim(0.0, 1.0)

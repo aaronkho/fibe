@@ -989,6 +989,28 @@ def compute_flux_surface_quantities(psinorm, r_contour, z_contour, psi_tck=None,
     return out
 
 
+def compute_flux_surface_quantities_boundary(psinorm, r_contour, z_contour, r_reference, z_reference, gradr_tck=None, gradz_tck=None, fpol_tck=None):
+    fpol = splev(psinorm, fpol_tck) if fpol_tck is not None else 0.0
+    gradr_contour = np.array([0.0])
+    gradz_contour = np.array([0.0])
+    if len(r_contour) > 1 and len(z_contour) > 1:
+        a_contour = np.angle(r_contour + 1.0j * z_contour - r_reference - 1.0j * z_reference)
+        if gradr_tck is not None:
+            gradr_contour = splev(a_contour, gradr_tck)
+        if gradz_tck is not None:
+            gradz_contour = splev(a_contour, gradz_tck)
+    out = {
+        'r': r_contour,
+        'z': z_contour,
+        'fpol': np.array([fpol]).flatten(),
+        'bpol': np.sqrt(np.power(gradr_contour, 2.0) + np.power(gradz_contour, 2.0)) / r_contour,
+        'btor': fpol / r_contour,
+        'dpsidr': gradr_contour,
+        'dpsidz': gradz_contour,
+    }
+    return out
+
+
 def compute_safety_factor_contour_integral(contour):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:

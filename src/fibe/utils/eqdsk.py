@@ -527,7 +527,7 @@ def determine_cocos(sign_dict: MutableMapping[str, int]) -> int:
         elif sign_dict['scyl'] < 0:
             cocos_number += 1
         if sign_dict['eBp'] < 0:
-            logger.warning('Ambiguous per radian specification, assuming not per radian')
+            logger.warning('Ambiguous per radian specification, assuming per radian')
         elif sign_dict['eBp'] > 0:
             cocos_number += 10
         if sign_dict['srel'] == 0:
@@ -537,7 +537,7 @@ def determine_cocos(sign_dict: MutableMapping[str, int]) -> int:
     return cocos_number
 
 
-def detect_cocos(eqdsk: MutableMapping[str, Any]) -> int:
+def detect_cocos(eqdsk: MutableMapping[str, Any], disambiguate: bool = True) -> int:
     sign_dict = {}
     sIp = int(np.sign(eqdsk['cpasma'])) if 'cpasma' in eqdsk else 0
     sBt = int(np.sign(eqdsk['bcentr'])) if 'bcentr' in eqdsk else 0
@@ -549,6 +549,10 @@ def detect_cocos(eqdsk: MutableMapping[str, Any]) -> int:
             sign_dict['sBp'] = int(np.sign(eqdsk['sibdry'] - eqdsk['simagx'])) * sIp
         if 'qpsi' in eqdsk:
             sign_dict['spol'] = int(np.sign(eqdsk['qpsi'][-1])) * sIp * sBt
+        if disambiguate:
+            sign_dict['scyl'] = -1
+            sign_dict['eBp'] = 0
+            sign_dict['srel'] = 1
     return determine_cocos(sign_dict)
 
 
