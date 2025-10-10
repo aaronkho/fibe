@@ -636,8 +636,8 @@ class FixedBoundaryEquilibrium():
             self._data['b2'],
             tol=tol
         )
-        #s = len(gradr) + int(np.sqrt(2 * len(gradz))) if smooth else 0
-        s = 4 * (len(gradr) + len(gradz)) if smooth else 0
+        s = len(gradr) + int(np.sqrt(2 * len(gradz))) if smooth else 0
+        #s = 5 * (len(gradr) + len(gradz)) if smooth else 0
         self._fit['gradr_bdry'] = generate_boundary_gradient_spline(rgradr, zgradr, gradr, self._data['rmagx'], self._data['zmagx'], s=s, tol=tol)
         self._fit['gradz_bdry'] = generate_boundary_gradient_spline(rgradz, zgradz, gradz, self._data['rmagx'], self._data['zmagx'], s=s, tol=tol)
 
@@ -757,23 +757,23 @@ class FixedBoundaryEquilibrium():
                     self._fit['psi_rz']['tck'] if 'psi_rz' in self._fit else None,
                     self._fit['fpol_fs']['tck'] if 'fpol_fs' in self._fit else None
                 )
-        #contours[float(self._data['sibdry'])] = compute_flux_surface_quantities(
-        #    psinorm[-1],
-        #    self._data['rbdry'],
-        #    self._data['zbdry'],
-        #    self._fit['psi_rz']['tck'] if 'psi_rz' in self._fit else None,
-        #    self._fit['fpol_fs']['tck'] if 'fpol_fs' in self._fit else None
-        #)
-        contours[float(self._data['sibdry'])] = compute_flux_surface_quantities_boundary(
+        contours[float(self._data['sibdry'])] = compute_flux_surface_quantities(
             psinorm[-1],
             self._data['rbdry'],
             self._data['zbdry'],
-            self._data['rmagx'],
-            self._data['zmagx'],
-            self._fit['gradr_bdry']['tck'] if 'gradr_bdry' in self._fit else None,
-            self._fit['gradz_bdry']['tck'] if 'gradz_bdry' in self._fit else None,
+            self._fit['psi_rz']['tck'] if 'psi_rz' in self._fit else None,
             self._fit['fpol_fs']['tck'] if 'fpol_fs' in self._fit else None
         )
+        #contours[float(self._data['sibdry'])] = compute_flux_surface_quantities_boundary(
+        #    psinorm[-1],
+        #    self._data['rbdry'],
+        #    self._data['zbdry'],
+        #    self._data['rmagx'],
+        #    self._data['zmagx'],
+        #    self._fit['gradr_bdry']['tck'] if 'gradr_bdry' in self._fit else None,
+        #    self._fit['gradz_bdry']['tck'] if 'gradz_bdry' in self._fit else None,
+        #    self._fit['fpol_fs']['tck'] if 'fpol_fs' in self._fit else None
+        #)
         return contours
 
 
@@ -819,8 +819,9 @@ class FixedBoundaryEquilibrium():
         psinorm = np.zeros((len(self._fs), ), dtype=float)
         qpsi = np.zeros_like(psinorm)
         for i, (level, contour) in enumerate(self._fs.items()):
+            #current_inside = float(np.abs(self._data['cpasma'])) if level == float(self._data['sibdry']) else None
             psinorm[i] = (level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
-            qpsi[i] = np.sign(self._data['cpasma']) * compute_safety_factor_contour_integral(contour)
+            qpsi[i] = np.sign(self._data['cpasma']) * compute_safety_factor_contour_integral(contour, current_inside=None)
         qpsi[0] = 2.0 * qpsi[1] - qpsi[2]  # Linear interpolation to axis
         #edge_mask = (psinorm > 0.95)
         #if np.any(edge_mask):

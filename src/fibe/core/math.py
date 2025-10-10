@@ -1011,7 +1011,7 @@ def compute_flux_surface_quantities_boundary(psinorm, r_contour, z_contour, r_re
     return out
 
 
-def compute_safety_factor_contour_integral(contour):
+def compute_safety_factor_contour_integral(contour, current_inside=None):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
         dl = np.sqrt(np.square(np.diff(contour['r'])) + np.square(np.diff(contour['z']))).flatten()
@@ -1021,8 +1021,12 @@ def compute_safety_factor_contour_integral(contour):
         #btm = 0.5 * (contour['btor'][1:] + contour['btor'][:-1]).flatten()
         dl_over_bp = dl / bpm
         vp = np.sum(dl_over_bp)
-        rm2 = np.sum(dl_over_bp / np.square(rcm)) / vp
-        val = contour['fpol'].item() * vp * rm2 / (2.0 * np.pi)
+        ir2 = np.sum(dl_over_bp / np.square(rcm)) / np.sum(dl_over_bp)
+        bp2 = np.sum(dl_over_bp * np.square(bpm)) / np.sum(dl_over_bp)
+        val = (0.5 * contour['fpol'].item() * ir2 / np.pi) * vp
+        # Current constraint needs more testing, advised NOT to use
+        if isinstance(current_inside, float):
+            val = (0.5 * contour['fpol'].item() * ir2 / np.pi) * np.square(vp) * bp2 / (4.0e-7 * np.pi * current_inside)
     return val
 
 
