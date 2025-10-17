@@ -27,7 +27,7 @@ dynamic = ["version"]
 
 dependencies = [
   "pip",
-  "numpy>=2.0",
+  "numpy>=1.26.4",
   "pandas>=2.2.2",
   "xarray>=2024.7.0",
   "netcdf4",
@@ -36,7 +36,7 @@ dependencies = [
   "contourpy",
   "shapely",
   "eqdsk; python_version >= '3.10'",
-  "megpy>=2.0",
+  "megpy@git+https://github.com/gsnoep/megpy.git@flexible_numpy",
 ]
 
 [project.optional-dependencies]
