@@ -1289,6 +1289,14 @@ class FixedBoundaryEquilibrium():
             if 'xpoints' in self._data and len(self._data['xpoints']) > 0:
                 xparr = np.atleast_2d(self._data['xpoints'])
                 ax.scatter(xparr[:, 0], xparr[:, 1], marker='x', facecolors='b', label='X-points (new)')
+            if rmin_new > rmin_old:
+                ax.plot([rmin_new, rmin_new], [zmin_new, zmax_new], ls='-', c='b')
+            if rmax_new < rmax_old:
+                ax.plot([rmax_new, rmax_new], [zmin_new, zmax_new], ls='-', c='b')
+            if zmin_new > zmin_old:
+                ax.plot([rmin_new, rmax_new], [zmin_new, zmin_new], ls='-', c='b')
+            if zmax_new < zmax_old:
+                ax.plot([rmin_new, rmax_new], [zmax_new, zmax_new], ls='-', c='b')
             rmin_plot = np.nanmin([rmin_old, rmin_new])
             rmax_plot = np.nanmax([rmax_old, rmax_new])
             zmin_plot = np.nanmin([zmin_old, zmin_new])
