@@ -401,7 +401,6 @@ class FixedBoundaryEquilibrium():
                 dpsixp = np.abs((self._data['sibdry'] - psixp) / (self._data['sibdry'] - self._data['simagx']))
                 if dpsixp < 0.001:
                     xpoints.append(xp)
-
         if sanitize:
             for i, xp in enumerate(xpoints):
                 rbase = 0.5 * (xp[0] + np.nanmin(self._data['rbdry']))
@@ -1065,6 +1064,17 @@ class FixedBoundaryEquilibrium():
         self._data['mxh_kappa'][0] = 2.0 * self._data['mxh_kappa'][1] - self._data['mxh_kappa'][2]
 
 
+    def set_bounding_box_as_limiter(self):
+        self.save_original_data(['nlim', 'rlim', 'zlim'])
+        rmin = self._data['rleft']
+        rmax = self._data['rleft'] + self._data['rdim']
+        zmin = self._data['zmid'] - 0.5 * self._data['zdim']
+        zmax = self._data['zmid'] + 0.5 * self._data['zdim']
+        self._data['nlim'] = 5
+        self._data['rlim'] = np.array([rmin, rmax, rmax, rmin, rmin])
+        self._data['zlim'] = np.array([zmin, zmin, zmax, zmax, zmin])
+
+
     def load_geqdsk(self, path, clean=True):
         if isinstance(path, (str, Path)):
             if clean:
@@ -1096,6 +1106,8 @@ class FixedBoundaryEquilibrium():
 
 
     def extract_geqdsk_dict(self, cocos=None, legacy_ip=False):
+        if 'nlim' not in self._data and 'rlim' not in self._data and 'zlim' not in self._data:
+            self.set_bounding_box_as_limiter()
         geqdsk_dict = {k: v for k, v in self._data.items() if k in self.geqdsk_fields}
         dpsinorm_dpsi = 1.0 / (geqdsk_dict['sibdry'] - geqdsk_dict['simagx'])
         if 'pprime' in geqdsk_dict:
