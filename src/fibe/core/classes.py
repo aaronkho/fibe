@@ -38,6 +38,7 @@ from .math import (
     compute_adjusted_contour_resolution,
     compute_mxh_coefficients_from_contours,
     compute_contours_from_mxh_coefficients,
+    check_fully_contained_contours,
 )
 from ..utils.eqdsk import (
     read_geqdsk_file,
@@ -108,7 +109,30 @@ class FixedBoundaryEquilibrium():
             self._data.update(read_geqdsk_file(geqdsk))
             if 'cpasma' in self._data and legacy_ip:
                 self._data['cpasma'] *= -1.0
+            if 'simagx' in self._data and 'sibdry' in self._data and 'psi' in self._data:
+                if self._data['simagx'] > self._data['sibdry']:
+                    self._data['psi'] *= -1.0
+                    self._data['simagx'] *= -1.0
+                    self._data['sibdry'] *= -1.0
+                    if 'pprime' in self._data:
+                        self._data['pprime'] *= -1.0
+                    if 'ffprime' in self._data:
+                        self._data['ffprime'] *= -1.0
+                    if 'q' in self._data:
+                        self._data['q'] *= -1.0
+                if 'cpasma' in self._data:
+                    self._data['psi'] *= -1.0 * np.sign(self._data['cpasma'])
+                    self._data['simagx'] *= -1.0 * np.sign(self._data['cpasma'])
+                    self._data['sibdry'] *= -1.0 * np.sign(self._data['cpasma'])
+                    if 'q' in self._data:
+                        self._data['q'] *= -1.0 * np.sign(self._data['cpasma'])
+                dpsi_dpsinorm = (self._data['sibdry'] - self._data['simagx'])
+                if 'pprime' in self._data:
+                    self._data['pprime'] *= dpsi_dpsinorm
+                if 'ffprime' in self._data:
+                    self._data['ffprime'] *= dpsi_dpsinorm
             self.enforce_boundary_duplicate_at_end()
+            self.enforce_wall_duplicate_at_end()
             self.scratch = False
 
 
@@ -159,6 +183,9 @@ class FixedBoundaryEquilibrium():
     def define_boundary(self, rbdry, zbdry):
         '''Initialize last-closed-flux-surface. Use if no geqdsk is read.'''
         if 'nbdry' not in self._data and 'rbdry' not in self._data and 'zbdry' not in self._data and len(rbdry) == len(zbdry):
+            if 'rlim' in self._data and 'zlim' in self._data:
+                if not check_fully_contained_contours(rbdry, zbdry, self._data['rlim'], self._data['zlim']):
+                    logger.warning('The defined boundary is not fully contained within the wall contour.')
             self._data['nbdry'] = len(rbdry)
             self._data['rbdry'] = copy.deepcopy(rbdry)
             self._data['zbdry'] = copy.deepcopy(zbdry)
@@ -177,8 +204,13 @@ class FixedBoundaryEquilibrium():
                 'sin_coeffs': np.atleast_2d(np.array([sin_coeffs]).flatten()),
             }
             boundary = compute_contours_from_mxh_coefficients(mxh, theta[:-1])
-            self._data['rbdry'] = copy.deepcopy(boundary['r'].flatten())
-            self._data['zbdry'] = copy.deepcopy(boundary['z'].flatten())
+            rbdry = boundary['r'].flatten()
+            zbdry = boundary['z'].flatten()
+            if 'rlim' in self._data and 'zlim' in self._data:
+                if not check_fully_contained_contours(rbdry, zbdry, self._data['rlim'], self._data['zlim']):
+                    logger.warning('The defined boundary is not fully contained within the wall contour.')
+            self._data['rbdry'] = copy.deepcopy(rbdry)
+            self._data['zbdry'] = copy.deepcopy(zbdry)
             self._data['nbdry'] = len(self._data['rbdry'])
             self.enforce_boundary_duplicate_at_end()
             #a = copy.deepcopy(theta)
@@ -208,9 +240,24 @@ class FixedBoundaryEquilibrium():
             self._data['mxh_a'] = np.pi * np.power(mxh['r'], 2.0) / np.trapezoid(self._data['rbdry'], self._data['zbdry'])
 
 
-    def define_grid_and_boundary_with_mxh(self, nr, nz, rgeo, zgeo, rminor, kappa, cos_coeffs, sin_coeffs, nbdry=301):
+    def define_wall(self, rwall, zwall):
+        if 'nlim' not in self._data and 'rlim' not in self._data and 'zlim' not in self._data and len(rwall) == len(zwall):
+            if 'rbdry' in self._data and 'zbdry' in self._data:
+                if not check_fully_contained_contours(self._data['rbdry'], self._data['zbdry'], rwall, zwall):
+                    logger.warning('The defined wall does not fully contain the boundary contour.')
+            self._data['nlim'] = len(rwall)
+            self._data['rlim'] = copy.deepcopy(rwall)
+            self._data['zlim'] = copy.deepcopy(zwall)
+            self.enforce_wall_duplicate_at_end()
+
+
+    def define_grid_and_boundary_with_mxh(self, nr, nz, rgeo, zgeo, rminor, kappa, cos_coeffs, sin_coeffs, nbdry=301, rwall=None, zwall=None):
         self.define_boundary_with_mxh(rgeo, zgeo, rminor, kappa, cos_coeffs, sin_coeffs, nbdry=nbdry)
-        rmin, rmax, zmin, zmax = generate_optimal_grid(nr, nz, self._data['rbdry'], self._data['zbdry'])
+        if rwall is not None and zwall is not None:
+            self.define_wall(rwall, zwall)
+        rcont = self._data['rlim'] if 'rlim' in self._data and len(self._data['rlim']) > 0 else self._data['rbdry']
+        zcont = self._data['zlim'] if 'zlim' in self._data and len(self._data['zlim']) > 0 else self._data['zbdry']
+        rmin, rmax, zmin, zmax = generate_optimal_grid(nr, nz, rcont, zcont)
         self._data['nr'] = nr
         self._data['nz'] = nz
         self._data['rleft'] = rmin
@@ -401,7 +448,6 @@ class FixedBoundaryEquilibrium():
                 dpsixp = np.abs((self._data['sibdry'] - psixp) / (self._data['sibdry'] - self._data['simagx']))
                 if dpsixp < 0.001:
                     xpoints.append(xp)
-
         if sanitize:
             for i, xp in enumerate(xpoints):
                 rbase = 0.5 * (xp[0] + np.nanmin(self._data['rbdry']))
@@ -560,6 +606,8 @@ class FixedBoundaryEquilibrium():
             self.generate_psi_bivariate_spline()
         if self._data['nbdry'] < 201:
             self.refine_boundary_with_splines(nbdry=501)
+        else:
+            self.create_boundary_splines()
 
         if rmin is None:
             rmin = self._data['rleft']
@@ -643,10 +691,36 @@ class FixedBoundaryEquilibrium():
             self._data['b2'],
             tol=tol
         )
+        norm = None
+        self._data['agradr'] = np.angle(rgradr + 1.0j * zgradr - self._data['rmagx'] - 1.0j * self._data['zmagx'])
+        self._data['agradz'] = np.angle(rgradz + 1.0j * zgradz - self._data['rmagx'] - 1.0j * self._data['zmagx'])
+        self._data['gradr'] = gradr
+        self._data['gradz'] = gradz
         s = len(gradr) + int(np.sqrt(2 * len(gradz))) if smooth else 0
         #s = 5 * (len(gradr) + len(gradz)) if smooth else 0
-        self._fit['gradr_bdry'] = generate_boundary_gradient_spline(rgradr, zgradr, gradr, self._data['rmagx'], self._data['zmagx'], s=s, tol=tol)
-        self._fit['gradz_bdry'] = generate_boundary_gradient_spline(rgradz, zgradz, gradz, self._data['rmagx'], self._data['zmagx'], s=s, tol=tol)
+        #if not self.scratch:
+        #    ridx = np.nanargmin(np.abs(self._data['rvec'] - self._data['rmagx']))
+        #    zidx = np.nanargmin(np.abs(self._data['zvec'] - self._data['zmagx']))
+        #    nvec = (self._data['psi'][zidx, ridx:] - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
+        #    nidx = np.where(nvec < 1.0)[0][-1]
+        #    if nidx == (len(self._data['rvec']) - 1):
+        #        nidx -= 1
+        #    norm = np.diff(self._data['psi'][zidx, nidx:])[0] / self._data['hr']
+        #    dpsi = np.abs(self._data['sibdry'] - self._data['simagx'])
+        #    rcap = np.nanmax([4.0 * dpsi / self._data['hr'], 2.0 * np.nanmin(np.abs(gradr))])
+        #    zcap = np.nanmax([4.0 * dpsi / self._data['hz'], 2.0 * np.nanmin(np.abs(gradz))])
+        #    gradr_mask = (np.abs(gradr) < rcap)
+        #    gradz_mask = (np.abs(gradz) < zcap)
+        #    rgradr = rgradr[gradr_mask]
+        #    zgradr = zgradr[gradr_mask]
+        #    gradr = gradr[gradr_mask]
+        #    rgradz = rgradz[gradz_mask]
+        #    zgradz = zgradz[gradz_mask]
+        #    gradz = gradz[gradz_mask]
+        #    s = int(10.0 * (np.nanmax(np.abs(gradr)) + np.nanmax(np.abs(gradz)))) if smooth else 0
+        #    sfunc = generate_boundary_gradient_spline_with_windows
+        self._fit['gradr_bdry'] = generate_boundary_gradient_spline(rgradr, zgradr, gradr, self._data['rmagx'], self._data['zmagx'], s=s)
+        self._fit['gradz_bdry'] = generate_boundary_gradient_spline(rgradz, zgradz, gradz, self._data['rmagx'], self._data['zmagx'], s=s)
 
 
     def extend_psi_beyond_boundary(self):
@@ -927,7 +1001,7 @@ class FixedBoundaryEquilibrium():
         self.zero_psi_outside_boundary()
         if 'cur' not in self._data:
             self.define_current(self._data['cpasma'])
-        self._data['psi_error'] = 0.0
+        self._data['psi_error'] = np.inf
         for n in range(self._options['nxiter']):
             ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
             cur_new = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp.ravel(), pp.ravel()))
@@ -941,9 +1015,9 @@ class FixedBoundaryEquilibrium():
         #self.rescale_kinetic_profiles()
         #self.recompute_f_profile()
         #self.recompute_pressure_profile()
-        self.normalize_psi_to_original()
         self.create_boundary_gradient_splines(smooth=True)
         self.extend_psi_beyond_boundary()
+        self.normalize_psi_to_original()
         self.compute_normalized_psi_map()
         self.generate_psi_bivariate_spline()
         self.find_magnetic_axis()
@@ -1027,6 +1101,17 @@ class FixedBoundaryEquilibrium():
             self._data['nbdry'] = len(self._data['rbdry'])
 
 
+    def enforce_wall_duplicate_at_end(self):
+        if 'rlim' in self._data and 'zlim' in self._data:
+            df = pd.DataFrame(data={'rlim': self._data['rlim'], 'zlim': self._data['zlim']}, index=pd.RangeIndex(self._data['nlim']))
+            df = df.drop_duplicates(subset=['rlim', 'zlim'], keep='first').reset_index(drop=True)
+            rwall = df['rlim'].to_numpy()
+            zwall = df['zlim'].to_numpy()
+            self._data['rlim'] = np.concatenate([rwall, [rwall[0]]])
+            self._data['zlim'] = np.concatenate([zwall, [zwall[0]]])
+            self._data['nlim'] = len(self._data['rlim'])
+
+
     def compute_mxh_parameters(self, n_coeff=6):
         if 'rvec' not in self._data or 'zvec' not in self._data:
             self.create_grid_basis_meshes()
@@ -1065,6 +1150,17 @@ class FixedBoundaryEquilibrium():
         self._data['mxh_kappa'][0] = 2.0 * self._data['mxh_kappa'][1] - self._data['mxh_kappa'][2]
 
 
+    def set_bounding_box_as_wall(self):
+        self.save_original_data(['nlim', 'rlim', 'zlim'])
+        rmin = self._data['rleft']
+        rmax = self._data['rleft'] + self._data['rdim']
+        zmin = self._data['zmid'] - 0.5 * self._data['zdim']
+        zmax = self._data['zmid'] + 0.5 * self._data['zdim']
+        self._data['nlim'] = 5
+        self._data['rlim'] = np.array([rmin, rmax, rmax, rmin, rmin])
+        self._data['zlim'] = np.array([zmin, zmin, zmax, zmax, zmin])
+
+
     def load_geqdsk(self, path, clean=True):
         if isinstance(path, (str, Path)):
             if clean:
@@ -1096,6 +1192,8 @@ class FixedBoundaryEquilibrium():
 
 
     def extract_geqdsk_dict(self, cocos=None, legacy_ip=False):
+        if not ('rlim' in self._data and len(self._data['rlim']) > 0) and not ('zlim' in self._data and len(self._data['zlim']) > 0):
+            self.set_bounding_box_as_wall()
         geqdsk_dict = {k: v for k, v in self._data.items() if k in self.geqdsk_fields}
         dpsinorm_dpsi = 1.0 / (geqdsk_dict['sibdry'] - geqdsk_dict['simagx'])
         if 'pprime' in geqdsk_dict:
@@ -1289,6 +1387,14 @@ class FixedBoundaryEquilibrium():
             if 'xpoints' in self._data and len(self._data['xpoints']) > 0:
                 xparr = np.atleast_2d(self._data['xpoints'])
                 ax.scatter(xparr[:, 0], xparr[:, 1], marker='x', facecolors='b', label='X-points (new)')
+            if rmin_new > rmin_old:
+                ax.plot([rmin_new, rmin_new], [zmin_new, zmax_new], ls='-', c='b')
+            if rmax_new < rmax_old:
+                ax.plot([rmax_new, rmax_new], [zmin_new, zmax_new], ls='-', c='b')
+            if zmin_new > zmin_old:
+                ax.plot([rmin_new, rmax_new], [zmin_new, zmin_new], ls='-', c='b')
+            if zmax_new < zmax_old:
+                ax.plot([rmin_new, rmax_new], [zmax_new, zmax_new], ls='-', c='b')
             rmin_plot = np.nanmin([rmin_old, rmin_new])
             rmax_plot = np.nanmax([rmax_old, rmax_new])
             zmin_plot = np.nanmin([zmin_old, zmin_new])
@@ -1451,3 +1557,28 @@ class FixedBoundaryEquilibrium():
             plt.show()
             plt.close(fig)
 
+
+    def plot_boundary_gradients(self, save=None):
+        if 'gradr_bdry' in self._fit and 'gradz_bdry' in self._fit:
+            import matplotlib.pyplot as plt
+            fig = plt.figure(figsize=(8, 6))
+            ax = fig.add_subplot(111)
+            abdry = np.angle(self._data['rbdry'] + 1.0j * self._data['zbdry'] - self._data['rmagx'] - 1.0j * self._data['zmagx'])
+            gradr_fit = splev(abdry, self._fit['gradr_bdry']['tck'])
+            gradz_fit = splev(abdry, self._fit['gradz_bdry']['tck'])
+            ax.scatter(self._data['agradr'], self._data['gradr'], label='dpsi/dr')
+            ax.scatter(self._data['agradz'], self._data['gradz'], label='dpsi/dz')
+            ax.plot(abdry, gradr_fit, label='dpsi/dr_fit')
+            ax.plot(abdry, gradz_fit, label='dpsi/dz_fit')
+            #mag_grad_psi = splev(abdry, self._fit['gradr_bdry']['tck']) ** 2 + splev(abdry, self._fit['gradz_bdry']['tck']) ** 2
+            #ax.plot(abdry, mag_grad_psi, label='|grad(psi)|^2')
+            ax.set_xlim(-np.pi, np.pi)
+            ax.set_xlabel('Boundary Angle [rad]')
+            #ax.set_ylabel('|grad(psi)|^2 [Wb^2/m^2]')
+            ax.set_ylabel('Gradient of Psi [Wb/m]')
+            ax.legend(loc='best')
+            fig.tight_layout()
+            if isinstance(save, (str, Path)):
+                fig.savefig(save, dpi=100)
+            plt.show()
+            plt.close(fig)
