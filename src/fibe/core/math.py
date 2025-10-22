@@ -13,6 +13,7 @@ from scipy.interpolate import (
 from scipy.sparse import spdiags
 from scipy.optimize import brentq
 from scipy.integrate import quad
+from scipy.signal import windows, convolve
 import contourpy
 from shapely import Point, Polygon
 from megpy import (
@@ -836,7 +837,7 @@ def compute_gradients_at_boundary(rvec, zvec, flat_psi, inout, ijedge, a1, a2, b
     return rgradr, zgradr, gradr, rgradz, zgradz, gradz
 
 
-def generate_boundary_gradient_spline(r_points, z_points, grad_points, r_reference, z_reference, s=0, tol=1.0e-6):
+def generate_boundary_gradient_spline(r_points, z_points, grad_points, r_reference, z_reference, s=0):
 
     # SPLINE GRAD PSI AS A FUNCTION OF ANGLE ALONG BOUNDARY
     # USING MAGNETIC AXIS AS CENTER
@@ -861,7 +862,37 @@ def generate_boundary_gradient_spline(r_points, z_points, grad_points, r_referen
     return {'tck': splrep(angle_ordered, grad_ordered, xb=b[0], xe=b[-1], k=3, s=s, per=True, quiet=1), 'bounds': b}
 
 
-def old_compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gradr_tck, gradz_tck):
+def generate_boundary_gradient_spline_with_windows(r_points, z_points, grad_points, r_reference, z_reference, s=0):
+
+    v_reference = r_reference + 1.0j * z_reference
+    v_points = r_points + 1.0j * z_points - v_reference
+    ds = xr.Dataset(coords={'angle': np.angle(v_points)}, data_vars={'gradient': (['angle'], grad_points)})
+    ds = ds.drop_duplicates('angle').sortby('angle')
+    angle_ordered = ds['angle'].to_numpy()
+    grad_ordered = ds['gradient'].to_numpy()
+    angle_ordered_extended = np.concatenate([angle_ordered, [angle_ordered[0] + 2.0 * np.pi]])
+    grad_ordered_extended = np.concatenate([grad_ordered, [grad_ordered[0]]])
+
+    tck = splrep(angle_ordered_extended, grad_ordered_extended, k=3, per=True, quiet=1)
+    n_output = 201
+    angle_even = np.linspace(-np.pi, np.pi, n_output)
+    grad_even = splev(angle_even, tck)
+    if angle_ordered_extended[-1] > np.pi:
+        grad_even[0] = splev(np.pi, tck)
+    else:
+        grad_even[-1] = splev(-np.pi, tck)
+    window_length = n_output // 10
+    if window_length % 2 == 0:
+        window_length += 1
+    window = windows.hann(window_length)
+    window /= np.sum(window)
+    padded_grad_even = np.pad(grad_even, (window_length // 2, window_length // 2), mode='wrap')
+    smooth_grad_even = convolve(padded_grad_even, window, mode='valid')
+    b = (-np.pi, np.pi)
+    return {'tck': splrep(angle_even, smooth_grad_even, xb=b[0], xe=b[-1], k=3, s=s, per=True, quiet=1), 'bounds': b}
+
+
+def old_compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gradr_tck, gradz_tck, grad_norm=1.0):
 
     # VECTORS TO AND BETWEEN BOUNDARY POINTS
     vmagx = rmagx + 1.0j * zmagx
@@ -904,7 +935,7 @@ def old_compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout
         if ang.size > 0:
             dvvecc = vvecc - vmagx
             dv = dvvecc * (1.0 - numer.imag / (dvvecc * np.conj(dvb[k])).imag)
-            vgradc = splev(ang, gradr_tck) + 1.0j * splev(ang, gradz_tck)
+            vgradc = (splev(ang, gradr_tck) + 1.0j * splev(ang, gradz_tck)) * grad_norm
             psie = (vgradc * np.conj(dv)).real
             psiout.put(ivvecc, psie)
             vvec = vvec.compress(np.logical_not(mask))
@@ -915,7 +946,7 @@ def old_compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout
     return psi
 
 
-def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gradr_tck, gradz_tck):
+def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gradr_tck, gradz_tck, grad_norm=1.0):
 
     # VECTORS TO AND BETWEEN BOUNDARY POINTS
     vmagx = rmagx + 1.0j * zmagx
@@ -936,7 +967,7 @@ def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gr
     jout = ijout // nr
     iout = ijout - nr * jout
     vvec = rvec.take(iout) + 1.0j * zvec.take(jout)
-    gbdry = splev(abdry, gradr_tck) + 1.0j * splev(abdry, gradz_tck)
+    gbdry = (splev(abdry, gradr_tck) + 1.0j * splev(abdry, gradz_tck)) * grad_norm
 
     psiout = np.zeros(vvec.shape, dtype=float)
     ivvec = np.arange(vvec.size)
