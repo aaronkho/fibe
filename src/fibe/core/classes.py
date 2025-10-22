@@ -1150,7 +1150,7 @@ class FixedBoundaryEquilibrium():
         self._data['mxh_kappa'][0] = 2.0 * self._data['mxh_kappa'][1] - self._data['mxh_kappa'][2]
 
 
-    def set_bounding_box_as_limiter(self):
+    def set_bounding_box_as_wall(self):
         self.save_original_data(['nlim', 'rlim', 'zlim'])
         rmin = self._data['rleft']
         rmax = self._data['rleft'] + self._data['rdim']
@@ -1192,8 +1192,8 @@ class FixedBoundaryEquilibrium():
 
 
     def extract_geqdsk_dict(self, cocos=None, legacy_ip=False):
-        if 'nlim' not in self._data and 'rlim' not in self._data and 'zlim' not in self._data:
-            self.set_bounding_box_as_limiter()
+        if not ('rlim' in self._data and len(self._data['rlim']) > 0) and not ('zlim' in self._data and len(self._data['zlim']) > 0):
+            self.set_bounding_box_as_wall()
         geqdsk_dict = {k: v for k, v in self._data.items() if k in self.geqdsk_fields}
         dpsinorm_dpsi = 1.0 / (geqdsk_dict['sibdry'] - geqdsk_dict['simagx'])
         if 'pprime' in geqdsk_dict:
