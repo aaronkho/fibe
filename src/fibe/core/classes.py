@@ -38,6 +38,7 @@ from .math import (
     compute_adjusted_contour_resolution,
     compute_mxh_coefficients_from_contours,
     compute_contours_from_mxh_coefficients,
+    check_fully_contained_contours,
 )
 from ..utils.eqdsk import (
     read_geqdsk_file,
@@ -131,6 +132,7 @@ class FixedBoundaryEquilibrium():
                 if 'ffprime' in self._data:
                     self._data['ffprime'] *= dpsi_dpsinorm
             self.enforce_boundary_duplicate_at_end()
+            self.enforce_wall_duplicate_at_end()
             self.scratch = False
 
 
@@ -181,6 +183,9 @@ class FixedBoundaryEquilibrium():
     def define_boundary(self, rbdry, zbdry):
         '''Initialize last-closed-flux-surface. Use if no geqdsk is read.'''
         if 'nbdry' not in self._data and 'rbdry' not in self._data and 'zbdry' not in self._data and len(rbdry) == len(zbdry):
+            if 'rlim' in self._data and 'zlim' in self._data:
+                if not check_fully_contained_contours(rbdry, zbdry, self._data['rlim'], self._data['zlim']):
+                    logger.warning('The defined boundary is not fully contained within the wall contour.')
             self._data['nbdry'] = len(rbdry)
             self._data['rbdry'] = copy.deepcopy(rbdry)
             self._data['zbdry'] = copy.deepcopy(zbdry)
@@ -199,8 +204,13 @@ class FixedBoundaryEquilibrium():
                 'sin_coeffs': np.atleast_2d(np.array([sin_coeffs]).flatten()),
             }
             boundary = compute_contours_from_mxh_coefficients(mxh, theta[:-1])
-            self._data['rbdry'] = copy.deepcopy(boundary['r'].flatten())
-            self._data['zbdry'] = copy.deepcopy(boundary['z'].flatten())
+            rbdry = boundary['r'].flatten()
+            zbdry = boundary['z'].flatten()
+            if 'rlim' in self._data and 'zlim' in self._data:
+                if not check_fully_contained_contours(rbdry, zbdry, self._data['rlim'], self._data['zlim']):
+                    logger.warning('The defined boundary is not fully contained within the wall contour.')
+            self._data['rbdry'] = copy.deepcopy(rbdry)
+            self._data['zbdry'] = copy.deepcopy(zbdry)
             self._data['nbdry'] = len(self._data['rbdry'])
             self.enforce_boundary_duplicate_at_end()
             #a = copy.deepcopy(theta)
@@ -230,9 +240,24 @@ class FixedBoundaryEquilibrium():
             self._data['mxh_a'] = np.pi * np.power(mxh['r'], 2.0) / np.trapezoid(self._data['rbdry'], self._data['zbdry'])
 
 
-    def define_grid_and_boundary_with_mxh(self, nr, nz, rgeo, zgeo, rminor, kappa, cos_coeffs, sin_coeffs, nbdry=301):
+    def define_wall(self, rwall, zwall):
+        if 'nlim' not in self._data and 'rlim' not in self._data and 'zlim' not in self._data and len(rwall) == len(zwall):
+            if 'rbdry' in self._data and 'zbdry' in self._data:
+                if not check_fully_contained_contours(self._data['rbdry'], self._data['zbdry'], rwall, zwall):
+                    logger.warning('The defined wall does not fully contain the boundary contour.')
+            self._data['nlim'] = len(rwall)
+            self._data['rlim'] = copy.deepcopy(rwall)
+            self._data['zlim'] = copy.deepcopy(zwall)
+            self.enforce_wall_duplicate_at_end()
+
+
+    def define_grid_and_boundary_with_mxh(self, nr, nz, rgeo, zgeo, rminor, kappa, cos_coeffs, sin_coeffs, nbdry=301, rwall=None, zwall=None):
         self.define_boundary_with_mxh(rgeo, zgeo, rminor, kappa, cos_coeffs, sin_coeffs, nbdry=nbdry)
-        rmin, rmax, zmin, zmax = generate_optimal_grid(nr, nz, self._data['rbdry'], self._data['zbdry'])
+        if rwall is not None and zwall is not None:
+            self.define_wall(rwall, zwall)
+        rcont = self._data['rlim'] if 'rlim' in self._data and len(self._data['rlim']) > 0 else self._data['rbdry']
+        zcont = self._data['zlim'] if 'zlim' in self._data and len(self._data['zlim']) > 0 else self._data['zbdry']
+        rmin, rmax, zmin, zmax = generate_optimal_grid(nr, nz, rcont, zcont)
         self._data['nr'] = nr
         self._data['nz'] = nz
         self._data['rleft'] = rmin
@@ -1074,6 +1099,17 @@ class FixedBoundaryEquilibrium():
             self._data['rbdry'] = np.concatenate([rbdry, [rbdry[0]]])
             self._data['zbdry'] = np.concatenate([zbdry, [zbdry[0]]])
             self._data['nbdry'] = len(self._data['rbdry'])
+
+
+    def enforce_wall_duplicate_at_end(self):
+        if 'rlim' in self._data and 'zlim' in self._data:
+            df = pd.DataFrame(data={'rlim': self._data['rlim'], 'zlim': self._data['zlim']}, index=pd.RangeIndex(self._data['nlim']))
+            df = df.drop_duplicates(subset=['rlim', 'zlim'], keep='first').reset_index(drop=True)
+            rwall = df['rlim'].to_numpy()
+            zwall = df['zlim'].to_numpy()
+            self._data['rlim'] = np.concatenate([rwall, [rwall[0]]])
+            self._data['zlim'] = np.concatenate([zwall, [zwall[0]]])
+            self._data['nlim'] = len(self._data['rlim'])
 
 
     def compute_mxh_parameters(self, n_coeff=6):

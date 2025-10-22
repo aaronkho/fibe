@@ -1221,3 +1221,11 @@ def compute_contours_from_mxh_coefficients(mxh, theta):
     z_contour = z0 + kappa * r * np.sin(theta_ex)
     return {'r': r_contour, 'z': z_contour}
 
+
+def check_fully_contained_contours(r_inner, z_inner, r_outer, z_outer):
+    polygon = Polygon(np.array([[ro, zo] for ro, zo in zip(r_outer, z_outer)]))
+    for ri, zi in zip(r_inner, z_inner):
+        point_inside = Point([float(ri), float(zi)])
+        if not polygon.contains(point_inside):
+            return False
+    return True
