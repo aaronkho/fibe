@@ -322,29 +322,29 @@ class FixedBoundaryEquilibrium():
         self._data['cpasma'] = float(np.sum(self._data['cur']) * self._data['hrz'])
 
 
-    def define_pressure_profile(self, pressure, psinorm=None, smooth=True):
+    def define_pressure_profile(self, pressure, psinorm=None, smooth=True, symmetrical=True):
         if isinstance(pressure, (list, tuple, np.ndarray)) and len(pressure) > 0:
             self.save_original_data(['pres', 'pprime'])
             pressure_new = np.array(pressure).flatten()
-            self._fit['pres_fs'] = generate_bounded_1d_spline(pressure_new, xnorm=psinorm, symmetrical=True, smooth=smooth)
+            self._fit['pres_fs'] = generate_bounded_1d_spline(pressure_new, xnorm=psinorm, symmetrical=symmetrical, smooth=smooth)
             self._data['pres'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['pres_fs']['tck'])
             self._data['pprime'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['pres_fs']['tck'], der=1)
 
 
-    def define_f_profile(self, f, psinorm=None, smooth=True):
+    def define_f_profile(self, f, psinorm=None, smooth=True, symmetrical=True):
         if isinstance(f, (list, tuple, np.ndarray)) and len(f) > 0:
             self.save_original_data(['fpol', 'ffprime'])
             f_new = np.array(f).flatten()
-            self._fit['fpol_fs'] = generate_bounded_1d_spline(f_new, xnorm=psinorm, symmetrical=True, smooth=smooth)
+            self._fit['fpol_fs'] = generate_bounded_1d_spline(f_new, xnorm=psinorm, symmetrical=symmetrical, smooth=smooth)
             self._data['fpol'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['fpol_fs']['tck'])
             self._data['ffprime'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['fpol_fs']['tck'], der=1) * self._data['fpol']
 
 
-    def define_q_profile(self, q, psinorm=None, smooth=True):
+    def define_q_profile(self, q, psinorm=None, smooth=True, symmetrical=True):
         if isinstance(q, (list, tuple, np.ndarray)) and len(q) > 0:
             self.save_original_data(['qpsi'])
             q_new = np.array(q).flatten()
-            self._fit['qpsi_fs'] = generate_bounded_1d_spline(q_new, xnorm=psinorm, symmetrical=True, smooth=smooth)
+            self._fit['qpsi_fs'] = generate_bounded_1d_spline(q_new, xnorm=psinorm, symmetrical=symmetrical, smooth=smooth)
             self._data['qpsi'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['qpsi_fs']['tck'])
 
 
@@ -376,9 +376,9 @@ class FixedBoundaryEquilibrium():
                 self.define_f_profile(f, smooth=True)
 
 
-    def define_f_and_pressure_profiles(self, f, pressure, psinorm=None, smooth=True):
-        self.define_f_profile(f, psinorm=psinorm, smooth=smooth)
-        self.define_pressure_profile(pressure, psinorm=psinorm, smooth=smooth)
+    def define_f_and_pressure_profiles(self, f, pressure, psinorm=None, smooth=True, symmetrical=True):
+        self.define_f_profile(f, psinorm=psinorm, smooth=smooth, symmetrical=symmetrical)
+        self.define_pressure_profile(pressure, psinorm=psinorm, smooth=smooth, symmetrical=symmetrical)
 
 
     def define_toroidal_field_and_pressure_profile(self, bt, pressure, psinorm=None, smooth=True):
@@ -639,11 +639,11 @@ class FixedBoundaryEquilibrium():
             self.recompute_q_profile(smooth=smooth)
 
 
-    def compute_ffprime_and_pprime_grid(self, psinorm, internal_cutoff=0.01):
+    def compute_ffprime_and_pprime_grid(self, psinorm, internal_cutoff=0.01, no_fit=False):
         dpsinorm_dpsi = 1.0 / (self._data['sibdry'] - self._data['simagx'])
         ffp = np.zeros_like(psinorm)
         pp = np.zeros_like(psinorm)
-        if 'fpol_fs' in self._fit:
+        if not no_fit and 'fpol_fs' in self._fit:
             ffp_internal = splev(internal_cutoff, self._fit['fpol_fs']['tck'], der=1) * splev(internal_cutoff, self._fit['fpol_fs']['tck']) * dpsinorm_dpsi
             ffp = splev(psinorm, self._fit['fpol_fs']['tck'], der=1) * splev(psinorm, self._fit['fpol_fs']['tck']) * dpsinorm_dpsi
             ffp = np.where(psinorm < internal_cutoff, float(ffp_internal), ffp)
@@ -651,7 +651,7 @@ class FixedBoundaryEquilibrium():
             ffp_internal = np.interp(internal_cutoff, np.linspace(0.0, 1.0, self._data['ffprime'].size), self._data['ffprime']) * dpsinorm_dpsi
             ffp = np.interp(psinorm, np.linspace(0.0, 1.0, self._data['ffprime'].size), self._data['ffprime']) * dpsinorm_dpsi
             ffp = np.where(psinorm < internal_cutoff, float(ffp_internal), ffp)
-        if 'pres_fs' in self._fit:
+        if not no_fit and 'pres_fs' in self._fit:
             pp_internal = splev(internal_cutoff, self._fit['pres_fs']['tck'], der=1) * dpsinorm_dpsi
             pp = splev(psinorm, self._fit['pres_fs']['tck'], der=1) * dpsinorm_dpsi
             pp = np.where(psinorm < internal_cutoff, float(pp_internal), pp)
@@ -858,12 +858,12 @@ class FixedBoundaryEquilibrium():
         return contours
 
 
-    def recompute_pressure_profile(self, smooth=False):
-        self.define_pressure_profile(self._data['pres'], smooth=smooth)
+    def recompute_pressure_profile(self, smooth=False, symmetrical=True):
+        self.define_pressure_profile(self._data['pres'], smooth=smooth, symmetrical=symmetrical)
 
 
-    def recompute_f_profile(self, smooth=False):
-        self.define_f_profile(self._data['fpol'], smooth=smooth)
+    def recompute_f_profile(self, smooth=False, symmetrical=True):
+        self.define_f_profile(self._data['fpol'], smooth=smooth, symmetrical=symmetrical)
 
 
     def recompute_f_profile_from_scratch(self):
@@ -973,6 +973,7 @@ class FixedBoundaryEquilibrium():
         relaxj=1.0,   # Relaxation parameter in j correction in eq loop: recommend 1.0
         pnaxis=None,  # Normalized psi below which to apply j modification: recommend None (auto)
         approxq=False,
+        symmetrical=True,
     ):
         '''RUN THE EQ SOLVER'''
 
