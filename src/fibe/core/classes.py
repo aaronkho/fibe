@@ -120,12 +120,6 @@ class FixedBoundaryEquilibrium():
                         self._data['ffprime'] *= -1.0
                     if 'q' in self._data:
                         self._data['q'] *= -1.0
-                if 'cpasma' in self._data:
-                    self._data['psi'] *= -1.0 * np.sign(self._data['cpasma'])
-                    self._data['simagx'] *= -1.0 * np.sign(self._data['cpasma'])
-                    self._data['sibdry'] *= -1.0 * np.sign(self._data['cpasma'])
-                    if 'q' in self._data:
-                        self._data['q'] *= -1.0 * np.sign(self._data['cpasma'])
                 dpsi_dpsinorm = (self._data['sibdry'] - self._data['simagx'])
                 if 'pprime' in self._data:
                     self._data['pprime'] *= dpsi_dpsinorm
@@ -597,6 +591,7 @@ class FixedBoundaryEquilibrium():
         zmax=None,
         optimal=False,
         smooth=False,
+        symmetrical=True,
     ):
         '''Setup a new grid and map psi from an existing grid.'''
 
@@ -632,9 +627,9 @@ class FixedBoundaryEquilibrium():
 
         self._data['psi'] = bisplev(self._data['rvec'], self._data['zvec'], self._fit['psi_rz']['tck']).T
         if 'pres' in self._data:
-            self.recompute_pressure_profile(smooth=smooth)
+            self.recompute_pressure_profile(smooth=smooth, symmetrical=symmetrical)
         if 'fpol' in self._data:
-            self.recompute_f_profile(smooth=smooth)
+            self.recompute_f_profile(smooth=smooth, symmetrical=symmetrical)
         if 'qpsi' in self._data:
             self.recompute_q_profile(smooth=smooth)
 
