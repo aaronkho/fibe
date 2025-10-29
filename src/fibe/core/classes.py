@@ -1218,13 +1218,14 @@ class FixedBoundaryEquilibrium():
         write_geqdsk_file(path, geqdsk)
 
 
-    #@classmethod
-    #def from_contours(cls, contours):
+    @classmethod
+    def from_imas(cls, path, legacy_ip=False):
+        return cls()
 
 
-    #@classmethod
-    #def from_mxh_coefficients(cls, mxh_coeffs):
-    #    mxh
+    def to_imas(self, path, legacy_ip=False):
+        # IMAS-4.0.0+ is defined with COCOS=17
+        pass
 
 
     def plot_contour(self, save=None):
