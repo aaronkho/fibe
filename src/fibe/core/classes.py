@@ -525,10 +525,10 @@ class FixedBoundaryEquilibrium():
             self._fit['lseg_abdry'] = splines
 
 
-    def refine_boundary_with_splines(self, nbdry=501):
+    def refine_boundary_with_splines(self, nbdry=501, old_method=False):
         self.save_original_data(['nbdry', 'rbdry', 'zbdry'])
         if 'lseg_abdry' not in self._fit:
-            self.create_boundary_splines()
+            self.create_boundary_splines(old_method=old_method)
         boundary = []
         for i, spline in enumerate(self._fit['lseg_abdry']):
             vmagx = self._data['rmagx'] + 1.0j * self._data['zmagx']
@@ -592,6 +592,7 @@ class FixedBoundaryEquilibrium():
         optimal=False,
         smooth=False,
         symmetrical=True,
+        old_method=False,
     ):
         '''Setup a new grid and map psi from an existing grid.'''
 
@@ -600,9 +601,9 @@ class FixedBoundaryEquilibrium():
         if 'psi_rz' not in self._fit:
             self.generate_psi_bivariate_spline()
         if self._data['nbdry'] < 201:
-            self.refine_boundary_with_splines(nbdry=501)
+            self.refine_boundary_with_splines(nbdry=501, old_method=old_method)
         else:
-            self.create_boundary_splines()
+            self.create_boundary_splines(old_method=old_method)
 
         if rmin is None:
             rmin = self._data['rleft']
