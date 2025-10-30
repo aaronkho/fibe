@@ -106,28 +106,29 @@ class FixedBoundaryEquilibrium():
         }
         self._fs = None
         if isinstance(geqdsk, (str, Path)):
-            self._data.update(read_geqdsk_file(geqdsk))
-            if 'cpasma' in self._data and legacy_ip:
-                self._data['cpasma'] *= -1.0
-            if 'simagx' in self._data and 'sibdry' in self._data and 'psi' in self._data:
-                if self._data['simagx'] > self._data['sibdry']:
-                    self._data['psi'] *= -1.0
-                    self._data['simagx'] *= -1.0
-                    self._data['sibdry'] *= -1.0
-                    if 'pprime' in self._data:
-                        self._data['pprime'] *= -1.0
-                    if 'ffprime' in self._data:
-                        self._data['ffprime'] *= -1.0
-                    if 'q' in self._data:
-                        self._data['q'] *= -1.0
-                dpsi_dpsinorm = (self._data['sibdry'] - self._data['simagx'])
-                if 'pprime' in self._data:
-                    self._data['pprime'] *= dpsi_dpsinorm
-                if 'ffprime' in self._data:
-                    self._data['ffprime'] *= dpsi_dpsinorm
-            self.enforce_boundary_duplicate_at_end()
-            self.enforce_wall_duplicate_at_end()
-            self.scratch = False
+            self.load_geqdsk(geqdsk)
+            #self._data.update(read_geqdsk_file(geqdsk))
+            #if 'cpasma' in self._data and legacy_ip:
+            #    self._data['cpasma'] *= -1.0
+            #if 'simagx' in self._data and 'sibdry' in self._data and 'psi' in self._data:
+            #    if self._data['simagx'] > self._data['sibdry']:
+            #        self._data['psi'] *= -1.0
+            #        self._data['simagx'] *= -1.0
+            #        self._data['sibdry'] *= -1.0
+            #        if 'pprime' in self._data:
+            #            self._data['pprime'] *= -1.0
+            #        if 'ffprime' in self._data:
+            #            self._data['ffprime'] *= -1.0
+            #        if 'q' in self._data:
+            #            self._data['q'] *= -1.0
+            #    dpsi_dpsinorm = (self._data['sibdry'] - self._data['simagx'])
+            #    if 'pprime' in self._data:
+            #        self._data['pprime'] *= dpsi_dpsinorm
+            #    if 'ffprime' in self._data:
+            #        self._data['ffprime'] *= dpsi_dpsinorm
+            #self.enforce_boundary_duplicate_at_end()
+            #self.enforce_wall_duplicate_at_end()
+            #self.scratch = False
 
 
     def save_original_data(self, fields, overwrite=False):
@@ -1158,18 +1159,10 @@ class FixedBoundaryEquilibrium():
         self._data['zlim'] = np.array([zmin, zmin, zmax, zmax, zmin])
 
 
-    def load_geqdsk(self, path, clean=True):
+    def load_geqdsk(self, path, clean=True, legacy_ip=False):
         if isinstance(path, (str, Path)):
-            if clean:
-                self._data = {}
-                self._fit = {}
-                self.solver = None
-                self.error = None
-                self.converged = None
-                self.fs = None
-            self._data.update(read_geqdsk_file(path))
-            self.enforce_boundary_duplicate_at_end()
-            self.scratch = False
+            geqdsk_dict = read_geqdsk_file(path)
+            self.insert_geqdsk_dict(geqdsk_dict, clean=clean, legacy_ip=legacy_ip)
 
 
     def insert_geqdsk_dict(self, geqdsk_dict, clean=True, legacy_ip=False):
@@ -1184,7 +1177,24 @@ class FixedBoundaryEquilibrium():
             self._data.update(geqdsk_dict)
             if 'cpasma' in self._data and legacy_ip:
                 self._data['cpasma'] *= -1.0
+            if 'simagx' in self._data and 'sibdry' in self._data and 'psi' in self._data:
+                if self._data['simagx'] > self._data['sibdry']:
+                    self._data['psi'] *= -1.0
+                    self._data['simagx'] *= -1.0
+                    self._data['sibdry'] *= -1.0
+                    if 'pprime' in self._data:
+                        self._data['pprime'] *= -1.0
+                    if 'ffprime' in self._data:
+                        self._data['ffprime'] *= -1.0
+                    if 'q' in self._data:
+                        self._data['q'] *= -1.0
+                dpsi_dpsinorm = (self._data['sibdry'] - self._data['simagx'])
+                if 'pprime' in self._data:
+                    self._data['pprime'] *= dpsi_dpsinorm
+                if 'ffprime' in self._data:
+                    self._data['ffprime'] *= dpsi_dpsinorm
             self.enforce_boundary_duplicate_at_end()
+            self.enforce_wall_duplicate_at_end()
             self.scratch = False
 
 
@@ -1195,8 +1205,8 @@ class FixedBoundaryEquilibrium():
         dpsinorm_dpsi = 1.0 / (geqdsk_dict['sibdry'] - geqdsk_dict['simagx'])
         if 'pprime' in geqdsk_dict:
             geqdsk_dict['pprime'] *= dpsinorm_dpsi
-        if 'ffprim' in geqdsk_dict:
-            geqdsk_dict['ffprim'] *= dpsinorm_dpsi
+        if 'ffprime' in geqdsk_dict:
+            geqdsk_dict['ffprime'] *= dpsinorm_dpsi
         geqdsk_dict['gcase'] = 'FiBE'
         geqdsk_dict['gid'] = 2
         if isinstance(cocos, int):
