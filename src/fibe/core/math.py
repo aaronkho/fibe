@@ -1074,6 +1074,20 @@ def compute_f_from_safety_factor_and_contour(q, contour):
     return val
 
 
+def compute_jtor_contour_integral(contour, ffp, pp):
+    val = 0.0
+    if contour.get('r', np.array([])).size > 1:
+        jtor = compute_jtor(contour['r'], np.zeros_like(contour['r']) + ffp, np.zeros_like(contour['r']) + pp)
+        dl = np.sqrt(np.square(np.diff(contour['r'])) + np.square(np.diff(contour['z']))).flatten()
+        rcm = 0.5 * (contour['r'][1:] + contour['r'][:-1]).flatten()
+        bpm = 0.5 * (contour['bpol'][1:] + contour['bpol'][:-1]).flatten()
+        jtm = 0.5 * (jtor[1:] + jtor[:-1]).flatten()
+        dl_over_bp = dl / bpm
+        vp = np.sum(dl_over_bp)
+        val = np.sum(jtm * dl_over_bp) / np.sum(dl_over_bp)
+    return val
+
+
 def trace_contours_with_contourpy(rvec, zvec, dmap, levels, rcheck, zcheck):
     point_inside = Point([float(rcheck), float(zcheck)])
     rmesh, zmesh = np.meshgrid(rvec, zvec)

@@ -32,6 +32,7 @@ from .math import (
     compute_flux_surface_quantities_boundary,
     compute_safety_factor_contour_integral,
     compute_f_from_safety_factor_and_contour,
+    compute_jtor_contour_integral,
     trace_contours_with_contourpy,
     trace_contour_with_splines,
     trace_contour_with_megpy,
@@ -962,6 +963,16 @@ class FixedBoundaryEquilibrium():
         self._data['qpsi'] = copy.deepcopy(q_new)
 
 
+    def compute_flux_surface_averaged_jtor_profile(self):
+        if self._fs:
+            jtor = np.zeros((len(self._fs), ), dtype=float)
+            for i, (level, contour) in enumerate(self._fs.items()):
+                psinorm = (level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
+                ffp, pp = self.compute_ffprime_and_pprime_grid(np.array([psinorm]), internal_cutoff=-1.0)
+                jtor[i] = compute_jtor_contour_integral(contour, ffp, pp)
+            self._data['jpsi'] = copy.deepcopy(jtor)
+
+
     def solve_psi(
         self,
         nxiter=100,   # Max iterations in the equilibrium loop: recommend 100
@@ -993,8 +1004,16 @@ class FixedBoundaryEquilibrium():
         else:
             self._options['pnaxis'] = 1.0 / float(self._data['nr_orig']) if 'nr_orig' in self._data else 1.0 / float(self._data['nr'])
 
+        if self.solver is None:
+            self.make_solver()
+        if 'pres_fs' not in self._fit:
+            self.recompute_pressure_profile(smooth=symmetrical, symmetrical=symmetrical)
+        if 'fpol_fs' not in self._fit:
+            self.recompute_f_profile(smooth=symmetrical, symmetrical=symmetrical)
+        if 'qpsi_fs' not in self._fit:
+            self.recompute_q_profile(smooth=symmetrical)
+
         # INITIAL CURRENT PROFILE
-        self.create_grid_basis_meshes()
         self.compute_normalized_psi_map()
         self.zero_psi_outside_boundary()
         if 'cur' not in self._data:
@@ -1486,26 +1505,29 @@ class FixedBoundaryEquilibrium():
             p_factor = 1.0e-5
             q_factor = np.sign(self._data['bcentr'] * self._data['cpasma'])
             phi_factor = np.sign(self._data['bcentr'])
+            j_factor = 1.0e-6 * np.sign(self._data['cpasma'])
             d_factor = np.sign(self._data['cpasma'])
-            ax1.plot(psinorm, f_factor * self._data['fpol'], c='b', label='F')
+            ax1.plot(psinorm, f_factor * self._data['fpol'], c='b', label='F [10**-1 Tm]')
             if 'ffprime' in self._data:
                 ax2.plot(psinorm, f_factor * d_factor * self._data['ffprime'] * dpsinorm_dpsi / self._data['fpol'], c='b', label='Fp')
             if 'fpol_fs' in self._fit:
-                ax1.plot(psinorm, f_factor * splev(psinorm, self._fit['fpol_fs']['tck']), c='b', ls='--', label='F Fit')
+                ax1.plot(psinorm, f_factor * splev(psinorm, self._fit['fpol_fs']['tck']), c='b', ls='--', label='F Fit [10**-1 Tm]')
                 ax2.plot(psinorm, f_factor * d_factor * splev(psinorm, self._fit['fpol_fs']['tck'], der=1) * dpsinorm_dpsi, c='b', ls='--', label='Fp Fit')
-            ax1.plot(psinorm, p_factor * self._data['pres'], c='r', label='p')
+            ax1.plot(psinorm, p_factor * self._data['pres'], c='r', label='p [10**-5 Pa]')
             if 'pprime' in self._data:
                 ax2.plot(psinorm, p_factor * d_factor * self._data['pprime'] * dpsinorm_dpsi, c='r', label='pp')
             if 'pres_fs' in self._fit:
-                ax1.plot(psinorm, p_factor * splev(psinorm, self._fit['pres_fs']['tck']), c='r', ls='--', label='p Fit')
+                ax1.plot(psinorm, p_factor * splev(psinorm, self._fit['pres_fs']['tck']), c='r', ls='--', label='p Fit [10**-5 Pa]')
                 ax2.plot(psinorm, p_factor * d_factor * splev(psinorm, self._fit['pres_fs']['tck'], der=1) * dpsinorm_dpsi, c='r', ls='--', label='pp Fit')
             if 'qpsi' in self._data:
-                ax1.plot(psinorm, q_factor * self._data['qpsi'], c='g', label='q')
+                ax1.plot(psinorm, q_factor * self._data['qpsi'], c='g', label='q [-]')
                 if 'qpsi_fs' in self._fit:
-                    ax1.plot(psinorm, q_factor * splev(psinorm, self._fit['qpsi_fs']['tck']), c='g', ls='--', label='q Fit')
+                    ax1.plot(psinorm, q_factor * splev(psinorm, self._fit['qpsi_fs']['tck']), c='g', ls='--', label='q Fit [-]')
                     ax2.plot(psinorm, q_factor * d_factor * splev(psinorm, self._fit['qpsi_fs']['tck'], der=1) * dpsinorm_dpsi, c='g', ls='--', label='qp Fit')
             if 'phi' in self._data:
-                ax1.plot(psinorm, phi_factor * self._data['phi'], c='m', label='phi')
+                ax1.plot(psinorm, phi_factor * self._data['phi'], c='m', label='phi [Wb/rad]')
+            if 'jpsi' in self._data:
+                ax1.plot(psinorm, j_factor * self._data['jpsi'], c='#800080', label='jtor [MA m**-2]')
             ax1.set_xlim(0.0, 1.0)
             ax1.set_xlabel('psi_norm [-]')
             ax1.set_ylabel('Profiles')
