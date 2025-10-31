@@ -1,0 +1,2 @@
+# Set all Python files to always have Linux file ending
+*.py text eol=lf
