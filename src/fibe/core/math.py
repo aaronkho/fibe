@@ -62,7 +62,7 @@ def generate_2d_spline(x, y, z, s=0):
 
 
 def generate_optimal_grid(nr, nz, rbdry, zbdry):
-    # FUNCTION TO FIT GRID TO BOUNDARY
+    # Fit grid to boundary
     e = 3.5
     m = float(nr - 1)
     g = 1.0 / ((m - e)**2 - e**2)
@@ -76,11 +76,12 @@ def generate_optimal_grid(nr, nz, rbdry, zbdry):
     y1 = np.nanmax(zbdry)
     zmax = m * g * (y1 * (m - e) - y0 * e)
     zmin = m * g * (y0 * (m - e) - y1 * e)
-    # ENFORCE UP-DOWN SYMMETRY
-    if zmax > -zmin:
-        zmin = -zmax
-    elif zmax < -zmin:
-        zmax = -zmin
+    if np.isclose(zmax, -zmin):
+        # Make z grid symmetric if already close
+        if zmax > -zmin:
+            zmin = -zmax
+        elif zmax < -zmin:
+            zmax = -zmin
     return rmin, rmax, zmin, zmax
 
 
@@ -91,14 +92,13 @@ def generate_boundary_maps(rvec, zvec, rbdry, zbdry):
 
     inout = np.zeros((nr * nz, ), dtype=int)
 
-    # MIN,MAX OF GRID POINTS AROUND BOUNDARY
     # i = r, j = z
     ibmin = (1.0 + 0.5 * np.sign(np.nanmin(rbdry) - rvec)).astype(int).sum() - 1
     ibmax = (1.0 + 0.5 * np.sign(np.nanmax(rbdry) - rvec)).astype(int).sum()
     jmin = (1.0 + 0.5 * np.sign(np.nanmin(zbdry) - zvec)).astype(int).sum()
     jmax = (1.0 + 0.5 * np.sign(np.nanmax(zbdry) - zvec)).astype(int).sum() - 1
 
-    # FIND GRID POINTS INSIDE BOUNDARY
+    # Find grid points inside boundary
     imin = np.zeros((nz, ), dtype=int)
     imax = np.zeros((nz, ), dtype=int)
 
@@ -143,9 +143,8 @@ def generate_boundary_maps(rvec, zvec, rbdry, zbdry):
         jmax -= 1
     ijin = np.arange(nr * nz).astype(int).compress(inout)
 
-    # BOUNDARY INSIDE GRID POINTS ARE THOSE WITH A NEIGHBOR THAT IS OUTSIDE
-    # BOUNDARY INSIDE GRID POINTS HAVE SPECIAL DIFFERENCE EQUATIONS THAT
-    # DEPEND ON LOCATION OF NEXT OUTSIDE POINT
+    # ijedge are points with a neighbour that is outside the boundary
+    # These points have special difference equations
 
     ijinl = ijin.compress(inout.take(ijin - 1) == 0) # Left
     ijinr = ijin.compress(inout.take(ijin + 1) == 0) # Right
@@ -328,7 +327,7 @@ def compute_jpar(inout, btot, fpol, fprime, pprime):
 
 
 def compute_finite_difference_matrix(nr, nz, s1, s2, s3, s4):
-    # FULL DIFFERENCE MATRIX FOR SPARSE MATRIX INVERSION OR SOLUTION
+    # Full difference matrix for sparse solution finding
     data = np.array([np.ones((nr * nz, )), -s1, -s2, -s3, -s4])
     diags = np.array([0, 1, -1, nr, -nr])
     return spdiags(data, diags, nr * nz, nr * nz).T
@@ -768,7 +767,7 @@ def compute_gradients_at_boundary(rvec, zvec, flat_psi, inout, ijedge, a1, a2, b
     zgradz = []
     gradz = []
 
-    # DETERMINE GRADIENT OF PSI AT BOUNDARY POINTS
+    # Determine gradient of psi at boundary points
     nr = rvec.size
     nz = zvec.size
     hr, hrm1, hrm2, hz, hzm1, hzm2 = compute_grid_spacing(rvec, zvec)
@@ -777,7 +776,7 @@ def compute_gradients_at_boundary(rvec, zvec, flat_psi, inout, ijedge, a1, a2, b
     vedge = rvec.take(iedge) + 1.0j * zvec.take(jedge)
     for k, ij in enumerate(ijedge):
 
-        # dpsi/dx AT BOUNDARY POINTS
+        # dpsi/dx at boundary points
         if inout[ij] & 0b10 or inout[ij] & 0b100:
             vl = vedge[k] - a1[ij] * hr
             vr = vedge[k] + a2[ij] * hr
@@ -802,7 +801,7 @@ def compute_gradients_at_boundary(rvec, zvec, flat_psi, inout, ijedge, a1, a2, b
                 zgradr.append(vr.imag)
                 gradr.append((-grad + a2[ij] * flat_psi[ij - 1] / (1.0 + a2[ij])) / hr)
 
-        # dpsi/dy AT BOUNDARY POINTS
+        # dpsi/dy at boundary points
         if inout[ij] & 0b1000 or inout[ij] & 0b10000:
             vb = vedge[k] - 1.0j * b1[ij] * hz
             va = vedge[k] + 1.0j * b2[ij] * hz
@@ -839,23 +838,33 @@ def compute_gradients_at_boundary(rvec, zvec, flat_psi, inout, ijedge, a1, a2, b
 
 def generate_boundary_gradient_spline(r_points, z_points, grad_points, r_reference, z_reference, s=0):
 
-    # SPLINE GRAD PSI AS A FUNCTION OF ANGLE ALONG BOUNDARY
-    # USING MAGNETIC AXIS AS CENTER
+    # Spline psi gradient along boundary angle, using magnetic axis as center
     v_reference = r_reference + 1.0j * z_reference
     v_points = r_points + 1.0j * z_points - v_reference
     ds = xr.Dataset(coords={'angle': np.angle(v_points)}, data_vars={'gradient': (['angle'], grad_points)})
     ds = ds.drop_duplicates('angle').sortby('angle')
     angle_ordered = ds['angle'].to_numpy()
     grad_ordered = ds['gradient'].to_numpy()
-    angle_ordered_extended = np.concatenate([angle_ordered, [angle_ordered[0] + 2.0 * np.pi]])
-    grad_ordered_extended = np.concatenate([grad_ordered, [grad_ordered[0]]])
+    roll_mask = (angle_ordered < 0.0)
+    ang1 = angle_ordered[~roll_mask][-1]
+    ang2 = angle_ordered[roll_mask][0] + 2.0 * np.pi
+    grad1 = grad_ordered[~roll_mask][-1]
+    grad2 = grad_ordered[roll_mask][0]
 
-    tck = splrep(angle_ordered_extended, grad_ordered_extended, k=3, per=True, quiet=1)
-    yy = splev(np.pi, tck) if angle_ordered_extended[-1] > np.pi else splev(-np.pi, tck)
-    mask = (angle_ordered >= -np.pi) & (angle_ordered <= np.pi)
+    mask = (angle_ordered > -np.pi) & (angle_ordered < np.pi)
     if np.any(mask):
         angle_ordered = angle_ordered[mask]
         grad_ordered = grad_ordered[mask]
+    for angle_mult in np.linspace(0.9, 1.0, 21)[:-1]:
+        if angle_ordered[0] > (angle_mult * -np.pi):
+            yy = grad1 + (grad2 - grad1) * ((2.0 - angle_mult) * np.pi - ang1) / (ang2 - ang1)
+            angle_ordered = np.concatenate(([angle_mult * -np.pi], angle_ordered))
+            grad_ordered = np.concatenate(([yy], grad_ordered))
+        if angle_ordered[-1] < (angle_mult * np.pi):
+            yy = grad1 + (grad2 - grad1) * (angle_mult * np.pi - ang1) / (ang2 - ang1)
+            angle_ordered = np.concatenate((angle_ordered, [angle_mult * np.pi]))
+            grad_ordered = np.concatenate((grad_ordered, [yy]))
+    yy = grad1 + (grad2 - grad1) * (np.pi - ang1) / (ang2 - ang1)
     angle_ordered = np.concatenate(([-np.pi], angle_ordered, [np.pi]))
     grad_ordered = np.concatenate(([yy], grad_ordered, [yy]))
     b = (-np.pi, np.pi)
@@ -948,7 +957,7 @@ def old_compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout
 
 def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gradr_tck, gradz_tck, grad_norm=1.0):
 
-    # VECTORS TO AND BETWEEN BOUNDARY POINTS
+    # Vectors to and between boundary points
     vmagx = rmagx + 1.0j * zmagx
     vbdry = rbdry + 1.0j * zbdry
     abdry = np.angle(vbdry - vmagx)
@@ -962,7 +971,7 @@ def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gr
             _, nfac = compute_intersection_from_ray_complex(vbdry[k - 1] + nbdry[k - 1], dvb[k - 1], vbdry[k], nbdry[k])
             nbdry[k] *= nfac
 
-    # VECTORS TO EXTERIOR GRID POINTS
+    # Vectors to exterior grid points
     nr = rvec.size
     jout = ijout // nr
     iout = ijout - nr * jout
@@ -972,7 +981,7 @@ def compute_psi_extension(rvec, zvec, rbdry, zbdry, rmagx, zmagx, psi, ijout, gr
     psiout = np.zeros(vvec.shape, dtype=float)
     ivvec = np.arange(vvec.size)
 
-    ## VECTORS BETWEEN EXTERIOR POINTS AND BOUNDARY POINTS
+    # Use vectors between exterior points and boundary surface to extend gradient
     for k in range(dvb.size):
         angmin = np.mod(np.angle(vvec - vbdry[k]) - np.angle(nbdry[k]), 2.0 * np.pi)
         angmin[angmin > np.pi] = angmin[angmin > np.pi] - 2.0 * np.pi
