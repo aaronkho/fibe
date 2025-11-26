@@ -168,7 +168,7 @@ def write_geqdsk_file_megpy(fname, datadict):
     megpy_obj = Equilibrium(verbose=False)
     megpy_obj.raw = eq
     megpy_obj.derived = eq
-    megpy_obj.write_geqdsk(fname)
+    megpy_obj.write_geqdsk(str(fname))
 
 
 def read_geqdsk_file_fibe(fname):
