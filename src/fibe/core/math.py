@@ -435,12 +435,12 @@ def generate_segments(r_contour, z_contour, indices, cuts=None, r_reference=None
         if (len(v_segment) + 1) < len(index_contour):
             dv_segment = np.diff(v_segment)
             angle_dv_segment = np.angle(dv_segment)
-            if angle_dv_segment[-1] > angle_dv_segment[0]:
+            if angle_dv_segment[-1] < angle_dv_segment[0]:
                 angle_dv_segment = np.where(angle_dv_segment < 0.0, angle_dv_segment + 2.0 * np.pi, angle_dv_segment)
             amin = np.nanmin(angle_dv_segment)
             amax = np.nanmax(angle_dv_segment)
             if amax - amin > np.pi:
-                logger.error('Spline angle error')
+                logger.error(f'Spline angle error: {amax - amin} > pi')
             rotation = np.exp(1.0j * (amax + amin - np.pi) / 2.0)
             vspline = (v_segment - v_reference) * rotation
             xspline = vspline.real
@@ -456,12 +456,12 @@ def generate_segments(r_contour, z_contour, indices, cuts=None, r_reference=None
             nchop = v_segment // 3
             dv_segment = np.diff(v_segment)
             angle_dv_segment = np.angle(dv_segment)
-            if angle_dv_segment[-1] > angle_dv_segment[0]:
+            if angle_dv_segment[-1] < angle_dv_segment[0]:
                 angle_dv_segment = np.where(angle_dv_segment < 0.0, angle_dv_segment + 2.0 * np.pi, angle_dv_segment)
             amin0 = np.nanmin(angle_dv_segment[:nchop-1])
             amax0 = np.nanmax(angle_dv_segment[:nchop-1])
             if amax0 - amin0 > np.pi:
-                logger.error('Spline 0 angle error')
+                logger.error(f'Spline 0 angle error: {amax0 - amin0} > pi')
             rotation0 = np.exp(1.0j * (amax0 + amin0 - np.pi) / 2.0)
             vspline0 = (v_segment[:nchop] - v_reference) * rotation0
             xspline0 = vspline0.real
@@ -473,7 +473,7 @@ def generate_segments(r_contour, z_contour, indices, cuts=None, r_reference=None
             amin1 = np.nanmin(angle_dv_segment[-nchop+1:])
             amax1 = np.nanmax(angle_dv_segment[-nchop+1:])
             if amax1 - amin1 > np.pi:
-                logger.error('Spline 1 angle error')
+                logger.error(f'Spline 1 angle error: {amax1 - amin1} > pi')
             rotation1 = np.exp(1.0j * (amax1 + amin1 - np.pi) / 2.0)
             vspline1 = (v_segment[-nchop:] - v_reference) * rotation1
             xspline1 = vspline1.real
@@ -499,8 +499,8 @@ def generate_x_point_candidates(rbdry, zbdry, rmagx, zmagx, psi_tck, dr, dz):
 
     xpoint_candidates = []
     xpoint_indices = []
-    dpsidr_zero = np.where(dpsidr_obdry == 0.0)[0]
-    dpsidz_zero = np.where(dpsidz_obdry == 0.0)[0]
+    dpsidr_zero = np.where(np.isclose(dpsidr_obdry, 0.0))[0]
+    dpsidz_zero = np.where(np.isclose(dpsidz_obdry, 0.0))[0]
     for idr in dpsidr_zero:
         if idr in dpsidz_zero:
             xpoint_indices.append(idr)
@@ -719,8 +719,9 @@ def generate_boundary_splines(rbdry, zbdry, rmagx, zmagx, xpoints, enforce_conca
                     length_segment[j - 1] = np.abs(newp - vmagx)
         #if angle_segment[0] > angle_segment[-1]:
         #    angle_segment[angle_segment > np.pi] = angle_segment[angle_segment > np.pi] - 2.0 * np.pi
-        spl = make_interp_spline(angle_segment, length_segment, bc_type=None)
-        splines.append({'tck': spl.tck, 'bounds': (float(np.nanmin(angle_segment)), float(np.nanmax(angle_segment)))})
+        if len(angle_segment) > 2:
+            spl = make_interp_spline(angle_segment, length_segment, bc_type=None)
+            splines.append({'tck': spl.tck, 'bounds': (float(np.nanmin(angle_segment)), float(np.nanmax(angle_segment)))})
     if len(splines) == 0:
         spl = make_interp_spline(angle_ordered, length_ordered, bc_type='periodic')
         splines.append({'tck': spl.tck, 'bounds': (float(np.nanmin(angle_ordered)), float(np.nanmax(angle_ordered)))})
