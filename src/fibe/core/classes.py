@@ -107,7 +107,7 @@ class FixedBoundaryEquilibrium():
         }
         self._fs = None
         if isinstance(geqdsk, (str, Path)):
-            self.load_geqdsk(geqdsk)
+            self.load_geqdsk(geqdsk, legacy_ip=legacy_ip)
 
 
     def save_original_data(self, fields, overwrite=False):
@@ -1207,7 +1207,7 @@ class FixedBoundaryEquilibrium():
         pass
 
 
-    def plot_contour(self, save=None):
+    def plot_contour(self, save=None, show=True):
         debug = False
         if 'rleft' in self._data and 'rdim' in self._data and 'zmid' in self._data and 'zdim' in self._data:
             lvec = np.array([0.01, 0.04, 0.09, 0.15, 0.22, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999, 1.0, 1.02, 1.05, 1.1, 1.2])
@@ -1254,11 +1254,12 @@ class FixedBoundaryEquilibrium():
             fig.tight_layout()
             if isinstance(save, (str, Path)):
                 fig.savefig(save, dpi=100)
-            plt.show()
+            if show:
+                plt.show()
             plt.close(fig)
 
 
-    def plot_heatmap(self, save=None):
+    def plot_heatmap(self, save=None, show=True):
         if 'rleft' in self._data and 'rdim' in self._data and 'zmid' in self._data and 'zdim' in self._data:
             lvec = np.array([0.01, 0.04, 0.09, 0.15, 0.22, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999, 1.0, 1.02, 1.05, 1.1, 1.2])
             import matplotlib.pyplot as plt
@@ -1293,11 +1294,12 @@ class FixedBoundaryEquilibrium():
             fig.tight_layout()
             if isinstance(save, (str, Path)):
                 fig.savefig(save, dpi=100)
-            plt.show()
+            if show:
+                plt.show()
             plt.close(fig)
 
 
-    def plot_comparison_to_original(self, save=None):
+    def plot_comparison_to_original(self, save=None, show=True):
         if 'psi' in self._data and 'psi_orig' in self._data:
             lvec = np.array([0.01, 0.04, 0.09, 0.15, 0.22, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999, 1.0, 1.02, 1.05])
             import matplotlib.pyplot as plt
@@ -1384,11 +1386,12 @@ class FixedBoundaryEquilibrium():
             fig.tight_layout()
             if isinstance(save, (str, Path)):
                 fig.savefig(save, dpi=100)
-            plt.show()
+            if show:
+                plt.show()
             plt.close(fig)
 
 
-    def plot_grid_splitting(self, save=None):
+    def plot_grid_splitting(self, save=None, show=True):
         if 'inout' in self._data:
             import matplotlib.pyplot as plt
             fig = plt.figure(figsize=(6, 8))
@@ -1413,11 +1416,12 @@ class FixedBoundaryEquilibrium():
             fig.tight_layout()
             if isinstance(save, (str, Path)):
                 fig.savefig(save, dpi=100)
-            plt.show()
+            if show:
+                plt.show()
             plt.close(fig)
 
 
-    def plot_flux_surfaces(self, save=None):
+    def plot_flux_surfaces(self, save=None, show=True):
         if self._fs is not None:
             import matplotlib.pyplot as plt
             fig = plt.figure(figsize=(6, 8))
@@ -1439,11 +1443,12 @@ class FixedBoundaryEquilibrium():
             fig.tight_layout()
             if isinstance(save, (str, Path)):
                 fig.savefig(save, dpi=100)
-            plt.show()
+            if show:
+                plt.show()
             plt.close(fig)
 
 
-    def plot_profiles(self, save=None):
+    def plot_profiles(self, save=None, show=True):
         if 'fpol' in self._data and 'pres' in self._data:
             import matplotlib.pyplot as plt
             fig = plt.figure(figsize=(12, 6))
@@ -1489,11 +1494,12 @@ class FixedBoundaryEquilibrium():
             fig.tight_layout()
             if isinstance(save, (str, Path)):
                 fig.savefig(save, dpi=100)
-            plt.show()
+            if show:
+                plt.show()
             plt.close(fig)
 
 
-    def plot_shaping_parameters(self, save=None):
+    def plot_shaping_parameters(self, save=None, show=True):
         if self._fs is not None:
             import matplotlib.pyplot as plt
             fig = plt.figure(figsize=(18, 6))
@@ -1534,11 +1540,12 @@ class FixedBoundaryEquilibrium():
             fig.tight_layout()
             if isinstance(save, (str, Path)):
                 fig.savefig(save, dpi=100)
-            plt.show()
+            if show:
+                plt.show()
             plt.close(fig)
 
 
-    def plot_boundary_gradients(self, save=None):
+    def plot_boundary_gradients(self, save=None, show=True):
         if 'gradr_bdry' in self._fit and 'gradz_bdry' in self._fit:
             import matplotlib.pyplot as plt
             fig = plt.figure(figsize=(8, 6))
@@ -1560,5 +1567,6 @@ class FixedBoundaryEquilibrium():
             fig.tight_layout()
             if isinstance(save, (str, Path)):
                 fig.savefig(save, dpi=100)
-            plt.show()
+            if show:
+                plt.show()
             plt.close(fig)
