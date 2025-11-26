@@ -436,7 +436,15 @@ class FixedBoundaryEquilibrium():
         if 'rvec' not in self._data or 'zvec' not in self._data:
             self.create_grid_basis_vectors()
         nulls = find_null_points(self._data['rvec'], self._data['zvec'], self._data['psi'], level=self._data['sibdry'], atol=1.0e-3)
-        self._data['xpoints'] = [np.array(xp) for xp in nulls['x-points']]
+        temp_xps = [np.array(xp) for xp in nulls['x-points']]
+        vbdry = self._data['rbdry'] + 1.0j * self._data['zbdry']
+        dthr = 2.0 * np.sqrt(np.mean(np.diff(self._data['rvec'])) ** 2.0 + np.mean(np.diff(self._data['zvec'])) ** 2.0)
+        xpoints = []
+        for xp in temp_xps:
+            vmin = vbdry - np.array([xp[0] + 1.0j * xp[-1]])
+            if np.nanmin(np.abs(vmin)) < dthr:
+                xpoints.append(xp)
+        self._data['xpoints'] = xpoints
 
 
     def refine_boundary_by_grid_trace(self):
