@@ -1,5 +1,7 @@
+import copy
 from pathlib import Path
 import numpy as np
+from scipy.interpolate import splev, bisplev
 
 
 def plot_equilibrium_contours(eq_obj, save=None, show=True, debug=False):
