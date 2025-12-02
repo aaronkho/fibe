@@ -101,6 +101,8 @@ class FixedBoundaryEquilibrium():
         self,
         geqdsk=None,
         legacy_ip=False,
+        bt_sign=None,
+        ip_sign=None,
     ):
         self.scratch = True
         self._data = {}
@@ -117,7 +119,7 @@ class FixedBoundaryEquilibrium():
         }
         self._fs = None
         if isinstance(geqdsk, (str, Path)):
-            self.load_geqdsk(geqdsk, legacy_ip=legacy_ip)
+            self.load_geqdsk(geqdsk, legacy_ip=legacy_ip, bt_sign=bt_sign, ip_sign=ip_sign)
 
 
     def save_original_data(self, fields, overwrite=False):
@@ -1146,13 +1148,13 @@ class FixedBoundaryEquilibrium():
         self._data['zlim'] = np.array([zmin, zmin, zmax, zmax, zmin])
 
 
-    def load_geqdsk(self, path, clean=True, legacy_ip=False):
+    def load_geqdsk(self, path, clean=True, legacy_ip=False, bt_sign=None, ip_sign=None):
         if isinstance(path, (str, Path)):
             geqdsk_dict = read_geqdsk_file(path)
-            self.insert_geqdsk_dict(geqdsk_dict, clean=clean, legacy_ip=legacy_ip)
+            self.insert_geqdsk_dict(geqdsk_dict, clean=clean, legacy_ip=legacy_ip, bt_sign=bt_sign, ip_sign=ip_sign)
 
 
-    def insert_geqdsk_dict(self, geqdsk_dict, clean=True, legacy_ip=False):
+    def insert_geqdsk_dict(self, geqdsk_dict, clean=True, legacy_ip=False, bt_sign=None, ip_sign=None):
         if isinstance(geqdsk_dict, dict) and 'nr' in geqdsk_dict and 'nz' in geqdsk_dict and 'rbdry' in geqdsk_dict and 'zbdry' in geqdsk_dict:
             if clean:
                 self._data = {}
@@ -1164,6 +1166,10 @@ class FixedBoundaryEquilibrium():
             self._data.update(geqdsk_dict)
             if 'cpasma' in self._data and legacy_ip:
                 self._data['cpasma'] *= -1.0
+            if 'cpasma' in self._data and isinstance(ip_sign, (int, float)):
+                self._data['cpasma'] *= float(np.sign(self._data['cpasma']) * np.sign(ip_sign))
+            if 'bcentr' in self._data and isinstance(bt_sign, (int, float)):
+                self._data['bcentr'] *= float(np.sign(self._data['bcentr']) * np.sign(bt_sign))
             if 'simagx' in self._data and 'sibdry' in self._data and 'psi' in self._data:
                 if self._data['simagx'] > self._data['sibdry']:
                     self._data['psi'] *= -1.0
@@ -1199,6 +1205,7 @@ class FixedBoundaryEquilibrium():
         if isinstance(cocos, int):
             # FiBE should internally always be in COCOS=2
             current_cocos = detect_cocos(geqdsk_dict)
+            logger.info(f'Converting GEQDSK from COCOS={current_cocos} to COCOS={cocos}')
             geqdsk_dict = convert_cocos(geqdsk_dict, current_cocos, cocos)
         if legacy_ip:
             geqdsk_dict['cpasma'] *= -1.0
@@ -1206,8 +1213,8 @@ class FixedBoundaryEquilibrium():
 
 
     @classmethod
-    def from_geqdsk(cls, path, legacy_ip=False):
-        return cls(geqdsk=path, legacy_ip=legacy_ip)
+    def from_geqdsk(cls, path, legacy_ip=False, bt_sign=None, ip_sign=None):
+        return cls(geqdsk=path, legacy_ip=legacy_ip, bt_sign=bt_sign, ip_sign=ip_sign)
 
 
     def to_geqdsk(self, path, cocos=None, legacy_ip=False):
