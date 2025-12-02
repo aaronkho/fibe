@@ -47,6 +47,16 @@ from ..utils.eqdsk import (
     detect_cocos,
     convert_cocos,
 )
+from ..utils.plotting import (
+    plot_equilibrium_contours,
+    plot_equilibrium_heatmap,
+    plot_equilibrium_comparison,
+    plot_equilibrium_grid,
+    plot_equilibrium_flux_surfaces,
+    plot_equilibrium_profiles,
+    plot_equilibrium_shaping_coefficients,
+    plot_equilibrium_boundary_gradients,
+)
 
 logger = logging.getLogger('fibe')
 logger.setLevel(logging.INFO)
@@ -107,29 +117,7 @@ class FixedBoundaryEquilibrium():
         }
         self._fs = None
         if isinstance(geqdsk, (str, Path)):
-            self.load_geqdsk(geqdsk)
-            #self._data.update(read_geqdsk_file(geqdsk))
-            #if 'cpasma' in self._data and legacy_ip:
-            #    self._data['cpasma'] *= -1.0
-            #if 'simagx' in self._data and 'sibdry' in self._data and 'psi' in self._data:
-            #    if self._data['simagx'] > self._data['sibdry']:
-            #        self._data['psi'] *= -1.0
-            #        self._data['simagx'] *= -1.0
-            #        self._data['sibdry'] *= -1.0
-            #        if 'pprime' in self._data:
-            #            self._data['pprime'] *= -1.0
-            #        if 'ffprime' in self._data:
-            #            self._data['ffprime'] *= -1.0
-            #        if 'q' in self._data:
-            #            self._data['q'] *= -1.0
-            #    dpsi_dpsinorm = (self._data['sibdry'] - self._data['simagx'])
-            #    if 'pprime' in self._data:
-            #        self._data['pprime'] *= dpsi_dpsinorm
-            #    if 'ffprime' in self._data:
-            #        self._data['ffprime'] *= dpsi_dpsinorm
-            #self.enforce_boundary_duplicate_at_end()
-            #self.enforce_wall_duplicate_at_end()
-            #self.scratch = False
+            self.load_geqdsk(geqdsk, legacy_ip=legacy_ip)
 
 
     def save_original_data(self, fields, overwrite=False):
@@ -209,30 +197,6 @@ class FixedBoundaryEquilibrium():
             self._data['zbdry'] = copy.deepcopy(zbdry)
             self._data['nbdry'] = len(self._data['rbdry'])
             self.enforce_boundary_duplicate_at_end()
-            #a = copy.deepcopy(theta)
-            #a_r = np.zeros_like(a)
-            #a_t = np.ones_like(a)
-            #for i in range(mxh['cos_coeffs'].shape[1]):
-            #    a += mxh['cos_coeffs'][:, i] * np.cos(float(i) * theta)
-            #    a_r += np.zeros_like(mxh['cos_coeffs'][:, i]) * np.cos(float(i) * theta)
-            #    a_t += mxh['cos_coeffs'][:, i] * float(-i) * np.sin(float(i) * theta)
-            #for i in range(mxh['sin_coeffs'].shape[1]):
-            #    a += mxh['sin_coeffs'][:, i] * np.sin(float(i) * theta)
-            #    a_r += np.zeros_like(mxh['sin_coeffs'][:, i]) * np.sin(float(i) * theta)
-            #    a_t += mxh['sin_coeffs'][:, i] * float(i) * np.cos(float(i) * theta)
-            #r = mxh['r0'] + mxh['r'] * np.cos(a)
-            #r_r = np.zeros_like(mxh['r0']) + np.cos(a) - mxh['r'] * np.sin(a) * a_r
-            #r_t = mxh['r'] * a_t * np.sin(a)
-            #z = mxh['z0'] + mxh['kappa'] * mxh['r'] * np.sin(theta)
-            #z_r = np.zeros_like(mxh['z0']) + mxh['kappa'] * (1.0 + np.zeros_like(mxh['kappa'])) * np.sin(theta)
-            #z_t = mxh['kappa'] * mxh['r'] * np.cos(theta)
-            #l_t = np.sqrt(np.power(r_t, 2.0) + np.power(z_t, 2.0))
-            #j_r = r * (r_r * z_t - r_t * z_r)
-            #inv_j_r = 1.0 / np.where(np.isclose(j_r, 0.0), 0.001, j_r)
-            #grad_r = np.where(np.isclose(j_r, 0.0), 1.0, r * l_t * inv_j_r)
-            #c = 2.0 * np.pi * np.sum((l_t / (r * grad_r))[:-1], axis=-1)
-            #f = 2.0 * np.pi * mxh['r'] / (np.where(np.isclose(c, 0.0), 1.0, c) / 300.0)
-            #self._data['mxh_f'] = f
             self._data['mxh_a'] = np.pi * np.power(mxh['r'], 2.0) / np.trapezoid(self._data['rbdry'], self._data['zbdry'])
 
 
@@ -288,7 +252,6 @@ class FixedBoundaryEquilibrium():
             self._data['zbdry'],
             self._data['ijin']
         )
-        #self._data['simagx'] = np.nanmax(self._data['psi'])
         self._data['simagx'] = -1.0
         self._data['sibdry'] = 0.0
         self.find_magnetic_axis_from_grid()
@@ -304,7 +267,7 @@ class FixedBoundaryEquilibrium():
         self._data['sibdry'] *= psi_mult
         self.old_find_magnetic_axis()
         self.save_original_data(['simagx', 'rmagx', 'zmagx', 'sibdry'], overwrite=True)
-        self.extend_psi_beyond_boundary()
+        self.extend_psi_beyond_boundary(initialization=True)
         self.compute_normalized_psi_map()
         self.create_boundary_splines()
 
@@ -483,7 +446,15 @@ class FixedBoundaryEquilibrium():
         if 'rvec' not in self._data or 'zvec' not in self._data:
             self.create_grid_basis_vectors()
         nulls = find_null_points(self._data['rvec'], self._data['zvec'], self._data['psi'], level=self._data['sibdry'], atol=1.0e-3)
-        self._data['xpoints'] = [np.array(xp) for xp in nulls['x-points']]
+        temp_xps = [np.array(xp) for xp in nulls['x-points']]
+        vbdry = self._data['rbdry'] + 1.0j * self._data['zbdry']
+        dthr = 2.0 * np.sqrt(np.mean(np.diff(self._data['rvec'])) ** 2.0 + np.mean(np.diff(self._data['zvec'])) ** 2.0)
+        xpoints = []
+        for xp in temp_xps:
+            vmin = vbdry - np.array([xp[0] + 1.0j * xp[-1]])
+            if np.nanmin(np.abs(vmin)) < dthr:
+                xpoints.append(xp)
+        self._data['xpoints'] = xpoints
 
 
     def refine_boundary_by_grid_trace(self):
@@ -674,7 +645,7 @@ class FixedBoundaryEquilibrium():
             # TODO: Rescale spline fits for these profiles too
 
 
-    def create_boundary_gradient_splines(self, tol=1.0e-6, smooth=False):
+    def create_boundary_gradient_splines(self, tol=1.0e-6, smooth=False, initialization=False):
         if 'inout' not in self._data:
             self.create_finite_difference_grid()
         rgradr, zgradr, gradr, rgradz, zgradz, gradz = compute_gradients_at_boundary(
@@ -689,12 +660,13 @@ class FixedBoundaryEquilibrium():
             self._data['b2'],
             tol=tol
         )
-        norm = None
         self._data['agradr'] = np.angle(rgradr + 1.0j * zgradr - self._data['rmagx'] - 1.0j * self._data['zmagx'])
         self._data['agradz'] = np.angle(rgradz + 1.0j * zgradz - self._data['rmagx'] - 1.0j * self._data['zmagx'])
         self._data['gradr'] = gradr
         self._data['gradz'] = gradz
-        s = len(gradr) + int(np.sqrt(2 * len(gradz))) if smooth else 0
+        s = 0
+        if smooth:
+            s = len(gradr) + np.sqrt(2 * len(gradz)) if initialization else 0.5 * (len(gradr) + len(gradz)) * 0.01
         #s = 5 * (len(gradr) + len(gradz)) if smooth else 0
         #if not self.scratch:
         #    ridx = np.nanargmin(np.abs(self._data['rvec'] - self._data['rmagx']))
@@ -721,9 +693,9 @@ class FixedBoundaryEquilibrium():
         self._fit['gradz_bdry'] = generate_boundary_gradient_spline(rgradz, zgradz, gradz, self._data['rmagx'], self._data['zmagx'], s=s)
 
 
-    def extend_psi_beyond_boundary(self):
+    def extend_psi_beyond_boundary(self, initialization=False):
         if 'gradr_bdry' not in self._fit or 'gradz_bdry' not in self._fit:
-            self.create_boundary_gradient_splines(smooth=True)
+            self.create_boundary_gradient_splines(smooth=True, initialization=initialization)
         self._data['psi'] = compute_psi_extension(
             self._data['rvec'],
             self._data['zvec'],
@@ -902,11 +874,6 @@ class FixedBoundaryEquilibrium():
             psinorm[i] = (level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
             qpsi[i] = np.sign(self._data['cpasma']) * compute_safety_factor_contour_integral(contour, current_inside=None)
         qpsi[0] = 2.0 * qpsi[1] - qpsi[2]  # Linear interpolation to axis
-        #edge_mask = (psinorm > 0.95)
-        #if np.any(edge_mask):
-        #    iref = np.where(edge_mask)[0][0]
-        #    qslope = (qpsi[iref - 1] - qpsi[iref - 2]) / (psinorm[iref - 1] - psinorm[iref - 2])
-        #    qpsi[edge_mask] = qpsi[iref - 1] * (1.0 + (10.0 * psinorm[edge_mask] - 9.5) ** 2) + (psinorm[edge_mask] - psinorm[iref - 1]) * qslope
         if approximate_lcfs:
             qpsi[-1] = qpsi[-2] + 2.0 * (qpsi[-2] - qpsi[-3])  # Linear interpolation to separatrix with increased slope
         self._fit['qpsi_fs'] = generate_bounded_1d_spline(qpsi, xnorm=psinorm, symmetrical=True, smooth=False)
@@ -1010,14 +977,15 @@ class FixedBoundaryEquilibrium():
             self.recompute_pressure_profile(smooth=symmetrical, symmetrical=symmetrical)
         if 'fpol_fs' not in self._fit:
             self.recompute_f_profile(smooth=symmetrical, symmetrical=symmetrical)
-        if 'qpsi_fs' not in self._fit:
+        if 'qpsi' in self._data and 'qpsi_fs' not in self._fit:
             self.recompute_q_profile(smooth=symmetrical)
 
-        # INITIAL CURRENT PROFILE
+        # Initial current profile
         self.compute_normalized_psi_map()
         self.zero_psi_outside_boundary()
         if 'cur' not in self._data:
             self.define_current(self._data['cpasma'])
+        # Loop to solve psi using Picard iteration
         self._data['psi_error'] = np.inf
         for n in range(self._options['nxiter']):
             ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
@@ -1257,358 +1225,33 @@ class FixedBoundaryEquilibrium():
         pass
 
 
-    def plot_contour(self, save=None):
-        debug = False
-        if 'rleft' in self._data and 'rdim' in self._data and 'zmid' in self._data and 'zdim' in self._data:
-            lvec = np.array([0.01, 0.04, 0.09, 0.15, 0.22, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999, 1.0, 1.02, 1.05, 1.1, 1.2])
-            import matplotlib.pyplot as plt
-            fig = plt.figure(figsize=(6, 8))
-            ax = fig.add_subplot(111)
-            rmin = self._data['rleft']
-            rmax = self._data['rleft'] + self._data['rdim']
-            zmin = self._data['zmid'] - 0.5 * self._data['zdim']
-            zmax = self._data['zmid'] + 0.5 * self._data['zdim']
-            rvec = rmin + np.linspace(0.0, 1.0, self._data['nr']) * (rmax - rmin)
-            zvec = zmin + np.linspace(0.0, 1.0, self._data['nz']) * (zmax - zmin)
-            if 'psi' in self._data:
-                rmesh, zmesh = np.meshgrid(rvec, zvec)
-                dpsi = self._data['sibdry'] - self._data['simagx']
-                levels = lvec * dpsi + self._data['simagx']
-                if levels[0] > levels[-1]:
-                    levels = levels[::-1]
-                ax.contour(rmesh, zmesh, self._data['psi'], levels=levels)
-            if 'rbdry' in self._data and 'zbdry' in self._data:
-                ax.plot(self._data['rbdry'], self._data['zbdry'], c='r', label='Boundary')
-            if 'rlim' in self._data and 'zlim' in self._data:
-                ax.plot(self._data['rlim'], self._data['zlim'], c='k', label='Limiter')
-            if 'rmagx' in self._data and 'zmagx' in self._data:
-                ax.scatter(self._data['rmagx'], self._data['zmagx'], marker='o', facecolors='none', edgecolors='r', label='O-points')
-            if 'xpoints' in self._data and len(self._data['xpoints']) > 0:
-                xparr = np.atleast_2d(self._data['xpoints'])
-                ax.scatter(xparr[:, 0], xparr[:, 1], marker='x', facecolors='r', label='X-points')
-            if debug:
-                if 'inout' in self._data:
-                    mask = self._data['inout'] == 0
-                    ax.scatter(rmesh.ravel()[~mask], zmesh.ravel()[~mask], c='g', marker='.', s=0.1)
-                    ax.scatter(rmesh.ravel()[mask], zmesh.ravel()[mask], c='k', marker='x')
-                if 'gradr_bdry' in self._fit and 'gradz_bdry' in self._fit:
-                    abdry = np.angle(self._data['rbdry'] + 1.0j * self._data['zbdry'] - self._data['rmagx'] - 1.0j * self._data['zmagx'])
-                    mag_grad_psi = splev(abdry, self._fit['gradr_bdry']['tck']) ** 2 + splev(abdry, self._fit['gradz_bdry']['tck']) ** 2
-                    mag_grad_psi_norm = mag_grad_psi / (np.nanmax(mag_grad_psi) - np.nanmin(mag_grad_psi))
-                    ax.scatter(self._data['rbdry'], self._data['zbdry'], c=mag_grad_psi_norm, cmap='cividis')
-            ax.set_xlim(rmin, rmax)
-            ax.set_ylim(zmin, zmax)
-            ax.set_xlabel('R [m]')
-            ax.set_ylabel('Z [m]')
-            ax.legend(loc='best')
-            fig.tight_layout()
-            if isinstance(save, (str, Path)):
-                fig.savefig(save, dpi=100)
-            plt.show()
-            plt.close(fig)
+    def plot_contour(self, save=None, show=True):
+        plot_equilibrium_contours(self, save=save, show=show)
 
 
-    def plot_heatmap(self, save=None):
-        if 'rleft' in self._data and 'rdim' in self._data and 'zmid' in self._data and 'zdim' in self._data:
-            lvec = np.array([0.01, 0.04, 0.09, 0.15, 0.22, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999, 1.0, 1.02, 1.05, 1.1, 1.2])
-            import matplotlib.pyplot as plt
-            fig = plt.figure(figsize=(6, 8))
-            ax = fig.add_subplot(111)
-            rmin = self._data['rleft']
-            rmax = self._data['rleft'] + self._data['rdim']
-            zmin = self._data['zmid'] - 0.5 * self._data['zdim']
-            zmax = self._data['zmid'] + 0.5 * self._data['zdim']
-            rvec = rmin + np.linspace(0.0, 1.0, self._data['nr']) * (rmax - rmin)
-            zvec = zmin + np.linspace(0.0, 1.0, self._data['nz']) * (zmax - zmin)
-            dr = rvec[1] - rvec[0]
-            dz = zvec[1] - zvec[0]
-            if 'xpsi' in self._data:
-                vmin = 0.9
-                vmax = 1.1
-                ax.imshow(self._data['xpsi'], origin='lower', extent=(rmin - dr, rmax + dr, zmin - dz, zmax + dz), vmin=vmin, vmax=vmax)
-            if 'rbdry' in self._data and 'zbdry' in self._data:
-                ax.plot(self._data['rbdry'], self._data['zbdry'], c='r', label='Boundary')
-            if 'rlim' in self._data and 'zlim' in self._data:
-                ax.plot(self._data['rlim'], self._data['zlim'], c='k', label='Limiter')
-            if 'rmagx' in self._data and 'zmagx' in self._data:
-                ax.scatter(self._data['rmagx'], self._data['zmagx'], marker='o', facecolors='none', edgecolors='r', label='O-points')
-            if 'xpoints' in self._data and len(self._data['xpoints']) > 0:
-                xparr = np.atleast_2d(self._data['xpoints'])
-                ax.scatter(xparr[:, 0], xparr[:, 1], marker='x', facecolors='r', label='X-points')
-            ax.set_xlim(rmin, rmax)
-            ax.set_ylim(zmin, zmax)
-            ax.set_xlabel('R [m]')
-            ax.set_ylabel('Z [m]')
-            ax.legend(loc='best')
-            fig.tight_layout()
-            if isinstance(save, (str, Path)):
-                fig.savefig(save, dpi=100)
-            plt.show()
-            plt.close(fig)
+    def plot_heatmap(self, save=None, show=True):
+        plot_equilibrium_heatmap(self, save=save, show=show)
 
 
-    def plot_comparison_to_original(self, save=None):
-        if 'psi' in self._data and 'psi_orig' in self._data:
-            lvec = np.array([0.01, 0.04, 0.09, 0.15, 0.22, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999, 1.0, 1.02, 1.05])
-            import matplotlib.pyplot as plt
-            fig = plt.figure(figsize=(6, 8))
-            ax = fig.add_subplot(111)
-            nr_new = self._data['nr']
-            nz_new = self._data['nz']
-            rleft_new = self._data['rleft']
-            rdim_new = self._data['rdim']
-            zmid_new = self._data['zmid']
-            zdim_new = self._data['zdim']
-            simagx_new = self._data['simagx']
-            sibdry_new = self._data['sibdry']
-            nr_old = self._data['nr_orig'] if 'nr_orig' in self._data else copy.deepcopy(nr_new)
-            nz_old = self._data['nz_orig'] if 'nz_orig' in self._data else copy.deepcopy(nz_new)
-            rleft_old = self._data['rleft_orig'] if 'rleft_orig' in self._data else copy.deepcopy(rleft_new)
-            rdim_old = self._data['rdim_orig'] if 'rdim_orig' in self._data else copy.deepcopy(rdim_new)
-            zmid_old = self._data['zmid_orig'] if 'zmid_orig' in self._data else copy.deepcopy(zmid_new)
-            zdim_old = self._data['zdim_orig'] if 'zdim_orig' in self._data else copy.deepcopy(zdim_new)
-            simagx_old = self._data['simagx_orig'] if 'simagx_orig' in self._data else copy.deepcopy(simagx_new)
-            sibdry_old = self._data['sibdry_orig'] if 'sibdry_orig' in self._data else copy.deepcopy(sibdry_new)
-            rmin_old = rleft_old
-            rmax_old = rleft_old + rdim_old
-            zmin_old = zmid_old - 0.5 * zdim_old
-            zmax_old = zmid_old + 0.5 * zdim_old
-            rvec_old = rmin_old + np.linspace(0.0, 1.0, nr_old) * (rmax_old - rmin_old)
-            zvec_old = zmin_old + np.linspace(0.0, 1.0, nz_old) * (zmax_old - zmin_old)
-            rmesh_old, zmesh_old = np.meshgrid(rvec_old, zvec_old)
-            dpsi_old = sibdry_old - simagx_old
-            levels_old = lvec * dpsi_old + simagx_old
-            if levels_old[0] > levels_old[-1]:
-                levels_old = levels_old[::-1]
-            ax.contour(rmesh_old, zmesh_old, self._data['psi_orig'], levels=levels_old, colors='r', alpha=0.6)
-            if 'rbdry_orig' in self._data and 'zbdry_orig' in self._data:
-                ax.plot(self._data['rbdry_orig'], self._data['zbdry_orig'], c='r', label='Boundary (old)')
-            elif 'rbdry' in self._data and 'zbdry' in self._data:
-                ax.plot(self._data['rbdry'], self._data['zbdry'], c='r', label='Boundary (old)')
-            if 'rmagx_orig' in self._data and 'zmagx_orig' in self._data:
-                ax.scatter(self._data['rmagx_orig'], self._data['zmagx_orig'], marker='o', facecolors='none', edgecolors='r', label='O-points (old)')
-            elif 'rmagx' in self._data and 'zmagx' in self._data:
-                ax.scatter(self._data['rmagx'], self._data['zmagx'], marker='o', facecolors='none', edgecolors='r', label='O-points (old)')
-            if 'xpoints_orig' in self._data and len(self._data['xpoints_orig']) > 0:
-                xparr = np.atleast_2d(self._data['xpoints_orig'])
-                ax.scatter(xparr[:, 0], xparr[:, 1], marker='x', facecolors='r', label='X-points (old)')
-            #elif 'xpoints' in self._data and len(self._data['xpoints']) > 0:
-            #    xparr = np.atleast_2d(self._data['xpoints'])
-            #    ax.scatter(xparr[:, 0], xparr[:, 1], marker='x', facecolors='r', label='X-points (old)')
-            rmin_new = rleft_new
-            rmax_new = rleft_new + rdim_new
-            zmin_new = zmid_new - 0.5 * zdim_new
-            zmax_new = zmid_new + 0.5 * zdim_new
-            rvec_new = rmin_new + np.linspace(0.0, 1.0, nr_new) * (rmax_new - rmin_new)
-            zvec_new = zmin_new + np.linspace(0.0, 1.0, nz_new) * (zmax_new - zmin_new)
-            rmesh_new, zmesh_new = np.meshgrid(rvec_new, zvec_new)
-            dpsi_new = sibdry_new - simagx_new
-            levels_new = lvec * dpsi_new + simagx_new
-            if levels_new[0] > levels_new[-1]:
-                levels_new = levels_new[::-1]
-            ax.contour(rmesh_new, zmesh_new, self._data['psi'], levels=levels_new, colors='b', alpha=0.6)
-            if 'rbdry' in self._data and 'zbdry' in self._data:
-                ax.plot(self._data['rbdry'], self._data['zbdry'], c='b', label='Boundary (new)')
-            if 'rmagx' in self._data and 'zmagx' in self._data:
-                ax.scatter(self._data['rmagx'], self._data['zmagx'], marker='o', facecolors='none', edgecolors='b', label='O-points (new)')
-            if 'xpoints' in self._data and len(self._data['xpoints']) > 0:
-                xparr = np.atleast_2d(self._data['xpoints'])
-                ax.scatter(xparr[:, 0], xparr[:, 1], marker='x', facecolors='b', label='X-points (new)')
-            if rmin_new > rmin_old:
-                ax.plot([rmin_new, rmin_new], [zmin_new, zmax_new], ls='-', c='b')
-            if rmax_new < rmax_old:
-                ax.plot([rmax_new, rmax_new], [zmin_new, zmax_new], ls='-', c='b')
-            if zmin_new > zmin_old:
-                ax.plot([rmin_new, rmax_new], [zmin_new, zmin_new], ls='-', c='b')
-            if zmax_new < zmax_old:
-                ax.plot([rmin_new, rmax_new], [zmax_new, zmax_new], ls='-', c='b')
-            rmin_plot = np.nanmin([rmin_old, rmin_new])
-            rmax_plot = np.nanmax([rmax_old, rmax_new])
-            zmin_plot = np.nanmin([zmin_old, zmin_new])
-            zmax_plot = np.nanmax([zmax_old, zmax_new])
-            ax.set_xlim(rmin_plot, rmax_plot)
-            ax.set_ylim(zmin_plot, zmax_plot)
-            ax.set_xlabel('R [m]')
-            ax.set_ylabel('Z [m]')
-            ax.legend(loc='best')
-            fig.tight_layout()
-            if isinstance(save, (str, Path)):
-                fig.savefig(save, dpi=100)
-            plt.show()
-            plt.close(fig)
+    def plot_comparison_to_original(self, save=None, show=True):
+        plot_equilibrium_comparison(self, save=save, show=show)
 
 
-    def plot_grid_splitting(self, save=None):
-        if 'inout' in self._data:
-            import matplotlib.pyplot as plt
-            fig = plt.figure(figsize=(6, 8))
-            ax = fig.add_subplot(111)
-            rmin = np.nanmin(self._data['rvec'])
-            rmax = np.nanmax(self._data['rvec'])
-            zmin = np.nanmin(self._data['zvec'])
-            zmax = np.nanmax(self._data['zvec'])
-            rmesh = copy.deepcopy(self._data['rpsi']).ravel()
-            zmesh = copy.deepcopy(self._data['zpsi']).ravel()
-            mask = self._data['inout'] == 0
-            ax.scatter(rmesh[~mask], zmesh[~mask], c='g', marker='.', s=0.1)
-            ax.scatter(rmesh[mask], zmesh[mask], c='k', marker='x')
-            if 'rbdry' in self._data and 'zbdry' in self._data:
-                ax.plot(self._data['rbdry'], self._data['zbdry'], c='r', label='Boundary')
-            if 'rlim' in self._data and 'zlim' in self._data:
-                ax.plot(self._data['rlim'], self._data['zlim'], c='k', label='Limiter')
-            ax.set_xlim(rmin, rmax)
-            ax.set_ylim(zmin, zmax)
-            ax.set_xlabel('R [m]')
-            ax.set_ylabel('Z [m]')
-            fig.tight_layout()
-            if isinstance(save, (str, Path)):
-                fig.savefig(save, dpi=100)
-            plt.show()
-            plt.close(fig)
+    def plot_grid_splitting(self, save=None, show=True):
+        plot_equilibrium_grid(self, save=save, show=show)
 
 
-    def plot_flux_surfaces(self, save=None):
-        if self._fs is not None:
-            import matplotlib.pyplot as plt
-            fig = plt.figure(figsize=(6, 8))
-            ax = fig.add_subplot(111)
-            rmin = np.nanmin(self._data['rvec'])
-            rmax = np.nanmax(self._data['rvec'])
-            zmin = np.nanmin(self._data['zvec'])
-            zmax = np.nanmax(self._data['zvec'])
-            for level, contour in self._fs.items():
-                ax.plot(contour['r'], contour['z'], c='b', label=f'{level:.3f}', alpha=0.4)
-            if 'rbdry' in self._data and 'zbdry' in self._data:
-                ax.plot(self._data['rbdry'], self._data['zbdry'], c='r', label='Boundary')
-            if 'rlim' in self._data and 'zlim' in self._data:
-                ax.plot(self._data['rlim'], self._data['zlim'], c='k', label='Limiter')
-            ax.set_xlim(rmin, rmax)
-            ax.set_ylim(zmin, zmax)
-            ax.set_xlabel('R [m]')
-            ax.set_ylabel('Z [m]')
-            fig.tight_layout()
-            if isinstance(save, (str, Path)):
-                fig.savefig(save, dpi=100)
-            plt.show()
-            plt.close(fig)
+    def plot_flux_surfaces(self, save=None, show=True):
+        plot_equilibrium_flux_surfaces(self, save=save, show=show)
 
 
-    def plot_profiles(self, save=None):
-        if 'fpol' in self._data and 'pres' in self._data:
-            import matplotlib.pyplot as plt
-            fig = plt.figure(figsize=(12, 6))
-            ax1 = fig.add_subplot(121)
-            ax2 = fig.add_subplot(122)
-            psinorm = np.linspace(0.0, 1.0, self._data['nr'])
-            dpsinorm_dpsi = 1.0 / (self._data['sibdry'] - self._data['simagx'])
-            f_factor = 1.0e-1 * np.sign(self._data['bcentr'])
-            p_factor = 1.0e-5
-            q_factor = np.sign(self._data['bcentr'] * self._data['cpasma'])
-            phi_factor = np.sign(self._data['bcentr'])
-            j_factor = 1.0e-6 * np.sign(self._data['cpasma'])
-            d_factor = np.sign(self._data['cpasma'])
-            ax1.plot(psinorm, f_factor * self._data['fpol'], c='b', label='F [10**-1 Tm]')
-            if 'ffprime' in self._data:
-                ax2.plot(psinorm, f_factor * d_factor * self._data['ffprime'] * dpsinorm_dpsi / self._data['fpol'], c='b', label='Fp')
-            if 'fpol_fs' in self._fit:
-                ax1.plot(psinorm, f_factor * splev(psinorm, self._fit['fpol_fs']['tck']), c='b', ls='--', label='F Fit [10**-1 Tm]')
-                ax2.plot(psinorm, f_factor * d_factor * splev(psinorm, self._fit['fpol_fs']['tck'], der=1) * dpsinorm_dpsi, c='b', ls='--', label='Fp Fit')
-            ax1.plot(psinorm, p_factor * self._data['pres'], c='r', label='p [10**-5 Pa]')
-            if 'pprime' in self._data:
-                ax2.plot(psinorm, p_factor * d_factor * self._data['pprime'] * dpsinorm_dpsi, c='r', label='pp')
-            if 'pres_fs' in self._fit:
-                ax1.plot(psinorm, p_factor * splev(psinorm, self._fit['pres_fs']['tck']), c='r', ls='--', label='p Fit [10**-5 Pa]')
-                ax2.plot(psinorm, p_factor * d_factor * splev(psinorm, self._fit['pres_fs']['tck'], der=1) * dpsinorm_dpsi, c='r', ls='--', label='pp Fit')
-            if 'qpsi' in self._data:
-                ax1.plot(psinorm, q_factor * self._data['qpsi'], c='g', label='q [-]')
-                if 'qpsi_fs' in self._fit:
-                    ax1.plot(psinorm, q_factor * splev(psinorm, self._fit['qpsi_fs']['tck']), c='g', ls='--', label='q Fit [-]')
-                    ax2.plot(psinorm, q_factor * d_factor * splev(psinorm, self._fit['qpsi_fs']['tck'], der=1) * dpsinorm_dpsi, c='g', ls='--', label='qp Fit')
-            if 'phi' in self._data:
-                ax1.plot(psinorm, phi_factor * self._data['phi'], c='m', label='phi [Wb/rad]')
-            if 'jpsi' in self._data:
-                ax1.plot(psinorm, j_factor * self._data['jpsi'], c='#800080', label='jtor [MA m**-2]')
-            ax1.set_xlim(0.0, 1.0)
-            ax1.set_xlabel('psi_norm [-]')
-            ax1.set_ylabel('Profiles')
-            ax1.legend(loc='best')
-            ax2.set_xlim(0.0, 1.0)
-            ax2.set_xlabel('psi_norm [-]')
-            ax2.set_ylabel('Gradients')
-            ax2.legend(loc='best')
-            fig.tight_layout()
-            if isinstance(save, (str, Path)):
-                fig.savefig(save, dpi=100)
-            plt.show()
-            plt.close(fig)
+    def plot_profiles(self, save=None, show=True):
+        plot_equilibrium_profiles(self, save=save, show=show)
 
 
-    def plot_shaping_parameters(self, save=None):
-        if self._fs is not None:
-            import matplotlib.pyplot as plt
-            fig = plt.figure(figsize=(18, 6))
-            ax1 = fig.add_subplot(131)
-            ax2 = fig.add_subplot(132)
-            ax3 = fig.add_subplot(133)
-            psinorm = np.linspace(0.0, 1.0, self._data['nr'])
-            if 'mxh_r0' in self._data:
-                ax1.plot(psinorm, self._data['mxh_r0'], label='R0')
-            if 'mxh_z0' in self._data:
-                ax1.plot(psinorm, self._data['mxh_z0'], label='Z0')
-            if 'mxh_r' in self._data:
-                ax1.plot(psinorm, self._data['mxh_r'], label='r')
-            if 'mxh_kappa' in self._data:
-                ax1.plot(psinorm, self._data['mxh_kappa'], label='kappa')
-            if 'mxh_cos' in self._data:
-                for i in range(self._data['mxh_cos'].shape[1]):
-                    if i > 0:
-                        ax2.plot(psinorm, self._data['mxh_cos'][:, i], label=f'c{i:d}')
-                    else:
-                        ax1.plot(psinorm, self._data['mxh_cos'][:, i], label='c0')
-            if 'mxh_sin' in self._data:
-                for i in range(self._data['mxh_sin'].shape[1]):
-                    if i > 0:
-                        ax3.plot(psinorm, self._data['mxh_sin'][:, i], label=f's{i:d}')
-            ax1.set_xlim(0.0, 1.0)
-            ax1.set_xlabel('psi_norm [-]')
-            ax1.set_ylabel('Coefficients')
-            ax1.legend(loc='best')
-            ax2.set_xlim(0.0, 1.0)
-            ax2.set_xlabel('psi_norm [-]')
-            ax2.set_ylabel('Coefficients')
-            ax2.legend(loc='best')
-            ax3.set_xlim(0.0, 1.0)
-            ax3.set_xlabel('psi_norm [-]')
-            ax3.set_ylabel('Coefficients')
-            ax3.legend(loc='best')
-            fig.tight_layout()
-            if isinstance(save, (str, Path)):
-                fig.savefig(save, dpi=100)
-            plt.show()
-            plt.close(fig)
+    def plot_shaping_parameters(self, save=None, show=True):
+        plot_equilibrium_shaping_coefficients(self, save=save, show=show)
 
 
-    def plot_boundary_gradients(self, save=None):
-        if 'gradr_bdry' in self._fit and 'gradz_bdry' in self._fit:
-            import matplotlib.pyplot as plt
-            fig = plt.figure(figsize=(8, 6))
-            ax = fig.add_subplot(111)
-            abdry = np.angle(self._data['rbdry'] + 1.0j * self._data['zbdry'] - self._data['rmagx'] - 1.0j * self._data['zmagx'])
-            gradr_fit = splev(abdry, self._fit['gradr_bdry']['tck'])
-            gradz_fit = splev(abdry, self._fit['gradz_bdry']['tck'])
-            ax.scatter(self._data['agradr'], self._data['gradr'], label='dpsi/dr')
-            ax.scatter(self._data['agradz'], self._data['gradz'], label='dpsi/dz')
-            ax.plot(abdry, gradr_fit, label='dpsi/dr_fit')
-            ax.plot(abdry, gradz_fit, label='dpsi/dz_fit')
-            #mag_grad_psi = splev(abdry, self._fit['gradr_bdry']['tck']) ** 2 + splev(abdry, self._fit['gradz_bdry']['tck']) ** 2
-            #ax.plot(abdry, mag_grad_psi, label='|grad(psi)|^2')
-            ax.set_xlim(-np.pi, np.pi)
-            ax.set_xlabel('Boundary Angle [rad]')
-            #ax.set_ylabel('|grad(psi)|^2 [Wb^2/m^2]')
-            ax.set_ylabel('Gradient of Psi [Wb/m]')
-            ax.legend(loc='best')
-            fig.tight_layout()
-            if isinstance(save, (str, Path)):
-                fig.savefig(save, dpi=100)
-            plt.show()
-            plt.close(fig)
+    def plot_boundary_gradients(self, save=None, show=True):
+        plot_equilibrium_boundary_gradients(self, save=save, show=show)
