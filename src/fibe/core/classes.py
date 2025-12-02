@@ -309,7 +309,7 @@ class FixedBoundaryEquilibrium():
             self._data['qpsi'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['qpsi_fs']['tck'])
 
 
-    def define_current(self, cpasma, legacy_ip=False):
+    def define_plasma_current(self, cpasma, legacy_ip=False):
         if isinstance(cpasma, (float, int)):
             if 'inout' not in self._data:
                 self.create_finite_difference_grid()
@@ -350,7 +350,7 @@ class FixedBoundaryEquilibrium():
     def define_pressure_and_q_profiles(self, pressure, q, ip, bt, psinorm=None, smooth=True):
         self.define_pressure_profile(pressure, psinorm=psinorm, smooth=smooth)
         self.define_q_profile(q, psinorm=psinorm, smooth=smooth)
-        self.define_current(ip)
+        self.define_plasma_current(ip)
         self.define_toroidal_field(bt)
 
 
@@ -364,6 +364,18 @@ class FixedBoundaryEquilibrium():
         self.save_original_fit(['psi_rz'])
         self.create_grid_basis_vectors()
         self._fit['psi_rz'] = generate_2d_spline(self._data['rvec'], self._data['zvec'], self._data['psi'].T, s=0)
+
+
+    def reset_plasma_current_sign(self, negative=False):
+        if 'cpasma' in self._data:
+            ip_sign = 1.0 if not negative else -1.0
+            self._data['cpasma'] *= float(np.sign(self._data['cpasma']) * ip_sign)
+
+
+    def reset_toroidal_field_sign(self, negative=False):
+        if 'bcentr' in self._data:
+            bt_sign = 1.0 if not negative else -1.0
+            self._data['bcentr'] *= float(np.sign(self._data['bcentr']) * bt_sign)
 
 
     def old_find_magnetic_axis(self):
@@ -986,7 +998,7 @@ class FixedBoundaryEquilibrium():
         self.compute_normalized_psi_map()
         self.zero_psi_outside_boundary()
         if 'cur' not in self._data:
-            self.define_current(self._data['cpasma'])
+            self.define_plasma_current(self._data['cpasma'])
         # Loop to solve psi using Picard iteration
         self._data['psi_error'] = np.inf
         for n in range(self._options['nxiter']):
@@ -1047,7 +1059,7 @@ class FixedBoundaryEquilibrium():
             self._options['relaxq'] = relaxq
 
         if 'cur' not in self._data:
-            self.define_current(self._data['cpasma'])
+            self.define_plasma_current(self._data['cpasma'])
         if 'qpsi' not in self._data:
             self.recompute_q_profile_from_scratch()
         for n in range(self._options['nxqiter']):
@@ -1167,9 +1179,9 @@ class FixedBoundaryEquilibrium():
             if 'cpasma' in self._data and legacy_ip:
                 self._data['cpasma'] *= -1.0
             if 'cpasma' in self._data and isinstance(ip_sign, (int, float)):
-                self._data['cpasma'] *= float(np.sign(self._data['cpasma']) * np.sign(ip_sign))
+                self.reset_plasma_current_sign(True if ip_sign < 0.0 else False)
             if 'bcentr' in self._data and isinstance(bt_sign, (int, float)):
-                self._data['bcentr'] *= float(np.sign(self._data['bcentr']) * np.sign(bt_sign))
+                self.reset_toroidal_field_sign(True if bt_sign < 0.0 else False)
             if 'simagx' in self._data and 'sibdry' in self._data and 'psi' in self._data:
                 if self._data['simagx'] > self._data['sibdry']:
                     self._data['psi'] *= -1.0
