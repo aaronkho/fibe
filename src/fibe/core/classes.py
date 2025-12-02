@@ -101,6 +101,8 @@ class FixedBoundaryEquilibrium():
         self,
         geqdsk=None,
         legacy_ip=False,
+        bt_sign=None,
+        ip_sign=None,
     ):
         self.scratch = True
         self._data = {}
@@ -117,7 +119,7 @@ class FixedBoundaryEquilibrium():
         }
         self._fs = None
         if isinstance(geqdsk, (str, Path)):
-            self.load_geqdsk(geqdsk, legacy_ip=legacy_ip)
+            self.load_geqdsk(geqdsk, legacy_ip=legacy_ip, bt_sign=bt_sign, ip_sign=ip_sign)
 
 
     def save_original_data(self, fields, overwrite=False):
@@ -307,7 +309,7 @@ class FixedBoundaryEquilibrium():
             self._data['qpsi'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['qpsi_fs']['tck'])
 
 
-    def define_current(self, cpasma, legacy_ip=False):
+    def define_plasma_current(self, cpasma, legacy_ip=False):
         if isinstance(cpasma, (float, int)):
             if 'inout' not in self._data:
                 self.create_finite_difference_grid()
@@ -348,7 +350,7 @@ class FixedBoundaryEquilibrium():
     def define_pressure_and_q_profiles(self, pressure, q, ip, bt, psinorm=None, smooth=True):
         self.define_pressure_profile(pressure, psinorm=psinorm, smooth=smooth)
         self.define_q_profile(q, psinorm=psinorm, smooth=smooth)
-        self.define_current(ip)
+        self.define_plasma_current(ip)
         self.define_toroidal_field(bt)
 
 
@@ -362,6 +364,18 @@ class FixedBoundaryEquilibrium():
         self.save_original_fit(['psi_rz'])
         self.create_grid_basis_vectors()
         self._fit['psi_rz'] = generate_2d_spline(self._data['rvec'], self._data['zvec'], self._data['psi'].T, s=0)
+
+
+    def reset_plasma_current_sign(self, negative=False):
+        if 'cpasma' in self._data:
+            ip_sign = 1.0 if not negative else -1.0
+            self._data['cpasma'] *= float(np.sign(self._data['cpasma']) * ip_sign)
+
+
+    def reset_toroidal_field_sign(self, negative=False):
+        if 'bcentr' in self._data:
+            bt_sign = 1.0 if not negative else -1.0
+            self._data['bcentr'] *= float(np.sign(self._data['bcentr']) * bt_sign)
 
 
     def old_find_magnetic_axis(self):
@@ -984,7 +998,7 @@ class FixedBoundaryEquilibrium():
         self.compute_normalized_psi_map()
         self.zero_psi_outside_boundary()
         if 'cur' not in self._data:
-            self.define_current(self._data['cpasma'])
+            self.define_plasma_current(self._data['cpasma'])
         # Loop to solve psi using Picard iteration
         self._data['psi_error'] = np.inf
         for n in range(self._options['nxiter']):
@@ -1045,7 +1059,7 @@ class FixedBoundaryEquilibrium():
             self._options['relaxq'] = relaxq
 
         if 'cur' not in self._data:
-            self.define_current(self._data['cpasma'])
+            self.define_plasma_current(self._data['cpasma'])
         if 'qpsi' not in self._data:
             self.recompute_q_profile_from_scratch()
         for n in range(self._options['nxqiter']):
@@ -1146,13 +1160,13 @@ class FixedBoundaryEquilibrium():
         self._data['zlim'] = np.array([zmin, zmin, zmax, zmax, zmin])
 
 
-    def load_geqdsk(self, path, clean=True, legacy_ip=False):
+    def load_geqdsk(self, path, clean=True, legacy_ip=False, bt_sign=None, ip_sign=None):
         if isinstance(path, (str, Path)):
             geqdsk_dict = read_geqdsk_file(path)
-            self.insert_geqdsk_dict(geqdsk_dict, clean=clean, legacy_ip=legacy_ip)
+            self.insert_geqdsk_dict(geqdsk_dict, clean=clean, legacy_ip=legacy_ip, bt_sign=bt_sign, ip_sign=ip_sign)
 
 
-    def insert_geqdsk_dict(self, geqdsk_dict, clean=True, legacy_ip=False):
+    def insert_geqdsk_dict(self, geqdsk_dict, clean=True, legacy_ip=False, bt_sign=None, ip_sign=None):
         if isinstance(geqdsk_dict, dict) and 'nr' in geqdsk_dict and 'nz' in geqdsk_dict and 'rbdry' in geqdsk_dict and 'zbdry' in geqdsk_dict:
             if clean:
                 self._data = {}
@@ -1164,6 +1178,10 @@ class FixedBoundaryEquilibrium():
             self._data.update(geqdsk_dict)
             if 'cpasma' in self._data and legacy_ip:
                 self._data['cpasma'] *= -1.0
+            if 'cpasma' in self._data and isinstance(ip_sign, (int, float)):
+                self.reset_plasma_current_sign(True if ip_sign < 0.0 else False)
+            if 'bcentr' in self._data and isinstance(bt_sign, (int, float)):
+                self.reset_toroidal_field_sign(True if bt_sign < 0.0 else False)
             if 'simagx' in self._data and 'sibdry' in self._data and 'psi' in self._data:
                 if self._data['simagx'] > self._data['sibdry']:
                     self._data['psi'] *= -1.0
@@ -1199,6 +1217,7 @@ class FixedBoundaryEquilibrium():
         if isinstance(cocos, int):
             # FiBE should internally always be in COCOS=2
             current_cocos = detect_cocos(geqdsk_dict)
+            logger.info(f'Converting GEQDSK from COCOS={current_cocos} to COCOS={cocos}')
             geqdsk_dict = convert_cocos(geqdsk_dict, current_cocos, cocos)
         if legacy_ip:
             geqdsk_dict['cpasma'] *= -1.0
@@ -1206,8 +1225,8 @@ class FixedBoundaryEquilibrium():
 
 
     @classmethod
-    def from_geqdsk(cls, path, legacy_ip=False):
-        return cls(geqdsk=path, legacy_ip=legacy_ip)
+    def from_geqdsk(cls, path, legacy_ip=False, bt_sign=None, ip_sign=None):
+        return cls(geqdsk=path, legacy_ip=legacy_ip, bt_sign=bt_sign, ip_sign=ip_sign)
 
 
     def to_geqdsk(self, path, cocos=None, legacy_ip=False):
