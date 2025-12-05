@@ -14,10 +14,10 @@ class TestCreation():
     def test_creation_with_geqdsk(self, geqdsk_file_path):
         eq = FixedBoundaryEquilibrium.from_geqdsk(geqdsk_file_path)
         assert isinstance(eq, FixedBoundaryEquilibrium)
-        assert eq._data.get('nr', None) == 61
-        assert eq._data.get('nz', None) == 129
-        assert eq._data.get('nbdry', None) == 32 + 1  # Add 1 due to enforcing closed boundary vector
-        assert eq._data.get('nlim', None) == 0
+        assert eq._data.get('nr', None) == 109
+        assert eq._data.get('nz', None) == 109
+        assert eq._data.get('nbdry', None) == 201
+        assert eq._data.get('nlim', None) == 201 + 1  # Enforced closing
 
 
 @pytest.mark.usefixtures('scratch_grid', 'scratch_mxh_boundary', 'scratch_fp_profiles')
@@ -74,10 +74,10 @@ class TestInitializationWithGEQDSK():
 
     def test_geqdsk_load(self, geqdsk_file_path):
         self.eq.load_geqdsk(geqdsk_file_path)
-        assert self.eq._data.get('nr', None) == 61
-        assert self.eq._data.get('nz', None) == 129
-        assert self.eq._data.get('nbdry', None) == 32 + 1  # Add 1 due to enforcing closed boundary vector
-        assert self.eq._data.get('nlim', None) == 0
+        assert self.eq._data.get('nr', None) == 109
+        assert self.eq._data.get('nz', None) == 109
+        assert self.eq._data.get('nbdry', None) == 201
+        assert self.eq._data.get('nlim', None) == 201 + 1  # Enforced closing
 
     def test_psi_regrid(self, regrid_specs):
         self.eq.regrid(**regrid_specs)
