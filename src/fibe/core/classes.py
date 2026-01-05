@@ -6,7 +6,7 @@ from collections.abc import MutableMapping, Mapping, MutableSequence, Sequence, 
 import numpy as np
 import pandas as pd
 from scipy.interpolate import splev, bisplev
-from scipy.integrate import cumulative_simpson
+from scipy.integrate import cumulative_simpson, trapezoid
 from scipy.sparse.linalg import factorized
 from scipy.optimize import root
 from shapely import Point, Polygon
@@ -199,7 +199,7 @@ class FixedBoundaryEquilibrium():
             self._data['zbdry'] = copy.deepcopy(zbdry)
             self._data['nbdry'] = len(self._data['rbdry'])
             self.enforce_boundary_duplicate_at_end()
-            self._data['mxh_a'] = np.pi * np.power(mxh['r'], 2.0) / np.trapezoid(self._data['rbdry'], self._data['zbdry'])
+            self._data['mxh_a'] = np.pi * np.power(mxh['r'], 2.0) / trapezoid(self._data['rbdry'], self._data['zbdry'])
 
 
     def define_wall(self, rwall, zwall):
