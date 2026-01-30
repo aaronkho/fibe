@@ -248,46 +248,58 @@ def plot_equilibrium_flux_surfaces(eq_obj, save=None, show=True):
 def plot_equilibrium_profiles(eq_obj, save=None, show=True):
     if 'fpol' in eq_obj._data and 'pres' in eq_obj._data:
         import matplotlib.pyplot as plt
-        fig = plt.figure(figsize=(12, 6))
-        ax1 = fig.add_subplot(121)
-        ax2 = fig.add_subplot(122)
+        fig = plt.figure(figsize=(18, 6))
+        ax1 = fig.add_subplot(131)
+        ax2 = fig.add_subplot(132)
+        ax3 = fig.add_subplot(133)
         psinorm = np.linspace(0.0, 1.0, eq_obj._data['nr'])
         dpsinorm_dpsi = 1.0 / (eq_obj._data['sibdry'] - eq_obj._data['simagx'])
-        f_factor = 1.0e-1 * np.sign(eq_obj._data['bcentr'])
+        f_factor = np.sign(eq_obj._data['bcentr'])
+        # f_offset = eq_obj._data['fpol'][-1]
         p_factor = 1.0e-5
         q_factor = np.sign(eq_obj._data['bcentr'] * eq_obj._data['cpasma'])
         phi_factor = np.sign(eq_obj._data['bcentr'])
-        j_factor = 1.0e-6 * np.sign(eq_obj._data['cpasma'])
+        j_factor = 1.0e-5 * np.sign(eq_obj._data['cpasma'])
         d_factor = np.sign(eq_obj._data['cpasma'])
-        ax1.plot(psinorm, f_factor * eq_obj._data['fpol'], c='b', label='F [10**-1 Tm]')
+        ax1.plot(psinorm, f_factor * eq_obj._data['fpol'], c='b', label='F [Tm]')
         if 'ffprime' in eq_obj._data:
-            ax2.plot(psinorm, f_factor * d_factor * eq_obj._data['ffprime'] * dpsinorm_dpsi / eq_obj._data['fpol'], c='b', label='Fp')
+            ax3.plot(psinorm, f_factor * d_factor * eq_obj._data['ffprime'] * dpsinorm_dpsi / eq_obj._data['fpol'], c='b', label='Fp')
         if 'fpol_fs' in eq_obj._fit:
-            ax1.plot(psinorm, f_factor * splev(psinorm, eq_obj._fit['fpol_fs']['tck']), c='b', ls='--', label='F Fit [10**-1 Tm]')
-            ax2.plot(psinorm, f_factor * d_factor * splev(psinorm, eq_obj._fit['fpol_fs']['tck'], der=1) * dpsinorm_dpsi, c='b', ls='--', label='Fp Fit')
-        ax1.plot(psinorm, p_factor * eq_obj._data['pres'], c='r', label='p [10**-5 Pa]')
+            ax1.plot(psinorm, f_factor * splev(psinorm, eq_obj._fit['fpol_fs']['tck']), c='b', ls='--', label='F Fit [Tm]')
+            ax3.plot(psinorm, f_factor * d_factor * splev(psinorm, eq_obj._fit['fpol_fs']['tck'], der=1) * dpsinorm_dpsi, c='b', ls='--', label='Fp Fit')
+        ax2.plot(psinorm, p_factor * eq_obj._data['pres'], c='r', label='p [10**-5 Pa]')
         if 'pprime' in eq_obj._data:
-            ax2.plot(psinorm, p_factor * d_factor * eq_obj._data['pprime'] * dpsinorm_dpsi, c='r', label='pp')
+            ax3.plot(psinorm, p_factor * d_factor * eq_obj._data['pprime'] * dpsinorm_dpsi, c='r', label='pp')
         if 'pres_fs' in eq_obj._fit:
-            ax1.plot(psinorm, p_factor * splev(psinorm, eq_obj._fit['pres_fs']['tck']), c='r', ls='--', label='p Fit [10**-5 Pa]')
-            ax2.plot(psinorm, p_factor * d_factor * splev(psinorm, eq_obj._fit['pres_fs']['tck'], der=1) * dpsinorm_dpsi, c='r', ls='--', label='pp Fit')
+            ax2.plot(psinorm, p_factor * splev(psinorm, eq_obj._fit['pres_fs']['tck']), c='r', ls='--', label='p Fit [10**-5 Pa]')
+            ax3.plot(psinorm, p_factor * d_factor * splev(psinorm, eq_obj._fit['pres_fs']['tck'], der=1) * dpsinorm_dpsi, c='r', ls='--', label='pp Fit')
         if 'qpsi' in eq_obj._data:
-            ax1.plot(psinorm, q_factor * eq_obj._data['qpsi'], c='g', label='q [-]')
+            ax2.plot(psinorm, q_factor * eq_obj._data['qpsi'], c='g', label='q [-]')
             if 'qpsi_fs' in eq_obj._fit:
-                ax1.plot(psinorm, q_factor * splev(psinorm, eq_obj._fit['qpsi_fs']['tck']), c='g', ls='--', label='q Fit [-]')
-                ax2.plot(psinorm, q_factor * d_factor * splev(psinorm, eq_obj._fit['qpsi_fs']['tck'], der=1) * dpsinorm_dpsi, c='g', ls='--', label='qp Fit')
+                ax2.plot(psinorm, q_factor * splev(psinorm, eq_obj._fit['qpsi_fs']['tck']), c='g', ls='--', label='q Fit [-]')
+                ax3.plot(psinorm, q_factor * d_factor * splev(psinorm, eq_obj._fit['qpsi_fs']['tck'], der=1) * dpsinorm_dpsi, c='g', ls='--', label='qp Fit')
+            if 'qpsi_target' in eq_obj._data:
+                ax2.plot(psinorm, q_factor * eq_obj._data['qpsi_target'], c='k', ls=':', label='q Target [-]')
         if 'phi' in eq_obj._data:
-            ax1.plot(psinorm, phi_factor * eq_obj._data['phi'], c='m', label='phi [Wb/rad]')
-        if 'jpsi' in eq_obj._data:
-            ax1.plot(psinorm, j_factor * eq_obj._data['jpsi'], c='#800080', label='jtor [MA m**-2]')
+            ax2.plot(psinorm, phi_factor * eq_obj._data['phi'], c='m', label='phi [Wb/rad]')
+        # if 'jpsi' in eq_obj._data:
+        #     ax2.plot(psinorm, j_factor * eq_obj._data['jpsi'], c='#800080', label='jtor [10**-1MA m**-2]')
+        if 'jstar' in eq_obj._data:
+            ax2.plot(psinorm, j_factor * eq_obj._data['jstar'], c='orange', label='j* [10**-1 MA m**-2]')
+        if 'jstar_target' in eq_obj._data:
+            ax2.plot(psinorm, j_factor * eq_obj._data['jstar_target'], c='#800080', ls='--', label='j* Target [10**-1 MA m**-2]')
         ax1.set_xlim(0.0, 1.0)
         ax1.set_xlabel('psi_norm [-]')
-        ax1.set_ylabel('Profiles')
+        ax1.set_ylabel('F')
         ax1.legend(loc='best')
         ax2.set_xlim(0.0, 1.0)
         ax2.set_xlabel('psi_norm [-]')
-        ax2.set_ylabel('Gradients')
+        ax2.set_ylabel('Profiles')
         ax2.legend(loc='best')
+        ax3.set_xlim(0.0, 1.0)
+        ax3.set_xlabel('psi_norm [-]')
+        ax3.set_ylabel('Gradients')
+        ax3.legend(loc='best')
         fig.tight_layout()
         if isinstance(save, (str, Path)):
             fig.savefig(save, dpi=100)
