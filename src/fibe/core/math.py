@@ -1074,6 +1074,14 @@ def compute_flux_surface_average_factors(contour):
     return dl_over_bp, vprime, r2, ir, ir2, bp2, bt2
 
 
+def compute_volume_derivative_contour_integral(contour):
+    val = 0.0
+    if contour.get('r', np.array([])).size > 1:
+        dl_over_bp, vprime, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
+        val = vprime
+    return val
+
+
 def compute_safety_factor_contour_integral(contour, current_inside=None):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
