@@ -288,6 +288,7 @@ class FixedBoundaryEquilibrium():
         if 'inout' not in self._data:
             self.create_finite_difference_grid()
         self._data['curscale'] = 1.0
+        self._data['curscalef'] = 1.0
         if 'jstar' in self._data:
             if self._fs is None:
                 self._fs = self.trace_flux_surfaces()
@@ -344,6 +345,7 @@ class FixedBoundaryEquilibrium():
                 self.create_finite_difference_grid()
             self._data['cpasma'] = float(cpasma)
             self._data['curscale'] = 1.0
+            self._data['curscalef'] = 1.0
             self._data['cur'] = np.where(self._data['inout'] == 0, 0.0, self._data['cpasma'] / (self._data['hrz'] * float(len(self._data['ijin']))))
             if legacy_ip:
                 self._data['cpasma'] *= -1.0
@@ -694,21 +696,47 @@ class FixedBoundaryEquilibrium():
             pp = np.interp(psinorm, np.linspace(0.0, 1.0, self._data['pprime'].size), self._data['pprime']) * dpsinorm_dpsi
             pp = np.where(psinorm < internal_cutoff, float(pp_internal), pp)
         return ffp, pp
-
-
-    def rescale_kinetic_profiles(self):
-        if 'curscale' in self._data:
+    
+    def rescale_fpol_profile(self):
+        '''
+        The purpose of this function will be to rescale fpol without changing the pressure profile 
+        
+        curscalef: scaling factor for fpol to match total plasma current I_p
+        pres: pressure profile
+        pprime:  dPres/dphi 
+        fpol: Poloidal Current function
+        ffprime: dfpol/dphi
+        '''
+        if 'curscalef' in self._data:
             self.save_original_data(['ffprime', 'pprime', 'fpol', 'pres'])
-            # if 'ffprime' in self._data:
-            #     self._data['ffprime'] *= self._data['curscale']
-            # if 'pprime' in self._data:
-            #     self._data['pprime'] *= self._data['curscale']
             if 'fpol' in self._data:
-                fpol = self._data['fpol'] * np.sign(self._data['curscale']) * np.sqrt(np.abs(self._data['curscale']))
-                self.define_f_profile(fpol, smooth=False, symmetrical=False)  # Should also handle ffprime
-            if 'pres' in self._data:
-                pres = self._data['pres'] * self._data['curscale']
-                self.define_pressure_profile(pres, smooth=False, symmetrical=True)  # Should also handle pprime
+                gamma = self._data['curscalef'] # This is the Current scaling factor
+                f_scale_factor = np.sign(gamma) * np.sqrt(np.abs(gamma))
+                fpol_new = self._data['fpol'] * f_scale_factor
+                self.define_f_profile(fpol_new, smooth=False, symmetrical=False)
+
+    # def rescale_kinetic_profiles(self):
+    #     '''
+    #     This function is meant to rescale the pressure and polidal current based on a scaling factor, curscale 
+
+    #     curscale: scaling factor for the total plasma current I_p
+    #     pres: pressure profile
+    #     pprime : dPres/dphi 
+    #     fpol: Poloidal Current function
+    #     ffprime: dfpol/dphi
+    #     ''' 
+    #     if 'curscale' in self._data: # if the scaling factor is defined 
+    #         self.save_original_data(['ffprime', 'pprime', 'fpol', 'pres']) #save original profiles                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+    #         # if 'ffprime' in self._data:
+    #         #     self._data['ffprime'] *= self._data['curscale']
+    #         # if 'pprime' in self._data:
+    #         #     self._data['pprime'] *= self._data['curscale']
+    #         if 'fpol' in self._data:
+    #             fpol = self._data['fpol'] * np.sign(self._data['curscale']) * np.sqrt(np.abs(self._data['curscale']))
+    #             self.define_f_profile(fpol, smooth=False, symmetrical=False)  # Should also handle ffprime
+    #         # if 'pres' in self._data: # this should be gone because the pressure scale should not be able to be changed 
+    #         #     pres = self._data['pres'] * self._data['curscale']
+    #         #     self.define_pressure_profile(pres, smooth=False, symmetrical=True)  # Should also handle pprime
 
 
     def create_boundary_gradient_splines(self, tol=1.0e-6, smooth=False, initialization=False):
@@ -1013,11 +1041,33 @@ class FixedBoundaryEquilibrium():
             self.scratch = False
 
 
-    def _update_current(self, current_new, relax=1.0):
-        if relax > 0.0 and relax < 1.0:
-            current_new = self._data['cur'] + relax * (current_new - self._data['cur'])
-        self._data['curscale'] = float(self._data['cpasma'] / (np.sum(current_new) * self._data['hrz']))
-        self._data['cur'] = self._data['curscale'] * current_new
+    # def _update_current(self, current_new, relax=1.0):
+    #     if relax > 0.0 and relax < 1.0:
+    #         current_new = self._data['cur'] + relax * (current_new - self._data['cur'])
+    #     self._data['curscale'] = float(self._data['cpasma'] / (np.sum(current_new) * self._data['hrz']))
+    #     self._data['cur'] = self._data['curscale'] * current_new
+
+    def _compute_curscalef(self, current_new, relax=1.0):
+        current_new = current_new.ravel()
+        if relax > 0.0 and relax < 1.0: 
+            cur_old = self._data['cur'].ravel()
+            current_new = cur_old + relax * (current_new - cur_old)
+        # J_Total = J_Pressure + J_fpol
+        j_pressure = -1.0 * (self._data['rpsi'].ravel() * self._data['pprime'].ravel()) 
+        # f driven current must be everything else
+        j_f = current_new - j_pressure 
+        # integrate to find total
+        i_target = self._data['cplasma'] # truth value
+        i_pressure = np.sum(j_pressure) * self._data['hrz'] # density * area 
+        i_f = np.sum(j_f) * self._data['hrz']
+        # compute scaling factor
+        if abs(i_f) < 1e-12: i_f = 1.0 # Safety to prevent divide-by-zero
+        curscalef = (i_target - i_pressure) / i_f
+        self._data['curscalef'] = float(curscalef)
+
+        # for next psi solve 
+        self._data['cur'] = j_pressure + (curscalef * j_f)
+
 
 
     def _update_psi(self, psi_new, relax=1.0):
@@ -1143,13 +1193,14 @@ class FixedBoundaryEquilibrium():
         for n in range(self._options['nxiter']):
             ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
             cur_new = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp.ravel(), pp.ravel()))
-            self._update_current(cur_new, relax=self._options['relaxj'] if n > 0 else 1.0)
+            self._compute_curscalef(cur_new, relax=self._options['relaxj'] if n > 0 else 1.0)
+            #self._update_current(cur_new, relax=self._options['relaxj'] if n > 0 else 1.0)
             psi_new = compute_psi(self.solver, self._data['s5'], self._data['cur'])
             self._update_psi(psi_new, relax=self._options['relax'])
             self.find_magnetic_axis_from_grid()
             self.zero_magnetic_boundary()
             self.compute_normalized_psi_map()
-            self.rescale_kinetic_profiles()
+            #self.rescale_kinetic_profiles()
             if self._data['psi_error'] <= self._options['erreq']: break
         self.create_boundary_gradient_splines(smooth=True)
         self.extend_psi_beyond_boundary()
