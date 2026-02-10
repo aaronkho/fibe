@@ -1047,26 +1047,19 @@ class FixedBoundaryEquilibrium():
     #     self._data['curscale'] = float(self._data['cpasma'] / (np.sum(current_new) * self._data['hrz']))
     #     self._data['cur'] = self._data['curscale'] * current_new
 
-    def _compute_curscalef(self, current_new, relax=1.0):
-        current_new = current_new.ravel()
-        if relax > 0.0 and relax < 1.0: 
-            cur_old = self._data['cur'].ravel()
-            current_new = cur_old + relax * (current_new - cur_old)
-        # J_Total = J_Pressure + J_fpol
-        j_pressure = -1.0 * (self._data['rpsi'].ravel() * self._data['pprime'].ravel()) 
-        # f driven current must be everything else
-        j_f = current_new - j_pressure 
-        # integrate to find total
-        i_target = self._data['cplasma'] # truth value
-        i_pressure = np.sum(j_pressure) * self._data['hrz'] # density * area 
-        i_f = np.sum(j_f) * self._data['hrz']
-        # compute scaling factor
-        if abs(i_f) < 1e-12: i_f = 1.0 # Safety to prevent divide-by-zero
-        curscalef = (i_target - i_pressure) / i_f
-        self._data['curscalef'] = float(curscalef)
-
-        # for next psi solve 
-        self._data['cur'] = j_pressure + (curscalef * j_f)
+    def _compute_curscalef(self, current_new, relax = 1.0):
+        if relax > 0.0 and relax < 1.0: # not sure what this means but i'll keep for consistency
+            current_new = self._data['cur'] + relax * (current_new - self._data['cur'])
+            # J_Total = J_Pressure + J_fpol
+            j_pressure = -1.0 * (self._data['rpsi'] * self._data['pprime']) # calculate pressure contribution
+            # f driven current must be everything else
+            j_f = current_new - j_pressure
+            # integrate to find total
+            i_target = self._data['cplasma'] # truth value
+            i_pressure = np.sum(j_pressure)*self._data['hrz'] #density * area
+            i_f = np.sum(j_f) * self._data['hrz']
+            #compute scaling factor
+            curscalef = (i_target - i_pressure) / i_f
 
 
 
@@ -1201,6 +1194,7 @@ class FixedBoundaryEquilibrium():
             self.zero_magnetic_boundary()
             self.compute_normalized_psi_map()
             #self.rescale_kinetic_profiles()
+            self.rescale_fpol_profile()
             if self._data['psi_error'] <= self._options['erreq']: break
         self.create_boundary_gradient_splines(smooth=True)
         self.extend_psi_beyond_boundary()
