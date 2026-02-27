@@ -711,10 +711,12 @@ class FixedBoundaryEquilibrium():
             self.save_original_data(['ffprime', 'pprime', 'fpol', 'pres'])
             if 'fpol' in self._data:
                 gamma = self._data['curscalef'] # This is the Current scaling factor
-                f_scale_factor = np.sign(gamma) * np.sqrt(np.abs(gamma))
-                fpol_new = self._data['fpol'] * f_scale_factor
+                fpol_old = self._data['fpol'].copy()
+                f2_old = fpol_old**2
+                f2_edge = f2_old[-1]
+                f2_new = gamma * f2_old + (1.0 - gamma) * f2_edge
+                fpol_new = np.sign(fpol_old) * np.sqrt(np.abs(f2_new))
                 self.define_f_profile(fpol_new, smooth=False, symmetrical=False)
-
     # def rescale_kinetic_profiles(self):
     #     '''
     #     This function is meant to rescale the pressure and polidal current based on a scaling factor, curscale 
@@ -1048,18 +1050,21 @@ class FixedBoundaryEquilibrium():
     #     self._data['cur'] = self._data['curscale'] * current_new
 
     def _compute_curscalef(self, current_new, relax = 1.0):
-        if relax > 0.0 and relax < 1.0: # not sure what this means but i'll keep for consistency
-            current_new = self._data['cur'] + relax * (current_new - self._data['cur'])
-            # J_Total = J_Pressure + J_fpol
-            j_pressure = -1.0 * (self._data['rpsi'] * self._data['pprime']) # calculate pressure contribution
-            # f driven current must be everything else
-            j_f = current_new - j_pressure
-            # integrate to find total
-            i_target = self._data['cplasma'] # truth value
-            i_pressure = np.sum(j_pressure)*self._data['hrz'] #density * area
-            i_f = np.sum(j_f) * self._data['hrz']
-            #compute scaling factor
-            curscalef = (i_target - i_pressure) / i_f
+        #if relax > 0.0 and relax < 1.0: # not sure what this means but i'll keep for consistency
+        current_new = self._data['cur'] + relax * (current_new - self._data['cur'])
+        # J_Total = J_Pressure + J_fpol
+        j_pressure = -1.0 * (self._data['rpsi'] * self._data['pprime']) # calculate pressure contribution
+        # f driven current must be everything else
+        j_pressure = j_pressure.ravel()
+        j_f = current_new - j_pressure
+        # integrate to find total
+        i_target = self._data['cpasma'] # truth value
+        i_pressure = np.sum(j_pressure)*self._data['hrz'] #density * area
+        i_f = np.sum(j_f) * self._data['hrz']
+        #compute scaling factor
+        #i_f * curscale + i_pressure = i_target 
+        curscalef = (i_target - i_pressure) / i_f
+        self._data['curscalef'] = curscalef
 
 
 
@@ -1186,6 +1191,7 @@ class FixedBoundaryEquilibrium():
         for n in range(self._options['nxiter']):
             ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
             cur_new = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp.ravel(), pp.ravel()))
+            #REPLACE UPDATE CURRENT WITH NEW FUNCTION THAT COMPUTES FOR F POL ONLY SCALING
             self._compute_curscalef(cur_new, relax=self._options['relaxj'] if n > 0 else 1.0)
             #self._update_current(cur_new, relax=self._options['relaxj'] if n > 0 else 1.0)
             psi_new = compute_psi(self.solver, self._data['s5'], self._data['cur'])
@@ -1194,6 +1200,7 @@ class FixedBoundaryEquilibrium():
             self.zero_magnetic_boundary()
             self.compute_normalized_psi_map()
             #self.rescale_kinetic_profiles()
+            #REPLACE RESCALE_KINETIC_PROFILES WITH THIS FUNCTION THAT JUST RESCALES FPOL
             self.rescale_fpol_profile()
             if self._data['psi_error'] <= self._options['erreq']: break
         self.create_boundary_gradient_splines(smooth=True)
