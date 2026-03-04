@@ -1226,8 +1226,12 @@ def trace_contour_with_megpy(rvec, zvec, psi, level, rcheck, zcheck, boundary=Fa
     )
     if len(loops['contours']) > 0:
         loop = np.array(loops['contours'][0]).T
-        contour_out['r'] = np.concatenate([loop[:, 0].flatten(), np.array([loop[0, 0]])])
-        contour_out['z'] = np.concatenate([loop[:, 1].flatten(), np.array([loop[0, 1]])])
+        contour_out['r'] = loop[:, 0].flatten()
+        contour_out['z'] = loop[:, 1].flatten()
+        if contour_out['r'][0] != contour_out['r'][-1]:
+            contour_out['r'] = np.concatenate([contour_out['r'], np.array([contour_out['r'][0]])])
+        if contour_out['z'][0] != contour_out['z'][-1]:
+            contour_out['z'] = np.concatenate([contour_out['z'], np.array([contour_out['z'][0]])])
     return contour_out
 
 
