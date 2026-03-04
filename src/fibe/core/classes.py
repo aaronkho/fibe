@@ -43,6 +43,7 @@ from .math import (
     compute_mxh_coefficients_from_contours,
     compute_contours_from_mxh_coefficients,
     check_fully_contained_contours,
+    compute_flux_surface_average_factors,
 )
 from ..utils.eqdsk import (
     read_geqdsk_file,
@@ -711,11 +712,8 @@ class FixedBoundaryEquilibrium():
             self.save_original_data(['ffprime', 'pprime', 'fpol', 'pres'])
             if 'fpol' in self._data:
                 gamma = self._data['curscalef'] # This is the Current scaling factor
-                fpol_old = self._data['fpol'].copy()
-                f2_old = fpol_old**2
-                f2_edge = f2_old[-1]
-                f2_new = gamma * f2_old + (1.0 - gamma) * f2_edge
-                fpol_new = np.sign(fpol_old) * np.sqrt(np.abs(f2_new))
+                f_scale_factor = np.sign(gamma) * np.sqrt(np.abs(gamma))
+                fpol_new = self._data['fpol'] * f_scale_factor
                 self.define_f_profile(fpol_new, smooth=False, symmetrical=False)
     # def rescale_kinetic_profiles(self):
     #     '''
@@ -1066,7 +1064,84 @@ class FixedBoundaryEquilibrium():
         curscalef = (i_target - i_pressure) / i_f
         self._data['curscalef'] = curscalef
 
+    def _compute_flux_surface_averaged_fpol(self, cur_new, relax = 1.0):
+        #og edge fpol
+        fpol_edge = self._data['fpol'][-1]
+        mu0 = 4 * np.pi * 1e-7
+        current_new = self._data['cur'] + relax * (cur_new - self._data['cur'])
 
+        length = len(self._fs) #amount of flux surfaces to be evaluted on 
+        ffprime_avg = np.zeros(length)
+        psi = np.zeros(length)
+
+        current_spline = generate_2d_spline(self._data['rvec'], self._data['zvec'], current_new.reshape(self._data['rpsi'].shape), s=0)
+
+        #compute <FF'> on each flux surface
+        for k, (level, contour) in enumerate(self._fs.items()):
+            psi[k] = level
+            if level != self._data['simagx']:
+                dl_over_bp, *_ = compute_flux_surface_average_factors(contour)
+                r = contour["r"]
+                z = contour["z"]
+
+                #find p' of psi 
+                psinorm = (level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx']) #renormalization 
+                _, pp = self.compute_ffprime_and_pprime_grid(np.array([psinorm]),internal_cutoff=-1.0) #calc new values at renormalized values
+
+                j_total = np.zeros_like(r)
+                for i, (r_i, z_i) in enumerate(zip(r,z)):
+                    j_total[i] = bisplev(r_i, z_i, current_spline["tck"])
+                
+                #pressure contrib
+                j_p = -mu0 * r**2 * pp
+                j_f = j_total - j_p 
+
+                ffprime = mu0 * r * j_f
+
+                #use midpoint rule to evaluate flux surface averaging integral like in /math.py compute_jtor_contour_integral()
+                ffmid = 0.5 * (ffprime[1:] + ffprime[:-1])
+                ffprime_avg[k] = np.sum(ffmid * dl_over_bp) / np.sum(dl_over_bp)
+
+        psinorm = (psi - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
+        ffprime_avg[0] = 2.0 * ffprime_avg[1] - ffprime_avg[2]
+        #Integrate to get F(Psi)
+        # (F^2)' = 2 FF'
+        F2prime = 2.0 * ffprime_avg
+
+        #flip vectors so they go from edge to axis
+        # if psi[0] > psi[-1]:
+        psinorm = psinorm[::-1]
+        F2prime = F2prime[::-1]
+
+        #use cumlative trapezoid integration
+        F2_flip = cumulative_simpson(F2prime, x=np.abs(psinorm - psinorm[0]), initial=0.0) / (self._data['sibdry'] - self._data['simagx'])
+
+        #Flip back to original order
+        F2 = F2_flip[::-1] + fpol_edge ** 2
+
+        # Take sqrt to get F(psi)
+        Fpol_psi = np.sqrt(F2)
+        self.define_f_profile(Fpol_psi, smooth=False, symmetrical=False)
+
+        #not sure how to set the edge
+
+    def _compute_fpol_on_psi(self):
+        # need to define a (RZ) grid which fpol lives
+        #compute fpol
+        for k, (level, contour) in enumerate(self._fs.items()):
+            psi[k] = level
+            dl_over_bp, *_ = compute_flux_surface_average_factors(contour)
+            r = contour['r']
+
+            #find p' of psi 
+            psinorm = (level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
+            ffprime, pp = self.compute_ffprime_and_pprime_grid(np.array([psinorm]),internal_cutoff=-1.0)
+
+            # do same integration things?
+
+        # at a constant Z , move out and evalute fpol at each point on the grid
+        #return an array of (fpol) should be constant on a flux surface 
+        return None
 
     def _update_psi(self, psi_new, relax=1.0):
         if relax > 0.0 and relax < 1.0:
@@ -1192,16 +1267,17 @@ class FixedBoundaryEquilibrium():
             ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
             cur_new = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp.ravel(), pp.ravel()))
             #REPLACE UPDATE CURRENT WITH NEW FUNCTION THAT COMPUTES FOR F POL ONLY SCALING
-            self._compute_curscalef(cur_new, relax=self._options['relaxj'] if n > 0 else 1.0)
+            #self._compute_curscalef(cur_new, relax=self._options['relaxj'] if n > 0 else 1.0)
             #self._update_current(cur_new, relax=self._options['relaxj'] if n > 0 else 1.0)
             psi_new = compute_psi(self.solver, self._data['s5'], self._data['cur'])
             self._update_psi(psi_new, relax=self._options['relax'])
             self.find_magnetic_axis_from_grid()
             self.zero_magnetic_boundary()
             self.compute_normalized_psi_map()
+            self._fs = self.trace_flux_surfaces()
+            self._compute_flux_surface_averaged_fpol(cur_new, relax=self._options['relaxj'] if n > 0 else 1.0)
             #self.rescale_kinetic_profiles()
-            #REPLACE RESCALE_KINETIC_PROFILES WITH THIS FUNCTION THAT JUST RESCALES FPOL
-            self.rescale_fpol_profile()
+            #self.rescale_fpol_profile()
             if self._data['psi_error'] <= self._options['erreq']: break
         self.create_boundary_gradient_splines(smooth=True)
         self.extend_psi_beyond_boundary()

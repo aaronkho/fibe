@@ -1142,6 +1142,8 @@ def compute_jstar_contour_integral(contour, ffp, pp):
     return val
 
 
+
+
 def trace_contours_with_contourpy(rvec, zvec, dmap, levels, rcheck, zcheck):
     point_inside = Point([float(rcheck), float(zcheck)])
     rmesh, zmesh = np.meshgrid(rvec, zvec)
