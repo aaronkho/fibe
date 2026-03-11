@@ -1010,7 +1010,7 @@ class FixedBoundaryEquilibrium():
         if approximate_lcfs:
             qpsi[-1] = qpsi[-2] + 2.0 * (qpsi[-2] - qpsi[-3])  # Linear interpolation to separatrix with increased slope
         #self._fit['qpsi_fs'] = generate_bounded_1d_spline(qpsi, xnorm=psinorm, symmetrical=True, smooth=False)
-        self.define_q_profile(qpsi, smooth=True)
+        self.define_q_profile(qpsi, smooth=False)
         self.recompute_phi_profile(smooth=False)
 
 
@@ -1041,11 +1041,12 @@ class FixedBoundaryEquilibrium():
             self.scratch = False
 
 
-    # def _update_current(self, current_new, relax=1.0):
-    #     if relax > 0.0 and relax < 1.0:
-    #         current_new = self._data['cur'] + relax * (current_new - self._data['cur'])
-    #     self._data['curscale'] = float(self._data['cpasma'] / (np.sum(current_new) * self._data['hrz']))
-    #     self._data['cur'] = self._data['curscale'] * current_new
+    def _update_current(self, current_new, relax=1.0):
+        if relax > 0.0 and relax < 1.0:
+            current_new = self._data['cur'] + relax * (current_new - self._data['cur'])
+        #self._data['curscale'] = float(self._data['cpasma'] / (np.sum(current_new) * self._data['hrz']))
+        self._data['cur'] = copy.deepcopy(current_new)
+
 
     def _compute_curscalef(self, current_new, relax = 1.0):
         #if relax > 0.0 and relax < 1.0: # not sure what this means but i'll keep for consistency
@@ -1066,21 +1067,27 @@ class FixedBoundaryEquilibrium():
 
     def _compute_flux_surface_averaged_fpol(self, cur_new, relax = 1.0):
         #og edge fpol
-        fpol_edge = self._data['fpol'][-1]
         mu0 = 4 * np.pi * 1e-7
-        current_new = self._data['cur'] + relax * (cur_new - self._data['cur'])
+        #current_new = self._data['cur'] + relax * (cur_new - self._data['cur'])
+        ffp_grid, pp_grid = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
 
+        j_p_grid = -mu0 * self._data['rpsi']**2 * pp_grid
+        j_f_grid = cur_new - j_p_grid.ravel() 
+        i_p = (np.sum(j_p_grid) * self._data['hrz'])
+        scale =  float((self._data['cpasma'] - i_p )/ (np.sum(j_f_grid) * self._data['hrz']))
+   
         length = len(self._fs) #amount of flux surfaces to be evaluted on 
         ffprime_avg = np.zeros(length)
         psi = np.zeros(length)
 
-        current_spline = generate_2d_spline(self._data['rvec'], self._data['zvec'], current_new.reshape(self._data['rpsi'].shape), s=0)
+        #maybe transpose
+        current_spline = generate_2d_spline(self._data['rvec'], self._data['zvec'], cur_new.reshape(self._data['rpsi'].shape).T, s=0)
 
         #compute <FF'> on each flux surface
         for k, (level, contour) in enumerate(self._fs.items()):
             psi[k] = level
             if level != self._data['simagx']:
-                dl_over_bp, *_ = compute_flux_surface_average_factors(contour)
+                dl_over_bp, vrprime, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
                 r = contour["r"]
                 z = contour["z"]
 
@@ -1090,40 +1097,41 @@ class FixedBoundaryEquilibrium():
 
                 j_total = np.zeros_like(r)
                 for i, (r_i, z_i) in enumerate(zip(r,z)):
-                    j_total[i] = bisplev(r_i, z_i, current_spline["tck"])
+                    val = bisplev(r_i, z_i, current_spline["tck"])
+                    j_total[i] = val
                 
                 #pressure contrib
                 j_p = -mu0 * r**2 * pp
                 j_f = j_total - j_p 
 
-                ffprime = mu0 * r * j_f
+                ffprime = mu0 * r * j_f * scale
 
                 #use midpoint rule to evaluate flux surface averaging integral like in /math.py compute_jtor_contour_integral()
                 ffmid = 0.5 * (ffprime[1:] + ffprime[:-1])
+                #print(ffmid)
                 ffprime_avg[k] = np.sum(ffmid * dl_over_bp) / np.sum(dl_over_bp)
 
-        psinorm = (psi - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
-        ffprime_avg[0] = 2.0 * ffprime_avg[1] - ffprime_avg[2]
-        #Integrate to get F(Psi)
-        # (F^2)' = 2 FF'
-        F2prime = 2.0 * ffprime_avg
-
-        #flip vectors so they go from edge to axis
-        # if psi[0] > psi[-1]:
-        psinorm = psinorm[::-1]
-        F2prime = F2prime[::-1]
-
-        #use cumlative trapezoid integration
-        F2_flip = cumulative_simpson(F2prime, x=np.abs(psinorm - psinorm[0]), initial=0.0) / (self._data['sibdry'] - self._data['simagx'])
-
-        #Flip back to original order
-        F2 = F2_flip[::-1] + fpol_edge ** 2
-
-        # Take sqrt to get F(psi)
-        Fpol_psi = np.sqrt(F2)
+        psinorm = (psi - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx']) 
+        ffprime_avg[0] = 2.0 * ffprime_avg[1] - ffprime_avg[2] 
+        #Integrate to get F(Psi) 
+        # (F^2)' = 2 FF' 
+        F2prime = 2.0 * ffprime_avg 
+        #flip vectors so they go from edge to axis 
+        # if psi[0] > psi[-1]: 
+        psinorm = psinorm[::-1] 
+        F2prime = F2prime[::-1] 
+        edge_level, edge_contour = list(self._fs.items())[-1]
+        dl_over_bp_final, vrprime_final, r2_final, ir_final, ir2_final, bp2_final, bt2_final = compute_flux_surface_average_factors(edge_contour)
+        #use cumlative trapezoid integration 
+        F2_flip = cumulative_simpson(F2prime, x=np.abs(psinorm - psinorm[0]), initial=0.0) * (self._data['sibdry'] - self._data['simagx']) 
+        fpol_edge = float(2 * np.pi * self._data["qpsi"][-1]) / ir2_final 
+        #Flip back to original order 
+        F2 = F2_flip[::-1] + fpol_edge ** 2 
+        # Take sqrt to get F(psi) 
+        Fpol_psi = np.sqrt(F2) 
+        #print(Fpol_psi) 
+        #print("fpol",Fpol_psi) 
         self.define_f_profile(Fpol_psi, smooth=False, symmetrical=False)
-
-        #not sure how to set the edge
 
     def _compute_fpol_on_psi(self):
         # need to define a (RZ) grid which fpol lives
@@ -1265,19 +1273,27 @@ class FixedBoundaryEquilibrium():
         self._data['psi_error'] = np.inf
         for n in range(self._options['nxiter']):
             ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
+            print(f"iter {n}: ffp finite =", np.isfinite(ffp).all())
+            print(f"iter {n}: pp finite  =", np.isfinite(pp).all())
             cur_new = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp.ravel(), pp.ravel()))
+            if not np.isfinite(cur_new).all():
+                print("NaNs appear in cur_new at iteration", n)
+                break
             #REPLACE UPDATE CURRENT WITH NEW FUNCTION THAT COMPUTES FOR F POL ONLY SCALING
             #self._compute_curscalef(cur_new, relax=self._options['relaxj'] if n > 0 else 1.0)
-            #self._update_current(cur_new, relax=self._options['relaxj'] if n > 0 else 1.0)
+            self._update_current(cur_new, relax=self._options['relaxj'] if n > 0 else 1.0)
             psi_new = compute_psi(self.solver, self._data['s5'], self._data['cur'])
             self._update_psi(psi_new, relax=self._options['relax'])
+            if not np.isfinite(self._data['psi']).all():
+                print("NaNs appear in psi at iteration", n)
+                break
             self.find_magnetic_axis_from_grid()
             self.zero_magnetic_boundary()
             self.compute_normalized_psi_map()
+            self.extend_psi_beyond_boundary()
             self._fs = self.trace_flux_surfaces()
-            self._compute_flux_surface_averaged_fpol(cur_new, relax=self._options['relaxj'] if n > 0 else 1.0)
-            #self.rescale_kinetic_profiles()
-            #self.rescale_fpol_profile()
+            self._compute_flux_surface_averaged_fpol(self._data["cur"], relax=self._options['relaxj'] if n > 0 else 1.0)
+            # Early exit if psi converged
             if self._data['psi_error'] <= self._options['erreq']: break
         self.create_boundary_gradient_splines(smooth=True)
         self.extend_psi_beyond_boundary()
