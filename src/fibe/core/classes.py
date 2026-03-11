@@ -1272,6 +1272,7 @@ class FixedBoundaryEquilibrium():
         # Loop to solve psi using Picard iteration
         self._data['psi_error'] = np.inf
         for n in range(self._options['nxiter']):
+            print("starting iteration", n)
             ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
             print(f"iter {n}: ffp finite =", np.isfinite(ffp).all())
             print(f"iter {n}: pp finite  =", np.isfinite(pp).all())
@@ -1291,8 +1292,6 @@ class FixedBoundaryEquilibrium():
             self.zero_magnetic_boundary()
             self.compute_normalized_psi_map()
             self.extend_psi_beyond_boundary()
-            self._fs = self.trace_flux_surfaces()
-            self._compute_flux_surface_averaged_fpol(self._data["cur"], relax=self._options['relaxj'] if n > 0 else 1.0)
             # Early exit if psi converged
             if self._data['psi_error'] <= self._options['erreq']: break
         self.create_boundary_gradient_splines(smooth=True)
@@ -1316,6 +1315,69 @@ class FixedBoundaryEquilibrium():
         self._data['gcase'] = 'FiBE'
         self._data['gid'] = 0
 
+    def solve_psi_with_f_iteration(
+        self,
+        nfiter=20, #max number of outer loop iteratins  
+        errf=1.0e-3, # how small change in fpol can be to consider convereged
+        relaxf=1.0,   
+        #remaining inputs for solve_psi() loop    
+        nxiter=100,       
+        erreq=1.0e-4,     
+        relax=1.0,        
+        relaxj=1.0,       
+        pnaxis=None,      
+        approxq=False,    
+        symmetrical=True, 
+    ):
+        f_error = np.inf
+
+        #run psi_solve() to comvergence 
+        for n in range(self._options['nfiter']):
+            self.solve_psi(
+                nxiter=nxiter,
+                erreq=erreq,
+                relax=relax,
+                relaxj=relaxj,
+                pnaxis=pnaxis,
+                approxq=approxq,
+                symmetrical=symmetrical,
+            )
+
+            fpol_before = copy.deepcopy(self._data['fpol'])
+
+            # Update F 
+            self._compute_flux_surface_averaged_fpol(
+                self._data['cur'],
+                relax=relaxf if n > 0 else 1.0 
+            )
+            fpol_after = self._data['fpol']
+
+            # is F still changing?
+            denom = np.where(np.abs(fpol_after) < 1.0e-30, 1.0e-30, np.abs(fpol_after))
+            #stop if f_error (amount changed) smaller than allowed error errf
+            f_error = float(np.nanmax(np.abs(fpol_after - fpol_before) / denom))
+
+            logger.info(
+                f'F-solver outer iteration {n + 1}: '
+                f'psi converged={self.converged}, '
+                f'max relative F error = {f_error:8.2e}'
+            )
+
+            if f_error <= self._options['errf']: break
+
+        #hit max iter
+        if n + 1 == self._options['nfiter']:
+            logger.info(
+                f'F-solver failed to converge after {n + 1} iterations '
+                f'with max relative F error of {f_error:8.2e}'
+            )
+            self.converged = False
+        else:
+            logger.info(
+                f'F-solver converged after {n + 1} iterations '
+                f'with max relative F error of {f_error:8.2e}'
+            )
+            self.converged = True
 
     def solve_psi_using_toroidal_current_density_profile(
         self,
