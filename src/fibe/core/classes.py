@@ -10,6 +10,7 @@ from scipy.integrate import cumulative_simpson, trapezoid
 from scipy.sparse.linalg import factorized
 from scipy.optimize import root
 from shapely import Point, Polygon
+import matplotlib.pyplot as plt 
 
 from .math import (
     find_null_points,
@@ -1044,8 +1045,8 @@ class FixedBoundaryEquilibrium():
     def _update_current(self, current_new, relax=1.0):
         if relax > 0.0 and relax < 1.0:
             current_new = self._data['cur'] + relax * (current_new - self._data['cur'])
-        #self._data['curscale'] = float(self._data['cpasma'] / (np.sum(current_new) * self._data['hrz']))
-        self._data['cur'] = copy.deepcopy(current_new)
+        self._data['curscale'] = float(self._data['cpasma'] / (np.sum(current_new) * self._data['hrz']))
+        self._data['cur'] = current_new * self._data['curscale']
 
 
     def _compute_curscalef(self, current_new, relax = 1.0):
@@ -1274,25 +1275,18 @@ class FixedBoundaryEquilibrium():
         for n in range(self._options['nxiter']):
             print("starting iteration", n)
             ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
-            print(f"iter {n}: ffp finite =", np.isfinite(ffp).all())
-            print(f"iter {n}: pp finite  =", np.isfinite(pp).all())
             cur_new = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp.ravel(), pp.ravel()))
-            if not np.isfinite(cur_new).all():
-                print("NaNs appear in cur_new at iteration", n)
-                break
             #REPLACE UPDATE CURRENT WITH NEW FUNCTION THAT COMPUTES FOR F POL ONLY SCALING
             #self._compute_curscalef(cur_new, relax=self._options['relaxj'] if n > 0 else 1.0)
             self._update_current(cur_new, relax=self._options['relaxj'] if n > 0 else 1.0)
             psi_new = compute_psi(self.solver, self._data['s5'], self._data['cur'])
             self._update_psi(psi_new, relax=self._options['relax'])
-            if not np.isfinite(self._data['psi']).all():
-                print("NaNs appear in psi at iteration", n)
-                break
             self.find_magnetic_axis_from_grid()
             self.zero_magnetic_boundary()
             self.compute_normalized_psi_map()
-            self.extend_psi_beyond_boundary()
+            #self.extend_psi_beyond_boundary()
             # Early exit if psi converged
+            self._data['psi_error_history'].append(float(self._data['psi_error']))
             if self._data['psi_error'] <= self._options['erreq']: break
         self.create_boundary_gradient_splines(smooth=True)
         self.extend_psi_beyond_boundary()
@@ -1317,21 +1311,39 @@ class FixedBoundaryEquilibrium():
 
     def solve_psi_with_f_iteration(
         self,
-        nfiter=20, #max number of outer loop iteratins  
-        errf=1.0e-3, # how small change in fpol can be to consider convereged
-        relaxf=1.0,   
-        #remaining inputs for solve_psi() loop    
-        nxiter=100,       
-        erreq=1.0e-4,     
-        relax=1.0,        
-        relaxj=1.0,       
-        pnaxis=None,      
-        approxq=False,    
-        symmetrical=True, 
+        nfiter=10,
+        errf=1.0e-3,
+        relaxf=1.0,
+        #for solve psi
+        nxiter=100,
+        erreq=1.0e-4,
+        relax=1.0,
+        relaxj=1.0,
+        pnaxis=None,
+        approxq=False,
+        symmetrical=True,
     ):
-        f_error = np.inf
+        
+        if isinstance(nfiter, int):
+            self._options['nfiter'] = abs(nfiter)
+        if isinstance(errf, float):
+            self._options['errf'] = errf
+        if isinstance(relaxf, float):
+            self._options['relaxf'] = relaxf
+            f_error = np.inf
+        
+        #for plotting
+        history = {
+            'f_error': [],
+            'psi_error': [],
+            'fpol_axis': [],
+            'fpol_edge': [],
+            'psi_axis': [],
+            'psi_edge': [],
+            'psi_error_inner': [], 
+        }
+        self._data['psi_error_history'] = []
 
-        #run psi_solve() to comvergence 
         for n in range(self._options['nfiter']):
             self.solve_psi(
                 nxiter=nxiter,
@@ -1342,20 +1354,41 @@ class FixedBoundaryEquilibrium():
                 approxq=approxq,
                 symmetrical=symmetrical,
             )
+            history['psi_error_inner'].append(self._data['psi_error_history'])
 
             fpol_before = copy.deepcopy(self._data['fpol'])
 
-            # Update F 
+            ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
+
+            cur_new = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp.ravel(), pp.ravel()))
+
             self._compute_flux_surface_averaged_fpol(
-                self._data['cur'],
-                relax=relaxf if n > 0 else 1.0 
+                cur_new,
+                relax=relaxf if n > 0 else 1.0
             )
             fpol_after = self._data['fpol']
 
-            # is F still changing?
+            ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
+
+            cur_new = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp.ravel(), pp.ravel()))
+
+            self._data['cur'] = cur_new
+
+            # make nonzero 
             denom = np.where(np.abs(fpol_after) < 1.0e-30, 1.0e-30, np.abs(fpol_after))
-            #stop if f_error (amount changed) smaller than allowed error errf
             f_error = float(np.nanmax(np.abs(fpol_after - fpol_before) / denom))
+
+            #plot convergence 
+            history['f_error'].append(f_error)
+            history['psi_error'].append(self._data['psi_error'])
+            history['fpol_axis'].append(float(fpol_after[0]))
+            history['fpol_edge'].append(float(fpol_after[-1]))
+            history['psi_axis'].append(float(self._data['simagx']))
+            history['psi_edge'].append(float(self._data['sibdry']))
+
+            #plot after every solve psi loop 
+            self.compute_flux_surface_averaged_jstar_profile()
+            self.plot_profiles(save=f'profiles_fiter_{n+1:02d}.png', show=False)
 
             logger.info(
                 f'F-solver outer iteration {n + 1}: '
@@ -1365,7 +1398,33 @@ class FixedBoundaryEquilibrium():
 
             if f_error <= self._options['errf']: break
 
-        #hit max iter
+        iters = np.arange(1, len(history['f_error']) + 1)
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+        fig.suptitle('F-solver convergence history')
+
+        axes[0].semilogy(iters, history['f_error'], 'o-')
+        axes[0].axhline(self._options['errf'], color='r', linestyle='--', label='errf threshold')
+        axes[0].set_xlabel('Outer iteration')
+        axes[0].set_ylabel('Max relative F error')
+        axes[0].legend()
+
+        axes[1].semilogy(iters, history['psi_error'], 'o-')
+        axes[1].axhline(erreq, color='r', linestyle='--', label='erreq threshold')
+        axes[1].set_xlabel('Outer iteration')
+        axes[1].set_ylabel('Max relative psi error (outer)')
+        axes[1].legend()
+
+        for i, psi_hist in enumerate(history['psi_error_inner']):
+            axes[2].semilogy(psi_hist, label=f'F-iter {i+1}')
+        axes[2].axhline(erreq, color='r', linestyle='--', label='erreq threshold')
+        axes[2].set_xlabel('Picard iteration')
+        axes[2].set_ylabel('Max relative psi error (inner)')
+        axes[2].legend()
+
+        plt.tight_layout()
+        plt.savefig('convergence_history.png')
+        plt.close()
+
         if n + 1 == self._options['nfiter']:
             logger.info(
                 f'F-solver failed to converge after {n + 1} iterations '
@@ -1377,49 +1436,6 @@ class FixedBoundaryEquilibrium():
                 f'F-solver converged after {n + 1} iterations '
                 f'with max relative F error of {f_error:8.2e}'
             )
-            self.converged = True
-
-    def solve_psi_using_toroidal_current_density_profile(
-        self,
-        njsiter=50,
-        errjs=1.0e-3,
-        relaxjs=1.0,
-        nxiter=100,
-        erreq=1.0e-8,
-        relax=1.0,
-        relaxj=1.0,
-        pnaxis=None,
-    ):
-
-        if 'jstar' not in self._data:
-            logger.error(f'Toroidal current density profile must be defined to use current density solver.')
-        self.save_original_data(['jstar'])
-        if 'jstar_target' not in self._data:
-            self._data['jstar_target'] = copy.deepcopy(self._data['jstar'])
-
-        if isinstance(njsiter, int):
-            self._options['njsiter'] = abs(njsiter)
-        if isinstance(errjs, float):
-            self._options['errjs'] = errjs
-        if isinstance(relaxjs, float):
-            self._options['relaxjs'] = relaxjs
-
-        for n in range(self._options['njsiter']):
-            jstar_old = copy.deepcopy(self._data['jstar'])
-            self.define_toroidal_current_density_profile(self._data['jstar_target'], smooth=False, symmetrical=False)
-            f_new = self.recompute_f_from_toroidal_current_density()
-            self.define_f_profile(f_new, smooth=False, symmetrical=False)
-            self.solve_psi(nxiter=nxiter, erreq=erreq, relax=relax, relaxj=relaxj, pnaxis=pnaxis)
-            self.compute_flux_surface_averaged_jstar_profile()
-            self._update_jstar(self._data['jstar'], jstar_old=jstar_old, relax=self._options['relaxjs'])
-            if self._data['jstar_error'] <= self._options['errjs']: break
-            logger.info(f'Iteration {n + 1}: Max relative error in j* = {self._data["jstar_error"]:8.2e}')
-
-        if n + 1 == self._options['njsiter']:
-            logger.info(f'Failed to converge after {n + 1} iterations with maximum j* error of {self._data["jstar_error"]:8.2e}')
-            self.converged = False
-        else:
-            logger.info(f'Converged after {n + 1} iterations with maximum j* error of {self._data["jstar_error"]:8.2e}')
             self.converged = True
 
 
