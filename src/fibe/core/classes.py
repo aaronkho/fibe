@@ -1107,13 +1107,17 @@ class FixedBoundaryEquilibrium():
 
                 ffprime = mu0 * r * j_f * scale
 
+
                 #use midpoint rule to evaluate flux surface averaging integral like in /math.py compute_jtor_contour_integral()
                 ffmid = 0.5 * (ffprime[1:] + ffprime[:-1])
+                j_pmid = 0.5 * (j_p[1:] + j_p[:-1])
                 #print(ffmid)
                 ffprime_avg[k] = np.sum(ffmid * dl_over_bp) / np.sum(dl_over_bp)
+                j_p_avg[k] = np.sum(j_pmid * dl_over_bp)
 
         psinorm = (psi - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx']) 
         ffprime_avg[0] = 2.0 * ffprime_avg[1] - ffprime_avg[2] 
+
         #Integrate to get F(Psi) 
         # (F^2)' = 2 FF' 
         F2prime = 2.0 * ffprime_avg 
@@ -1132,6 +1136,10 @@ class FixedBoundaryEquilibrium():
         Fpol_psi = np.sqrt(F2) 
         #print(Fpol_psi) 
         #print("fpol",Fpol_psi) 
+
+        # for J_p
+        i_p_total = cumulative_simpson(j_p_avg, x=np.abs(psinorm - psinorm[0]), initial=0.0) * (self._data['sibdry'] - self._data['simagx']) 
+        
         self.define_f_profile(Fpol_psi, smooth=False, symmetrical=False)
 
     def _compute_fpol_on_psi(self):
@@ -1345,6 +1353,7 @@ class FixedBoundaryEquilibrium():
         self._data['psi_error_history'] = []
 
         for n in range(self._options['nfiter']):
+            print('starting fiter', n)
             self.solve_psi(
                 nxiter=nxiter,
                 erreq=erreq,
@@ -1389,6 +1398,7 @@ class FixedBoundaryEquilibrium():
             #plot after every solve psi loop 
             self.compute_flux_surface_averaged_jstar_profile()
             self.plot_profiles(save=f'profiles_fiter_{n+1:02d}.png', show=False)
+            self.plot_contour(save =f'contours_fiter{n+1:02d}.png', show=False)
 
             logger.info(
                 f'F-solver outer iteration {n + 1}: '
