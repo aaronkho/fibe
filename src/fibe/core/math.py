@@ -1054,6 +1054,7 @@ def compute_flux_surface_quantities_boundary(psinorm, r_contour, z_contour, r_re
 def compute_flux_surface_average_factors(contour):
     dl_over_bp = np.array([0.0])
     vprime = 0.0
+    r = 0.0
     r2 = 0.0
     ir = 0.0
     ir2 = 0.0
@@ -1066,18 +1067,19 @@ def compute_flux_surface_average_factors(contour):
         rcm = 0.5 * (contour['r'][1:] + contour['r'][:-1]).flatten()
         dl_over_bp = dl / bpm
         vprime = np.sum(dl_over_bp)
+        r = np.sum(rcm * dl_over_bp)
         r2 = np.sum(np.square(rcm) * dl_over_bp)
         ir = np.sum(dl_over_bp / rcm)
         ir2 = np.sum(dl_over_bp / np.square(rcm))
         bp2 = np.sum(dl_over_bp * np.square(bpm))
         bt2 = np.sum(dl_over_bp * np.square(btm))
-    return dl_over_bp, vprime, r2, ir, ir2, bp2, bt2
+    return dl_over_bp, vprime, r, r2, ir, ir2, bp2, bt2
 
 
 def compute_volume_derivative_contour_integral(contour):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
-        dl_over_bp, vprime, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
+        dl_over_bp, vprime, r, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
         val = vprime
     return val
 
@@ -1085,7 +1087,7 @@ def compute_volume_derivative_contour_integral(contour):
 def compute_safety_factor_contour_integral(contour, current_inside=None):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
-        dl_over_bp, vprime, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
+        dl_over_bp, vprime, r, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
         val = 0.5 * contour['fpol'].item() * ir2 / np.pi
         # Current constraint needs more testing, advised NOT to use
         if isinstance(current_inside, float):
@@ -1097,7 +1099,7 @@ def compute_ffprime_from_jstar_pprime_and_contour(jstar, pp, contour):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
         mu0 = 4.0e-7 * np.pi
-        dl_over_bp, vprime, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
+        dl_over_bp, vprime, r, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
         val = (-mu0 / ir2) * (jstar - vprime * pp)
     return val
 
@@ -1105,7 +1107,7 @@ def compute_ffprime_from_jstar_pprime_and_contour(jstar, pp, contour):
 def compute_f_from_safety_factor_and_contour(q, contour):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
-        dl_over_bp, vprime, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
+        dl_over_bp, vprime, r, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
         val = 2.0 * np.pi * q / ir2
     return val
 
@@ -1113,7 +1115,7 @@ def compute_f_from_safety_factor_and_contour(q, contour):
 def compute_jtor_contour_integral(contour, ffp, pp):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
-        dl_over_bp, vprime, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
+        dl_over_bp, vprime, r, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
         jtor = compute_jtor(contour['r'], np.zeros_like(contour['r']) + ffp, np.zeros_like(contour['r']) + pp)
         jtm = 0.5 * (jtor[1:] + jtor[:-1]).flatten()
         val = np.sum(jtm * dl_over_bp) / np.sum(dl_over_bp)
@@ -1123,7 +1125,7 @@ def compute_jtor_contour_integral(contour, ffp, pp):
 def compute_jpar_contour_integral(contour, f, fp, pp):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
-        dl_over_bp, vprime, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
+        dl_over_bp, vprime, r, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
         btot = np.sqrt(np.square(contour['bpol']) + np.square(contour['btor'])).flatten()
         jpar = compute_jpar(btot, np.zeros_like(contour['r']) + f, np.zeros_like(contour['r']) + fp, np.zeros_like(contour['r']) + pp)
         jpm = 0.5 * (jpar[1:] + jpar[:-1]).flatten()
@@ -1134,7 +1136,7 @@ def compute_jpar_contour_integral(contour, f, fp, pp):
 def compute_jstar_contour_integral(contour, ffp, pp):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
-        dl_over_bp, vprime, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
+        dl_over_bp, vprime, r, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
         jtor = compute_jtor(contour['r'], np.zeros_like(contour['r']) + ffp, np.zeros_like(contour['r']) + pp)
         jtm = 0.5 * (jtor[1:] + jtor[:-1]).flatten()
         rcm = 0.5 * (contour['r'][1:] + contour['r'][:-1]).flatten()
