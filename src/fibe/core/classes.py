@@ -46,6 +46,8 @@ from .math import (
     compute_contours_from_mxh_coefficients,
     check_fully_contained_contours,
     compute_flux_surface_average_factors,
+    #f_profile_shape_guesser,
+    jtor_profile_shape_guesser,
 )
 from ..utils.eqdsk import (
     read_geqdsk_file,
@@ -1222,6 +1224,209 @@ class FixedBoundaryEquilibrium():
         return None
 
 
+    def _estimate_flux_surface_averaged_fpol(self, first=False):
+
+        mu0 = 4.0e-7 * np.pi
+        ffp_grid, pp_grid = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
+        cur_new = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp_grid.ravel(), pp_grid.ravel()))
+        #cur_new = self._data['cur'] + relax * (cur_new - self._data['cur'])
+
+        j_p_grid = -self._data['rpsi'].ravel() * np.where(self._data['inout'] == 0, 0.0, pp_grid.ravel())
+        j_f_grid = cur_new - j_p_grid
+        i_p_grid = np.sum(j_p_grid) * self._data['hrz']
+        i_f_grid = np.sum(j_f_grid) * self._data['hrz']
+        scale = float((self._data['cpasma'] - i_p_grid) / i_f_grid)  # This scaling does not account for 2D current distribution mismatch
+        print('scale:', scale, self._data['cpasma'])
+        print('pre-components:', i_p_grid, i_f_grid)
+
+        length = len(self._fs) #amount of flux surfaces to be evaluted on 
+        psi = np.zeros(length)
+        ffprime_avg = np.zeros(length)
+        vprime_avg = np.zeros(length)
+        ir_avg = np.zeros(length)
+        ir2_avg = np.zeros(length)
+        j_p_avg = np.zeros(length)
+        j_f_avg = np.zeros(length)
+        bp2_avg = np.zeros(length)
+        r_avg = np.zeros(length)
+
+        #maybe transpose
+        current_spline = generate_2d_spline(self._data['rvec'], self._data['zvec'], cur_new.reshape(self._data['rpsi'].shape).T, s=0)
+
+        #compute <FF'> on each flux surface
+        for k, (level, contour) in enumerate(self._fs.items()):
+            psi[k] = level
+            if level != self._data['simagx']:
+                dl_over_bp, vprime, r, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
+                r_c = contour["r"]
+                z_c = contour["z"]
+
+                #find p' of psi 
+                psinorm = (level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx']) #renormalization 
+                _, pp = self.compute_ffprime_and_pprime_grid(np.array([psinorm]), internal_cutoff=-1.0) #calc new values at renormalized values
+
+                j_total = np.zeros_like(r_c)
+                for i, (r_i, z_i) in enumerate(zip(r_c, z_c)):
+                    val = bisplev(r_i, z_i, current_spline['tck'])
+                    j_total[i] = val
+                
+                j_p = -r_c * pp
+                j_f = j_total - j_p 
+                ffprime = -mu0 * r_c * j_f
+
+                # Use midpoint rule to evaluate flux surface averaging integral like in /math.py compute_jtor_contour_integral()
+                rmid = 0.5 * (r_c[1:] + r_c[:-1])
+                ffmid = 0.5 * (ffprime[1:] + ffprime[:-1])
+                j_pmid = 0.5 * (j_p[1:] + j_p[:-1])
+                j_fmid = 0.5 * (j_f[1:] + j_f[:-1])
+                ffprime_avg[k] = np.sum(ffmid * dl_over_bp) / np.sum(dl_over_bp)  # ffp
+
+                vprime_avg[k] = vprime
+                j_p_avg[k] = np.sum(j_pmid * dl_over_bp / rmid) / np.sum(dl_over_bp)  # -pp
+                j_f_avg[k] = np.sum(j_fmid * dl_over_bp / rmid) / np.sum(dl_over_bp)  # -ffp * ir2 / mu0
+                ir_avg[k] = ir / vprime
+                ir2_avg[k] = ir2 / vprime
+                bp2_avg[k] = bp2 / vprime
+                r_avg[k] = r / vprime
+
+        dpsi_dpsinorm = (self._data['sibdry'] - self._data['simagx'])
+        psinorm = (psi - self._data['simagx']) / dpsi_dpsinorm
+        ffprime_avg[0] = 2.0 * ffprime_avg[1] - ffprime_avg[2]
+        vprime_avg[0] = 2.0 * vprime_avg[1] - vprime_avg[2]
+        ir_avg[0] = 1.0 / self._data['rmagx']
+        ir2_avg[0] = 1.0 / self._data['rmagx'] ** 2
+        j_f_avg[0] = 2.0 * j_f_avg[1] - j_f_avg[2]
+        ir_v = ir_avg * vprime_avg
+        ir2_v = ir2_avg * vprime_avg
+        # vprime_avg[0] = 0.0
+
+        # Edge constraint, if specified
+        fpol_edge = 2 * np.pi * self._data['qpsi'][-1] / ir2_v[-1]
+        if 'qedge_target' in self._data:
+            fpol_edge = 2 * np.pi * self._data['qedge_target'] / ir2_v[-1]
+        elif 'bvacuum' in self._data and 'rvacuum' in self._data:
+            fpol_edge = self._data['bvacuum'] * self._data['rvacuum']
+        print('q_edge constraint: F =', fpol_edge, self._data['fpol'][-1])
+
+        # Axis constraint, if specified
+        j_target = j_p_avg[0] + j_f_avg[0] * scale
+        if 'qaxis_target' in self._data:
+            fprime_form = -0.5 * (self._data['fpol'][0] - self._data['fpol'][-1])
+            j_target = -fprime_form * self._data['qaxis_target'] * 2.0 * np.pi / (mu0 * ir_v[0])
+        if j_target < np.nanmax(j_p_avg):
+            j_p_ref = np.nanmax(j_p_avg)
+            psin_ref = psinorm[np.nanargmax(j_p_avg)]
+            j_target = j_p_ref * (1.0 + 1.2 * psin_ref)
+        print('q_axis constraint: j =', j_target, j_f_avg[0])
+        # fpol_axis = 2 * np.pi * self._data['qpsi'][0] / ir2_v[0]
+        # if 'qaxis_target' in self._data:
+        #     fpol_axis = 2 * np.pi * self._data['qaxis_target'] / ir2_v[0]  # Not a good way to constrain this quantity
+        # print('q_axis constraint: F =', fpol_axis, self._data['fpol'][0])
+
+        form_factor_vec = np.linspace(-1.0, 1.0, 21)
+        j_form_vec = np.zeros_like(form_factor_vec)
+        # f_form_vec = np.zeros_like(form_factor_vec)
+        envelope = (psinorm ** 0.1) * (0.5 * np.tanh(20.0 * (psinorm - 0.85)) + 0.5)
+        e_index = 3 * len(psinorm) // 4
+        for j, linearity in enumerate(form_factor_vec):
+            j_test_avg = jtor_profile_shape_guesser(psinorm, linearity)
+            j_test_factor = trapezoid(j_test_avg * vprime_avg, x=psinorm) * dpsi_dpsinorm
+            # if np.any((j_test_avg[e_index:] - j_p_avg[e_index:] * j_test_factor / self._data['cpasma']) < 0.0):
+            #     print(j_test_avg * self._data['cpasma'] / (j_test_factor * j_p_avg))
+            #     j_test_avg += envelope * (1.05 * j_test_avg - j_p_avg * j_test_factor / self._data['cpasma'])
+            #     j_test_factor = trapezoid(j_test_avg * vprime_avg, x=psinorm) * dpsi_dpsinorm
+            # j_form_vec[j] = self._data['cpasma'] / j_test_factor
+            j_form_vec[j] = scale * i_f_grid / j_test_factor
+            # j_f_test = self._data['cpasma'] * j_test_avg / j_test_factor - j_p_avg
+            # f2prime_test = -2.0 * mu0 * j_f_test / ir2_v
+            # f2_flipped_test = -1.0 * cumulative_simpson(f2prime_test[::-1], x=np.abs(psinorm[::-1] - psinorm[-1]), initial=0.0) * dpsi_dpsinorm
+            # f2_test = f2_flipped_test[::-1] + fpol_edge ** 2
+            # f_form_vec[j] = np.sqrt(f2_test[0])
+        adj_scale = (j_form_vec + j_p_avg[0]) / j_target - 1.0
+        # adj_scale = f_form_vec / fpol_axis - 1.0
+        print(adj_scale)
+
+        form_factor = 0.0
+        if np.nanmax(adj_scale) < 0.0:
+            form_factor = form_factor_vec[np.nanargmax(adj_scale)]
+        elif np.nanmin(adj_scale) > 0.0:
+            form_factor = form_factor_vec[np.nanargmin(adj_scale)]
+        else:
+            form_index = np.where(np.diff(adj_scale) <= 0.0)[0][0]
+            form_factor = np.interp(0.0, [adj_scale[form_index], adj_scale[form_index + 1]], [form_factor_vec[form_index], form_factor_vec[form_index + 1]])
+        j_total_avg = jtor_profile_shape_guesser(psinorm, form_factor)
+        j_total_factor = trapezoid(j_total_avg * vprime_avg, x=psinorm) * dpsi_dpsinorm
+        # if np.any((j_total_avg[e_index:] - j_p_avg[e_index:] * j_total_factor / self._data['cpasma']) < 0.0):
+        #     j_total_avg += envelope * (1.05 * j_total_avg - j_p_avg * j_total_factor / self._data['cpasma'])
+        #     j_total_factor = trapezoid(j_total_avg * vprime_avg, x=psinorm) * dpsi_dpsinorm
+        # j_f_new = self._data['cpasma'] * j_total_avg / j_total_factor - j_p_avg
+        j_f_new = scale * i_f_grid * j_total_avg / j_total_factor
+        f2prime_new = -2.0 * mu0 * j_f_new / ir2_v
+
+        # f2prime = 2.0 * ffprime_avg * scale
+        # f2prime = 2.0 * ffprime_new
+        # Flip vectors so they go from edge to axis 
+        # f2_flipped = -1.0 * cumulative_simpson(f2prime[::-1], x=np.abs(psinorm[::-1] - psinorm[-1]), initial=0.0) * dpsi_dpsinorm
+        # f2 = f2_flipped[::-1] + fpol_edge ** 2
+        # fpol = np.sqrt(f2)
+
+        # Axis constraint, if specified
+        # dfpol = fpol[0] - fpol[-1]
+        # fprime_target = ffprime_avg[0] / fpol[0]
+        # fprime_target = ffprime_new[0] / fpol[0]
+        # if 'qaxis_target' in self._data:
+            ## if first:
+            ##     fprime_target = -mu0 * np.nanmax(j_p_avg) * vprime_avg[0] / (self._data['qaxis_target'] * 2.0 * np.pi)
+            ## else:
+            ##     fprime_target = -mu0 * (j_p_avg[0] + j_f_avg[0] * scale) * vprime_avg[0] / (self._data['qaxis_target'] * 2.0 * np.pi)
+            # fprime_target = -mu0 * (j_p_avg[0] + j_f_new[0]) * vprime_avg[0] / (self._data['qaxis_target'] * 2.0 * np.pi)
+        # ffp_factor = (fprime_target * fpol[0] - ffprime_new[0])
+        # ffprime_new += ffp_factor * np.exp(-25.0 * psinorm)
+        # print('q_axis constraint:', fprime_target, ffp_factor)
+        # print('q_edge constraint:', fpol_edge)
+
+        # lin = np.linspace(-1.0, 1.0, 11)
+        # adj_scale = np.zeros_like(lin)
+        # for j, linearity in enumerate(lin):
+        #     f_test = f_profile_shape_guesser(psinorm, linearity=linearity) * dfpol + fpol[-1]
+        #     ffprime_test = 0.5 * np.gradient(f_test.flatten() ** 2, psinorm.flatten(), axis=0) / dpsi_dpsinorm
+        #     mod_factor = (fprime_target * fpol[0] - ffprime_test[0])
+        #     ffprime_test += mod_factor * np.exp(-25.0 * psinorm)
+        #     j_f_aprime = -ffprime_test * ir2_avg / mu0
+        #     adj_scale[j] = (self._data['cpasma'] - i_p_grid) / (trapezoid(j_f_aprime, x=psinorm) * dpsi_dpsinorm)
+        # form_factor = 0.0
+        # if np.nanmax(adj_scale) < 1.0:
+        #     form_factor = lin[np.nanargmax(adj_scale)]
+        # elif np.nanmin(adj_scale) > 1.0:
+        #     form_factor = lin[np.nanargmin(adj_scale)]
+        # else:
+        #     form_index = np.where(adj_scale > 1.0)[0][0]
+        #     form_factor = np.interp(1.0, [adj_scale[form_index - 1], adj_scale[form_index]], [lin[form_index - 1], lin[form_index]])
+        # f_guess = f_profile_shape_guesser(psinorm, linearity=form_factor) * dfpol + fpol[-1]
+        # ffp_guess = 0.5 * np.gradient(f_guess.flatten() ** 2, psinorm.flatten(), axis=0) / dpsi_dpsinorm
+        # mod_factor = (fprime_target * fpol[0] - ffp_guess[0])
+        # ffp_guess += mod_factor * np.exp(-25.0 * psinorm)
+        # print('q_axis constraint:', fprime_target, form_factor, mod_factor)
+        # print('q_edge constraint:', fpol_edge)
+
+        # f2prime_new = 2.0 * ffp_guess
+        # f2prime_new = 2.0 * ffprime_new
+        # Flip vectors so they go from edge to axis
+        f2_flipped_new = -1.0 * cumulative_simpson(f2prime_new[::-1], x=np.abs(psinorm[::-1] - psinorm[-1]), initial=0.0) * dpsi_dpsinorm
+        f2_new = f2_flipped_new[::-1] + fpol_edge ** 2
+        fpol_new = np.sqrt(f2_new)
+
+        # LCFS test might not be reliable due to boundary resolution issues
+        i_pl_test = np.sqrt(bp2_avg[-1]) * 2.0 * np.pi * r_avg[-1] / mu0
+        # j_f_new = -ffprime_new * ir2_avg / mu0
+        i_p_trap = trapezoid(j_p_avg * vprime_avg, x=psinorm) * dpsi_dpsinorm
+        i_f_trap = trapezoid(j_f_new * vprime_avg, x=psinorm) * dpsi_dpsinorm
+        print('plasma lcfs:', i_pl_test)
+        print('post-components:', i_p_trap, i_f_trap, self._data['cpasma'])
+
+        return fpol_new
+
+
     def _update_psi(self, psi_new, relax=1.0):
         if relax > 0.0 and relax < 1.0:
             psi_new = self._data['psi'].ravel() + relax * (psi_new - self._data['psi'].ravel())
@@ -1438,13 +1643,18 @@ class FixedBoundaryEquilibrium():
             self.plot_contour(save=f'contours_fiter{n+1:02d}.png', show=False)
 
             fpol_before = copy.deepcopy(self._data['fpol'])
-            fpol_after = self._compute_flux_surface_averaged_fpol()
+            fprime_before = np.gradient(fpol_before.flatten(), np.linspace(0.0, 1.0, self._data['nr']).flatten(), axis=0)
+            # fpol_after = self._compute_flux_surface_averaged_fpol()
+            fpol_after = self._estimate_flux_surface_averaged_fpol(first=(n == 0))
             if self._options['relaxf'] > 0.0 and self._options['relaxf'] < 1.0:
                 fpol_after = fpol_before + self._options['relaxf'] * (fpol_after - fpol_before)
+            fprime_after = np.gradient(fpol_after.flatten(), np.linspace(0.0, 1.0, self._data['nr']).flatten(), axis=0)
 
             # make nonzero
             denom = np.where(np.abs(fpol_after - fpol_after[-1] + 1.0) < 1.0e-30, 1.0e-30, fpol_after - fpol_after[-1] + 1.0)
             f_error = float(np.nanmax(np.abs(fpol_after - fpol_before) / denom))
+            denom_fprime = np.where(np.abs(fprime_after) < 1.0e-30, 1.0e-30, fprime_after)
+            fprime_error = float(np.nanmax(np.abs(fprime_after - fprime_before) / denom_fprime))
 
             #plot convergence 
             history['f_error'].append(f_error)
@@ -1457,10 +1667,11 @@ class FixedBoundaryEquilibrium():
             logger.info(
                 f'F-solver outer iteration {n + 1}: '
                 f'psi converged={self.converged}, '
-                f'max relative F error = {f_error:8.2e}'
+                f'max relative F error = {f_error:8.2e}, '
+                f'max relative F\' error = {fprime_error:8.2e}'
             )
 
-            if f_error <= self._options['errf']: break
+            if f_error <= self._options['errf'] and fprime_error <= self._options['errf']: break
 
             self.define_f_profile(fpol_after, smooth=False, symmetrical=False, redefine_bcentre=True)
 

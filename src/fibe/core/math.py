@@ -1305,3 +1305,29 @@ def check_fully_contained_contours(r_inner, z_inner, r_outer, z_outer):
         if not polygon.contains(point_inside):
             return False
     return True
+
+
+def f_profile_shape_guesser(psinorm, linearity=0.0):
+    f_norm = 0.75 * (np.exp(-5.0 * psinorm) - psinorm * np.exp(-5.0)) + 0.25 - 0.25 * psinorm
+    f_base = 0.75 * (np.exp(-5.0 * psinorm) - psinorm * np.exp(-5.0)) + 0.25 - 0.25 * psinorm
+    if linearity > 0.0 and linearity <= 1.0:
+        # f_extreme = (1.0 - 0.2 * psinorm) - 0.8 * (psinorm ** 20)
+        f_extreme = 0.9 * (np.exp(-2.0 * psinorm) - psinorm * np.exp(-2.0)) + 0.1 - 0.1 * (psinorm ** 15)
+        f_norm = (1.0 - linearity) * f_base + linearity * f_extreme
+    if linearity < 0.0 and linearity >= -1.0:
+        # f_extreme = 0.9 * (np.exp(-6.0 * psinorm) - psinorm * np.exp(-6.0)) + 0.1 - 0.1 * psinorm
+        f_extreme = 0.9 * (1.0 - psinorm ** 10) - 0.1 * psinorm + 0.1
+        f_norm = (1.0 + linearity) * f_base - linearity * f_extreme
+    return f_norm
+
+
+def jtor_profile_shape_guesser(psinorm, linearity=0.0):
+    j_norm = 0.5 * (1.0 - (psinorm ** 2)) * np.exp(-(psinorm ** 2) / 0.2) - 0.5 * (psinorm - 1.0)
+    j_base = 0.5 * (1.0 - (psinorm ** 2)) * np.exp(-(psinorm ** 2) / 0.2) - 0.5 * (psinorm - 1.0)
+    if linearity > 0.0 and linearity <= 1.0:
+        j_extreme = (1.0 - 0.1 * psinorm) * (1.0 - psinorm ** 9)
+        j_norm = (1.0 - linearity) * j_base + linearity * j_extreme
+    if linearity < 0.0 and linearity >= -1.0:
+        j_extreme = 0.9 * np.exp(-10.0 * psinorm) - 0.1 * psinorm + 0.1
+        j_norm = (1.0 + linearity) * j_base - linearity * j_extreme
+    return j_norm
