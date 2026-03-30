@@ -334,14 +334,16 @@ class FixedBoundaryEquilibrium():
                 self.define_toroidal_field(self._data['fpol'][0] / rcentr, rcentr=rcentr)
 
 
-    def define_q_profile(self, q, psinorm=None, smooth=True, symmetrical=True):
+    def define_q_profile(self, q, psinorm=None, smooth=True, symmetrical=True, set_targets=True):
         if isinstance(q, (list, tuple, np.ndarray)) and len(q) > 0:
             self.save_original_data(['qpsi'])
             q_new = np.array(q).flatten()
             self._fit['qpsi_fs'] = generate_bounded_1d_spline(q_new, xnorm=psinorm, symmetrical=symmetrical, smooth=smooth)
             self._data['qpsi'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['qpsi_fs']['tck'])
-            if 'qedge' not in self._data:
-                self._data['qedge'] = self._data['qpsi'][-1]
+            if set_targets and 'qedge_target' not in self._data:
+                self._data['qedge_target'] = self._data['qpsi'][-1]
+            if set_targets and 'qaxis_target' not in self._data:
+                self._data['qaxis_target'] = self._data['qpsi'][0]
 
 
     def define_plasma_current(self, cpasma, legacy_ip=False):
@@ -371,7 +373,8 @@ class FixedBoundaryEquilibrium():
                 f_axis = self._data['rcentr'] * self._data['bcentr']
                 #f = np.linspace(f_axis, (1.0 - f_span) * f_axis, self._data['nr'])
                 psinorm = np.linspace(0.0, 1.0, self._data['nr'])
-                f = (1.0 - f_span * (1.0 - 0.6 * np.exp(-psinorm / 0.2) - 0.4 * (1.0 - psinorm))) * f_axis
+                fmod = f_span * (1.0 - 0.6 * np.exp(-psinorm / 0.2) - 0.4 * (1.0 - psinorm))
+                f = (1.0 - fmod) * f_axis
                 self.define_f_profile(f, smooth=True, symmetrical=False, redefine_bcentre=False)
 
 
@@ -384,13 +387,29 @@ class FixedBoundaryEquilibrium():
                     rvacuum = self._data['rleft'] + 0.5 * self._data['rdim']
             self._data['rvacuum'] = float(rvacuum)
             self._data['bvacuum'] = float(bvacuum)
+            if 'fpol' not in self._data:
+                # Linear function for generic initial guess is sufficient for now, needs more testing...
+                f_span = 0.005
+                f_edge = self._data['rvacuum'] * self._data['bvacuum']
+                psinorm = np.linspace(0.0, 1.0, self._data['nr'])
+                fmod = f_span * psinorm
+                # fmod = f_span * (1.0 - 0.6 * np.exp(-psinorm / 0.2) - 0.4 * (1.0 - psinorm))
+                f = (1.0 + fmod[-1] - fmod) * f_edge
+                self.define_f_profile(f, smooth=True, symmetrical=False, redefine_bcentre=True)
 
 
     def define_edge_safety_factor(self, qedge):
         if isinstance(qedge, (float, int)):
-            self._data['qedge'] = float(qedge)
+            self._data['qedge_target'] = float(qedge)
             # if 'qpsi' in self._data:
                 # self._data['qpsi'][-1] = float(qedge)
+
+
+    def define_axis_safety_factor(self, qaxis):
+        if isinstance(qaxis, (float, int)):
+            self._data['qaxis_target'] = float(qaxis)
+            # if 'qpsi' in self._data:
+                # self._data['qpsi'][0] = float(qaxis)
 
 
     def define_f_and_pressure_profiles(self, f, pressure, psinorm=None, smooth=True, symmetrical=True):
@@ -405,7 +424,7 @@ class FixedBoundaryEquilibrium():
 
     def define_pressure_and_q_profiles(self, pressure, q, ip, bt, psinorm=None, smooth=True):
         self.define_pressure_profile(pressure, psinorm=psinorm, smooth=smooth)
-        self.define_q_profile(q, psinorm=psinorm, smooth=smooth)
+        self.define_q_profile(q, psinorm=psinorm, smooth=smooth, set_targets=True)
         self.define_plasma_current(ip)
         self.define_toroidal_field(bt)
 
@@ -1001,7 +1020,7 @@ class FixedBoundaryEquilibrium():
 
     def recompute_q_profile(self, smooth=False):
         self.save_original_fit(['qpsi_fs'])
-        self.define_q_profile(self._data['qpsi'], smooth=smooth)
+        self.define_q_profile(self._data['qpsi'], smooth=smooth, set_targets=False)
         self.recompute_phi_profile(smooth=smooth)
 
 
@@ -1021,7 +1040,7 @@ class FixedBoundaryEquilibrium():
         if approximate_lcfs:
             qpsi[-1] = qpsi[-2] + 2.0 * (qpsi[-2] - qpsi[-3])  # Linear interpolation to separatrix with increased slope
         #self._fit['qpsi_fs'] = generate_bounded_1d_spline(qpsi, xnorm=psinorm, symmetrical=True, smooth=False)
-        self.define_q_profile(qpsi, smooth=smooth)
+        self.define_q_profile(qpsi, smooth=smooth, set_targets=False)
         self.recompute_phi_profile(smooth=False)
 
 
@@ -1077,13 +1096,12 @@ class FixedBoundaryEquilibrium():
         self._data['curscalef'] = curscalef
 
 
-    def _compute_flux_surface_averaged_fpol(self, relax = 1.0):
+    def _compute_flux_surface_averaged_fpol(self):
 
         mu0 = 4 * np.pi * 1e-7
 
         ffp_grid, pp_grid = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
         cur_new = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp_grid.ravel(), pp_grid.ravel()))
-        #cur_new = self._data['cur'] + relax * (cur_new - self._data['cur'])
 
         j_p_grid = -self._data['rpsi'].ravel() * np.where(self._data['inout'] == 0, 0.0, pp_grid.ravel())
         j_f_grid = cur_new - j_p_grid
@@ -1091,12 +1109,17 @@ class FixedBoundaryEquilibrium():
         i_f_grid = np.sum(j_f_grid) * self._data['hrz']
         scale = float((self._data['cpasma'] - i_p_grid) / i_f_grid)  # This scaling does not account for 2D current distribution mismatch
         print('scale:', scale, self._data['cpasma'])
-        print('components:', i_p_grid, i_f_grid)
+        print('pre-components:', i_p_grid, i_f_grid)
 
         length = len(self._fs) #amount of flux surfaces to be evaluted on 
-        ffprime_avg = np.zeros(length)
-        j_p_avg = np.zeros(length)
         psi = np.zeros(length)
+        ffprime_avg = np.zeros(length)
+        vprime_avg = np.zeros(length)
+        r_avg = np.zeros(length)
+        ir2_avg = np.zeros(length)
+        bp2_avg = np.zeros(length)
+        j_p_avg = np.zeros(length)
+        j_f_avg = np.zeros(length)
 
         #maybe transpose
         current_spline = generate_2d_spline(self._data['rvec'], self._data['zvec'], cur_new.reshape(self._data['rpsi'].shape).T, s=0)
@@ -1122,44 +1145,62 @@ class FixedBoundaryEquilibrium():
                 j_p = -r_c * pp
                 j_f = j_total - j_p 
 
-                ffprime = -mu0 * r_c * j_f * scale
+                ffprime = -mu0 * r_c * j_f
 
                 #use midpoint rule to evaluate flux surface averaging integral like in /math.py compute_jtor_contour_integral()
+                rmid = 0.5 * (r_c[1:] + r_c[:-1])
                 ffmid = 0.5 * (ffprime[1:] + ffprime[:-1])
                 j_pmid = 0.5 * (j_p[1:] + j_p[:-1])
+                j_fmid = 0.5 * (j_f[1:] + j_f[:-1])
                 #print(ffmid)
-                ffprime_avg[k] = np.sum(ffmid * dl_over_bp) / np.sum(dl_over_bp)
-                j_p_avg[k] = np.sum(j_pmid * dl_over_bp)
+                ffprime_avg[k] = np.sum(ffmid * dl_over_bp) / np.sum(dl_over_bp)  # ffp
 
-        psinorm = (psi - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx']) 
-        ffprime_avg[0] = 2.0 * ffprime_avg[1] - ffprime_avg[2] 
+                vprime_avg[k] = np.sum(dl_over_bp)  # vprime
+                r_avg[k] = np.sum(rmid * dl_over_bp) / np.sum(dl_over_bp)  # r
+                ir2_avg[k] = ir2  # ir2
+                bp2_avg[k] = bp2  # bp2
+                j_p_avg[k] = np.sum(j_pmid * dl_over_bp / rmid) / np.sum(dl_over_bp)  # -pp
+                j_f_avg[k] = np.sum(j_fmid * dl_over_bp / rmid) / np.sum(dl_over_bp)  # -ffp * ir2 / mu0
+
+        dpsi_dpsinorm = (self._data['sibdry'] - self._data['simagx'])
+        psinorm = (psi - self._data['simagx']) / dpsi_dpsinorm
+        ffprime_avg[0] = 2.0 * ffprime_avg[1] - ffprime_avg[2]
 
         #Integrate to get F(Psi) 
         # (F^2)' = 2 FF' 
-        F2prime = 2.0 * ffprime_avg 
-        #flip vectors so they go from edge to axis 
-        # if psi[0] > psi[-1]: 
+        f2prime = 2.0 * ffprime_avg * scale
+        #flip vectors so they go from edge to axis
         psinorm = psinorm[::-1] 
-        F2prime = F2prime[::-1] 
+        f2prime = f2prime[::-1] 
         edge_level, edge_contour = list(self._fs.items())[-1]
-        dl_over_bp_final, vprime_final, r_final, r2_final, ir_final, ir2_final, bp2_final, bt2_final = compute_flux_surface_average_factors(edge_contour)
-        #use cumlative trapezoid integration 
-        F2_flip = cumulative_simpson(F2prime, x=np.abs(psinorm - psinorm[0]), initial=0.0) * (self._data['sibdry'] - self._data['simagx'])
-        q_edge = self._data['qedge'] if 'qedge' in self._data else self._data['qpsi'][-1]
-        fpol_edge = float(2 * np.pi * q_edge) / ir2_final 
+        # dl_over_bp_final, vprime_final, r_final, r2_final, ir_final, ir2_final, bp2_final, bt2_final = compute_flux_surface_average_factors(edge_contour)
+        f2_flip = -1.0 * cumulative_simpson(f2prime, x=np.abs(psinorm - psinorm[0]), initial=0.0) * dpsi_dpsinorm
         #Flip back to original order 
-        F2 = F2_flip[::-1] + fpol_edge ** 2 
+        f2 = f2_flip[::-1]
+        psinorm = psinorm[::-1]
+
+        # Edge constraint, if specified
+        fpol_edge = 2 * np.pi * self._data['qpsi'][-1] / ir2_avg[-1]
+        if 'qedge_target' in self._data:
+            fpol_edge = 2 * np.pi * self._data['qedge_target'] / ir2_avg[-1]
+        elif 'bvacuum' in self._data and 'rvacuum' in self._data:
+            fpol_edge = self._data['bvacuum'] * self._data['rvacuum']
+        f2 += fpol_edge ** 2
+
         # Take sqrt to get F(psi) 
-        Fpol_psi = np.sqrt(F2) 
+        fpol_psi = np.sqrt(f2) 
         #print(Fpol_psi) 
         #print("fpol",Fpol_psi) 
 
-        # for J_p
-        i_pl_test = np.sqrt(bp2_final / vprime_final) * 2.0 * np.pi * r_final / vprime_final / mu0
-        i_pl_trap = trapezoid(j_p_avg, x=np.abs(psinorm - psinorm[0])) * (self._data['sibdry'] - self._data['simagx'])
-        print('plasma:', i_pl_trap, i_pl_test, self._data['cpasma'])
+        # LCFS test might not be reliable due to boundary resolution issues
+        i_pl_test = np.sqrt(bp2_avg[-1] / vprime_avg[-1]) * 2.0 * np.pi * r_avg[-1] / mu0
+        i_p_trap = trapezoid(j_p_avg * vprime_avg, x=psinorm) * dpsi_dpsinorm
+        i_f_trap = trapezoid(scale * j_f_avg * vprime_avg, x=psinorm) * dpsi_dpsinorm
+        print('plasma:', i_pl_test, self._data['cpasma'])
+        print('post-components:', i_p_trap, i_f_trap, self._data['cpasma'])
 
-        self.define_f_profile(Fpol_psi, smooth=False, symmetrical=False)
+        # self.define_f_profile(fpol_psi, smooth=False, symmetrical=False, redefine_bcentre=True)
+        return fpol_psi
 
 
     def _compute_fpol_on_psi(self):
@@ -1251,6 +1292,7 @@ class FixedBoundaryEquilibrium():
                 jstar[i] = compute_jstar_contour_integral(contour, ffp, pp)
             # if 'jscale' in self._data:
             #     jstar *= self._data['jscale']
+            jstar[0] = 2.0 * jstar[1] - jstar[2]  # Linear interpolation to axis
             self._data['jstar'] = copy.deepcopy(jstar)
 
 
@@ -1342,8 +1384,9 @@ class FixedBoundaryEquilibrium():
     def solve_psi_with_f_iteration(
         self,
         nfiter=10,
-        errf=1.0e-3,
+        errf=1.0e-4,
         relaxf=1.0,
+        # beta_form=4.0,
         #for solve psi
         nxiter=100,
         erreq=1.0e-4,
@@ -1360,7 +1403,7 @@ class FixedBoundaryEquilibrium():
             self._options['errf'] = errf
         if isinstance(relaxf, float):
             self._options['relaxf'] = relaxf
-            f_error = np.inf
+        f_error = np.inf
         
         #for plotting
         history = {
@@ -1386,20 +1429,21 @@ class FixedBoundaryEquilibrium():
                 symmetrical=symmetrical,
             )
             self.scratch = False
+            print('q:', self._data['qpsi'][0], self._data['qpsi'][-1])
             history['psi_error_inner'].append(self._data['psi_error_history'])
 
+            #plot after every solve psi loop 
+            self.compute_flux_surface_averaged_jstar_profile()
+            self.plot_profiles(save=f'profiles_fiter_{n+1:02d}.png', show=False)
+            self.plot_contour(save=f'contours_fiter{n+1:02d}.png', show=False)
+
             fpol_before = copy.deepcopy(self._data['fpol'])
-            self._compute_flux_surface_averaged_fpol(relax=relaxf if n > 0 else 1.0)
-            fpol_after = self._data['fpol']
+            fpol_after = self._compute_flux_surface_averaged_fpol()
+            if self._options['relaxf'] > 0.0 and self._options['relaxf'] < 1.0:
+                fpol_after = fpol_before + self._options['relaxf'] * (fpol_after - fpol_before)
 
-            ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
-            cur_new = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp.ravel(), pp.ravel()))
-            self._data['cur'] = cur_new
-
-            self.recompute_q_profile_from_scratch(smooth=False, approximate_lcfs=False)
-
-            # make nonzero 
-            denom = np.where(np.abs(fpol_after) < 1.0e-30, 1.0e-30, np.abs(fpol_after))
+            # make nonzero
+            denom = np.where(np.abs(fpol_after - fpol_after[-1] + 1.0) < 1.0e-30, 1.0e-30, fpol_after - fpol_after[-1] + 1.0)
             f_error = float(np.nanmax(np.abs(fpol_after - fpol_before) / denom))
 
             #plot convergence 
@@ -1410,11 +1454,6 @@ class FixedBoundaryEquilibrium():
             history['psi_axis'].append(float(self._data['simagx']))
             history['psi_edge'].append(float(self._data['sibdry']))
 
-            #plot after every solve psi loop 
-            self.compute_flux_surface_averaged_jstar_profile()
-            self.plot_profiles(save=f'profiles_fiter_{n+1:02d}.png', show=False)
-            self.plot_contour(save=f'contours_fiter{n+1:02d}.png', show=False)
-
             logger.info(
                 f'F-solver outer iteration {n + 1}: '
                 f'psi converged={self.converged}, '
@@ -1422,6 +1461,14 @@ class FixedBoundaryEquilibrium():
             )
 
             if f_error <= self._options['errf']: break
+
+            self.define_f_profile(fpol_after, smooth=False, symmetrical=False, redefine_bcentre=True)
+
+            ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
+            cur_new = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp.ravel(), pp.ravel()))
+            self._data['cur'] = cur_new
+
+            # self.recompute_q_profile_from_scratch(smooth=False, approximate_lcfs=False)
 
         iters = np.arange(1, len(history['f_error']) + 1)
         fig, axes = plt.subplots(1, 3, figsize=(15, 4))
