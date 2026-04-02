@@ -14,6 +14,7 @@ from scipy.sparse import spdiags
 from scipy.optimize import brentq
 from scipy.integrate import quad
 from scipy.signal import windows, convolve
+from scipy.stats import beta
 import contourpy
 from shapely import Point, Polygon
 from megpy import (
@@ -1051,20 +1052,29 @@ def compute_flux_surface_quantities_boundary(psinorm, r_contour, z_contour, r_re
     return out
 
 
-def compute_flux_surface_average_factors(contour):
-    dl_over_bp = np.array([0.0])
-    vprime = 0.0
-    r = 0.0
-    r2 = 0.0
-    ir = 0.0
-    ir2 = 0.0
-    bp2 = 0.0
-    bt2 = 0.0
+def compute_flux_surface_line_integral_factors(contour):
+    dl = np.array([0.0])
+    bpm = np.array([0.0])
+    btm = np.array([contour['btor'][0]]) if contour.get('btor', np.array([])).size > 0 else np.array([0.0])
+    rcm = np.array([contour['r'][0]]) if contour.get('r', np.array([])).size > 0 else np.array([0.0])
     if contour.get('r', np.array([])).size > 1:
         dl = np.sqrt(np.square(np.diff(contour['r'])) + np.square(np.diff(contour['z']))).flatten()
         bpm = 0.5 * (contour['bpol'][1:] + contour['bpol'][:-1]).flatten()
         btm = 0.5 * (contour['btor'][1:] + contour['btor'][:-1]).flatten()
         rcm = 0.5 * (contour['r'][1:] + contour['r'][:-1]).flatten()
+    return dl, bpm, btm, rcm
+
+
+def compute_flux_surface_average_factors(contour):
+    dl, bpm, btm, rcm = compute_flux_surface_line_integral_factors(contour)
+    vprime = 0.0
+    r = float(contour['r'][0]) if contour.get('r', np.array([])).size > 0 else 0.0
+    r2 = float(contour['r'][0]) ** 2 if contour.get('r', np.array([])).size > 0 else 0.0
+    ir = 1.0 / float(contour['r'][0]) if contour.get('r', np.array([])).size > 0 else 0.0
+    ir2 = 1.0 / float(contour['r'][0]) ** 2 if contour.get('r', np.array([])).size > 0 else 0.0
+    bp2 = float(contour['bpol'][0]) ** 2 if contour.get('bpol', np.array([])).size > 0 else 0.0
+    bt2 = float(contour['btor'][0]) ** 2 if contour.get('bpol', np.array([])).size > 0 else 0.0
+    if dl.size > 1:
         dl_over_bp = dl / bpm
         vprime = np.sum(dl_over_bp)
         r = np.sum(rcm * dl_over_bp)
@@ -1073,25 +1083,34 @@ def compute_flux_surface_average_factors(contour):
         ir2 = np.sum(dl_over_bp / np.square(rcm))
         bp2 = np.sum(dl_over_bp * np.square(bpm))
         bt2 = np.sum(dl_over_bp * np.square(btm))
-    return dl_over_bp, vprime, r, r2, ir, ir2, bp2, bt2
+    out = {
+        'fs_vprime': vprime,
+        'fs_r': r,
+        'fs_r2': r2,
+        'fs_ir': ir,
+        'fs_ir2': ir2,
+        'fs_bp2': bp2,
+        'fs_bt2': bt2,
+    }
+    return out
 
 
 def compute_volume_derivative_contour_integral(contour):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
-        dl_over_bp, vprime, r, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
-        val = vprime
+        fsa = compute_flux_surface_average_factors(contour)
+        val = fsa['fs_vprime']
     return val
 
 
 def compute_safety_factor_contour_integral(contour, current_inside=None):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
-        dl_over_bp, vprime, r, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
-        val = 0.5 * contour['fpol'].item() * ir2 / np.pi
+        fsa = compute_flux_surface_average_factors(contour)
+        val = 0.5 * contour['fpol'].item() * fsa['fs_ir2'] / np.pi
         # Current constraint needs more testing, advised NOT to use
         if isinstance(current_inside, float):
-            val = (0.5 * contour['fpol'].item() * ir2 / np.pi) * bp2 / (4.0e-7 * np.pi * current_inside)
+            val = (0.5 * contour['fpol'].item() * fsa['fs_ir2'] / np.pi) * fsa['fs_bp2'] / (4.0e-7 * np.pi * current_inside)
     return val
 
 
@@ -1099,51 +1118,68 @@ def compute_ffprime_from_jstar_pprime_and_contour(jstar, pp, contour):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
         mu0 = 4.0e-7 * np.pi
-        dl_over_bp, vprime, r, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
-        val = (-mu0 / ir2) * (jstar - vprime * pp)
+        fsa = compute_flux_surface_average_factors(contour)
+        val = (-mu0 / fsa['fs_ir2']) * (jstar - fsa['fs_vprime'] * pp)
     return val
 
 
 def compute_f_from_safety_factor_and_contour(q, contour):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
-        dl_over_bp, vprime, r, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
-        val = 2.0 * np.pi * q / ir2
+        fsa = compute_flux_surface_average_factors(contour)
+        val = 2.0 * np.pi * q / fsa['fs_ir2']
+    return val
+
+
+def compute_jtor_from_f_contour_integral(contour, ffp):
+    val = 0.0
+    if contour.get('r', np.array([])).size > 1:
+        dl, bpm, _, rcm = compute_flux_surface_line_integral_factors(contour)
+        jtor_f = compute_jtor(contour['r'], np.zeros_like(contour['r']) + ffp, np.zeros_like(contour['r']))
+        jtfm = 0.5 * (jtor_f[1:] + jtor_f[:-1]).flatten()
+        val = np.sum(jtfm * dl / (bpm * rcm)) / np.sum(dl / bpm)
+    return val
+
+
+def compute_jtor_from_p_contour_integral(contour, pp):
+    val = 0.0
+    if contour.get('r', np.array([])).size > 1:
+        dl, bpm, _, rcm = compute_flux_surface_line_integral_factors(contour)
+        jtor_p = compute_jtor(contour['r'], np.zeros_like(contour['r']), np.zeros_like(contour['r']) + pp)
+        jtpm = 0.5 * (jtor_p[1:] + jtor_p[:-1]).flatten()
+        val = np.sum(jtpm * dl / (bpm * rcm)) / np.sum(dl / bpm)
     return val
 
 
 def compute_jtor_contour_integral(contour, ffp, pp):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
-        dl_over_bp, vprime, r, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
+        dl, bpm, _, rcm = compute_flux_surface_line_integral_factors(contour)
         jtor = compute_jtor(contour['r'], np.zeros_like(contour['r']) + ffp, np.zeros_like(contour['r']) + pp)
         jtm = 0.5 * (jtor[1:] + jtor[:-1]).flatten()
-        val = np.sum(jtm * dl_over_bp) / np.sum(dl_over_bp)
+        val = np.sum(jtm * dl / (bpm * rcm)) / np.sum(dl / bpm)
     return val
 
 
 def compute_jpar_contour_integral(contour, f, fp, pp):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
-        dl_over_bp, vprime, r, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
+        dl, bpm, _, _ = compute_flux_surface_line_integral_factors(contour)
         btot = np.sqrt(np.square(contour['bpol']) + np.square(contour['btor'])).flatten()
         jpar = compute_jpar(btot, np.zeros_like(contour['r']) + f, np.zeros_like(contour['r']) + fp, np.zeros_like(contour['r']) + pp)
         jpm = 0.5 * (jpar[1:] + jpar[:-1]).flatten()
-        val = np.sum(jpm * dl_over_bp) / np.sum(dl_over_bp)
+        val = np.sum(jpm * dl / bpm) / np.sum(dl / bpm)
     return val
 
 
 def compute_jstar_contour_integral(contour, ffp, pp):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
-        dl_over_bp, vprime, r, r2, ir, ir2, bp2, bt2 = compute_flux_surface_average_factors(contour)
+        dl, bpm, _, rcm = compute_flux_surface_line_integral_factors(contour)
         jtor = compute_jtor(contour['r'], np.zeros_like(contour['r']) + ffp, np.zeros_like(contour['r']) + pp)
         jtm = 0.5 * (jtor[1:] + jtor[:-1]).flatten()
-        rcm = 0.5 * (contour['r'][1:] + contour['r'][:-1]).flatten()
-        val = np.sum(jtm * dl_over_bp / rcm) / np.sum(dl_over_bp / rcm)
+        val = np.sum(jtm * dl / (bpm * rcm)) / np.sum(dl / (bpm * rcm))
     return val
-
-
 
 
 def trace_contours_with_contourpy(rvec, zvec, dmap, levels, rcheck, zcheck):
@@ -1331,3 +1367,19 @@ def jtor_profile_shape_guesser(psinorm, linearity=0.0):
         j_extreme = 0.9 * np.exp(-10.0 * psinorm) - 0.1 * psinorm + 0.1
         j_norm = (1.0 + linearity) * j_base - linearity * j_extreme
     return j_norm
+
+
+def weighted_beta_shape(psinorm, weight=None, skew=0.0):
+    w = weight if isinstance(weight, (float, int, np.ndarray)) else np.ones_like(psinorm)
+    left = 1.0 - 4.0 * skew if skew < 0.0 and skew >= -1.0 else 5.0
+    right = 1.0 + 4.0 * skew if skew > 0.0 and skew <= 1.0 else 5.0
+    func = beta(left, right).pdf(psinorm) / w
+    return func
+
+
+def weighted_exponential_shape(psinorm, weight=None, exponent=1.0):
+    w = weight if isinstance(weight, (float, int, np.ndarray)) else np.ones_like(psinorm)
+    # norm = 1.0 - 1.0 / np.exp(exponent)
+    norm = 1.0
+    func = np.exp(-exponent * psinorm) / (norm * w)
+    return func
