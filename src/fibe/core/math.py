@@ -1391,6 +1391,25 @@ def jtor_profile_shape_guesser(psinorm, linearity=0.0):
     return j_norm
 
 
+def generalized_zero_integral_cubic_polynomial_shape(psinorm, skew=0.0):
+    form = 1.0 - skew * psinorm - (6.0 - 2.0 * skew) * (psinorm ** 2)
+    return (1.0 - psinorm) * form
+
+
+def generalized_zero_integral_exponential_shape(psinorm, exponent=1.0):
+    factor = 2.0 * (1.0 / exponent - (1.0 - np.exp(-exponent)) / exponent ** 2)
+    form = (np.exp(-exponent * psinorm) - factor) / (1.0 - factor)
+    return (1.0 - psinorm) * form
+
+
+def generalized_zero_integral_shape(psinorm, degree=1):
+    form = 1.0 - 3.0 * psinorm
+    if degree >= 1:
+        d = int(degree)
+        form = 1.0 - 0.5 * float((d + 1) * (d + 2)) * psinorm ** d
+    return (1.0 - psinorm) * form
+
+
 def weighted_beta_shape(psinorm, weight=None, skew=0.0):
     w = weight if isinstance(weight, (float, int, np.ndarray)) else np.ones_like(psinorm)
     left = 1.0 - 4.0 * skew if skew < 0.0 and skew >= -1.0 else 5.0
@@ -1405,3 +1424,27 @@ def weighted_exponential_shape(psinorm, weight=None, exponent=1.0):
     norm = 1.0
     func = np.exp(-exponent * psinorm) / (norm * w)
     return func
+
+
+def optimize_ffprime(psinorm, functions, ffp_axis_target, current_target, psinorm_grid, r_grid, mask, area_grid, ffp_max=1.0, exponent_target=3.0):
+    axis_weight = 1.0
+    current_weight = 1.0
+    regpar = 0.01
+    exp = exponent_target
+    def objective(x):
+        ffprime = np.sum(np.atleast_2d(x).T * functions, axis=0)
+        ffp_grid = np.interp(psinorm_grid, psinorm, ffprime)
+        j_f_grid = np.where(mask == 0, 0.0, compute_jtor(r_grid.ravel(), ffp_grid.ravel(), 0.0))
+        i_f_grid = np.sum(j_f_grid) * area_grid
+        form_target = (ffprime[0] - ffprime[-1]) * (np.exp(-exp * psinorm) - np.exp(-exp)) / (1.0 - np.exp(-exp)) + ffprime[-1]
+        # print(ffprime[0] / ffp_axis_target, i_f_grid / current_target, np.sum((ffprime - form_target) ** 2))
+        residual = (
+            axis_weight * (1.0 - ffprime[1] / ffp_axis_target) ** 2 +
+            current_weight * (1.0 - i_f_grid / current_target) ** 2 +
+            regpar * np.sum((1.0 - ffprime / form_target) ** 2)
+        )
+        return residual
+    guess = np.zeros((functions.shape[0], )) - 0.1
+    bounds = (-5.0 * ffp_max * np.ones_like(guess), 5.0 * ffp_max * np.ones_like(guess))
+    result = least_squares(objective, x0=guess, bounds=bounds, method='trf', ftol=1.0e-4, xtol=1.0e-4)
+    return np.atleast_2d(result.x).T
