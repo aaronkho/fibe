@@ -11,10 +11,11 @@ from scipy.interpolate import (
     make_interp_spline,
 )
 from scipy.sparse import spdiags
-from scipy.optimize import brentq
-from scipy.integrate import quad
+from scipy.optimize import brentq, least_squares
+from scipy.integrate import quad, trapezoid
 from scipy.signal import windows, convolve
-from scipy.stats import beta
+from scipy.stats import gamma, beta
+from scipy.special import j0, j1
 import contourpy
 from shapely import Point, Polygon
 from megpy import (
@@ -1057,19 +1058,38 @@ def compute_flux_surface_line_integral_factors(contour):
     bpm = np.array([0.0])
     btm = np.array([contour['btor'][0]]) if contour.get('btor', np.array([])).size > 0 else np.array([0.0])
     rcm = np.array([contour['r'][0]]) if contour.get('r', np.array([])).size > 0 else np.array([0.0])
+    zcm = np.array([contour['z'][0]]) if contour.get('z', np.array([])).size > 0 else np.array([0.0])
     if contour.get('r', np.array([])).size > 1:
         dl = np.sqrt(np.square(np.diff(contour['r'])) + np.square(np.diff(contour['z']))).flatten()
         bpm = 0.5 * (contour['bpol'][1:] + contour['bpol'][:-1]).flatten()
         btm = 0.5 * (contour['btor'][1:] + contour['btor'][:-1]).flatten()
         rcm = 0.5 * (contour['r'][1:] + contour['r'][:-1]).flatten()
-    return dl, bpm, btm, rcm
+        zcm = 0.5 * (contour['z'][1:] + contour['z'][:-1]).flatten()
+    return dl, bpm, btm, rcm, zcm
+
+
+def compute_flux_surface_cross_sectional_area(contour, r_reference=None, z_reference=None):
+    dl, bpm, btm, rcm, zcm = compute_flux_surface_line_integral_factors(contour)
+    if r_reference is None:
+        r_reference = 0.5 * (np.nanmax(rcm) + np.nanmin(rcm))
+    if z_reference is None:
+        z_reference = 0.5 * (np.nanmax(zcm) + np.nanmin(zcm))
+    area = 0.0
+    if rcm.size > 2 and zcm.size > 2:
+        theta = np.angle(rcm + 1.0j * zcm - r_reference - 1.0j * z_reference).flatten()
+        theta -= theta[0]
+        mask = (theta < 0.0)
+        theta[mask] = theta[mask] + 2.0 * np.pi
+        area = float(trapezoid(0.5 * (rcm * np.gradient(zcm, theta) + zcm * np.gradient(rcm, theta)), x=theta))
+    return area
 
 
 def compute_flux_surface_average_factors(contour):
-    dl, bpm, btm, rcm = compute_flux_surface_line_integral_factors(contour)
+    dl, bpm, btm, rcm, zcm = compute_flux_surface_line_integral_factors(contour)
     vprime = 0.0
     r = float(contour['r'][0]) if contour.get('r', np.array([])).size > 0 else 0.0
     r2 = float(contour['r'][0]) ** 2 if contour.get('r', np.array([])).size > 0 else 0.0
+    z = float(contour['z'][0]) if contour.get('z', np.array([])).size > 0 else 0.0
     ir = 1.0 / float(contour['r'][0]) if contour.get('r', np.array([])).size > 0 else 0.0
     ir2 = 1.0 / float(contour['r'][0]) ** 2 if contour.get('r', np.array([])).size > 0 else 0.0
     bp2 = float(contour['bpol'][0]) ** 2 if contour.get('bpol', np.array([])).size > 0 else 0.0
@@ -1079,6 +1099,7 @@ def compute_flux_surface_average_factors(contour):
         vprime = np.sum(dl_over_bp)
         r = np.sum(rcm * dl_over_bp)
         r2 = np.sum(np.square(rcm) * dl_over_bp)
+        z = np.sum(zcm * dl_over_bp)
         ir = np.sum(dl_over_bp / rcm)
         ir2 = np.sum(dl_over_bp / np.square(rcm))
         bp2 = np.sum(dl_over_bp * np.square(bpm))
@@ -1087,6 +1108,7 @@ def compute_flux_surface_average_factors(contour):
         'fs_vprime': vprime,
         'fs_r': r,
         'fs_r2': r2,
+        'fs_z': z,
         'fs_ir': ir,
         'fs_ir2': ir2,
         'fs_bp2': bp2,
@@ -1134,7 +1156,7 @@ def compute_f_from_safety_factor_and_contour(q, contour):
 def compute_jtor_from_f_contour_integral(contour, ffp):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
-        dl, bpm, _, rcm = compute_flux_surface_line_integral_factors(contour)
+        dl, bpm, _, rcm, _ = compute_flux_surface_line_integral_factors(contour)
         jtor_f = compute_jtor(contour['r'], np.zeros_like(contour['r']) + ffp, np.zeros_like(contour['r']))
         jtfm = 0.5 * (jtor_f[1:] + jtor_f[:-1]).flatten()
         val = np.sum(jtfm * dl / (bpm * rcm)) / np.sum(dl / bpm)
@@ -1144,7 +1166,7 @@ def compute_jtor_from_f_contour_integral(contour, ffp):
 def compute_jtor_from_p_contour_integral(contour, pp):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
-        dl, bpm, _, rcm = compute_flux_surface_line_integral_factors(contour)
+        dl, bpm, _, rcm, _ = compute_flux_surface_line_integral_factors(contour)
         jtor_p = compute_jtor(contour['r'], np.zeros_like(contour['r']), np.zeros_like(contour['r']) + pp)
         jtpm = 0.5 * (jtor_p[1:] + jtor_p[:-1]).flatten()
         val = np.sum(jtpm * dl / (bpm * rcm)) / np.sum(dl / bpm)
@@ -1154,7 +1176,7 @@ def compute_jtor_from_p_contour_integral(contour, pp):
 def compute_jtor_contour_integral(contour, ffp, pp):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
-        dl, bpm, _, rcm = compute_flux_surface_line_integral_factors(contour)
+        dl, bpm, _, rcm, _ = compute_flux_surface_line_integral_factors(contour)
         jtor = compute_jtor(contour['r'], np.zeros_like(contour['r']) + ffp, np.zeros_like(contour['r']) + pp)
         jtm = 0.5 * (jtor[1:] + jtor[:-1]).flatten()
         val = np.sum(jtm * dl / (bpm * rcm)) / np.sum(dl / bpm)
@@ -1164,7 +1186,7 @@ def compute_jtor_contour_integral(contour, ffp, pp):
 def compute_jpar_contour_integral(contour, f, fp, pp):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
-        dl, bpm, _, _ = compute_flux_surface_line_integral_factors(contour)
+        dl, bpm, _, _, _ = compute_flux_surface_line_integral_factors(contour)
         btot = np.sqrt(np.square(contour['bpol']) + np.square(contour['btor'])).flatten()
         jpar = compute_jpar(btot, np.zeros_like(contour['r']) + f, np.zeros_like(contour['r']) + fp, np.zeros_like(contour['r']) + pp)
         jpm = 0.5 * (jpar[1:] + jpar[:-1]).flatten()
@@ -1175,7 +1197,7 @@ def compute_jpar_contour_integral(contour, f, fp, pp):
 def compute_jstar_contour_integral(contour, ffp, pp):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
-        dl, bpm, _, rcm = compute_flux_surface_line_integral_factors(contour)
+        dl, bpm, _, rcm, _ = compute_flux_surface_line_integral_factors(contour)
         jtor = compute_jtor(contour['r'], np.zeros_like(contour['r']) + ffp, np.zeros_like(contour['r']) + pp)
         jtm = 0.5 * (jtor[1:] + jtor[:-1]).flatten()
         val = np.sum(jtm * dl / (bpm * rcm)) / np.sum(dl / (bpm * rcm))
