@@ -1426,11 +1426,12 @@ def weighted_exponential_shape(psinorm, weight=None, exponent=1.0):
     return func
 
 
-def optimize_ffprime(psinorm, functions, ffp_axis_target, current_target, psinorm_grid, r_grid, mask, area_grid, ffp_max=1.0, exponent_target=3.0):
+def optimize_ffprime(psinorm, functions, ffp_axis_target, current_target, psinorm_grid, r_grid, mask, area_grid, ffp_max=1.0, exponent_target=3.0, required=None):
     axis_weight = 1.0
     current_weight = 1.0
-    regpar = 0.01
+    regpar = 0.1
     exp = exponent_target
+    ffprime_required = required if isinstance(required, np.ndarray) else np.zeros_like(psinorm)
     def objective(x):
         ffprime = np.sum(np.atleast_2d(x).T * functions, axis=0)
         ffp_grid = np.interp(psinorm_grid, psinorm, ffprime)
@@ -1438,8 +1439,9 @@ def optimize_ffprime(psinorm, functions, ffp_axis_target, current_target, psinor
         i_f_grid = np.sum(j_f_grid) * area_grid
         form_target = (ffprime[0] - ffprime[-1]) * (np.exp(-exp * psinorm) - np.exp(-exp)) / (1.0 - np.exp(-exp)) + ffprime[-1]
         # print(ffprime[0] / ffp_axis_target, i_f_grid / current_target, np.sum((ffprime - form_target) ** 2))
+        ffprime += ffprime_required
         residual = (
-            axis_weight * (1.0 - ffprime[1] / ffp_axis_target) ** 2 +
+            axis_weight * (1.0 - ffprime[0] / ffp_axis_target) ** 2 +
             current_weight * (1.0 - i_f_grid / current_target) ** 2 +
             regpar * np.sum((1.0 - ffprime / form_target) ** 2)
         )

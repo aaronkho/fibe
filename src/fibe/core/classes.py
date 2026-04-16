@@ -377,12 +377,9 @@ class FixedBoundaryEquilibrium():
             self._data['rcentr'] = float(rcentr)
             self._data['bcentr'] = float(bcentr)
             if 'fpol' not in self._data:
-                # Linear function for generic initial guess is sufficient for now, needs more testing...
-                f_span = 0.005
+                f_span = 0.005 * (1.0e-6 * self._data.get('cpasma', 1.0e6))
                 f_axis = self._data['rcentr'] * self._data['bcentr']
-                #f = np.linspace(f_axis, (1.0 - f_span) * f_axis, self._data['nr'])
                 psinorm = np.linspace(0.0, 1.0, self._data['nr'])
-                # fmod = f_span * (1.0 - 0.6 * np.exp(-psinorm / 0.2) - 0.4 * (1.0 - psinorm))
                 fmod = f_span * (1.0 - 0.95 * (np.exp(8.0 * psinorm) - 1.0) / (np.exp(8.0) - 1.0) - 0.05 * psinorm)
                 f = (1.0 + fmod[::-1]) * f_axis
                 self.define_f_profile(f, smooth=False, symmetrical=False, redefine_bcentre=False)
@@ -398,13 +395,10 @@ class FixedBoundaryEquilibrium():
             self._data['rvacuum'] = float(rvacuum)
             self._data['bvacuum'] = float(bvacuum)
             if 'fpol' not in self._data:
-                # Linear function for generic initial guess is sufficient for now, needs more testing...
-                f_span = 0.005
+                f_span = 0.005 * (1.0e-6 * self._data.get('cpasma', 1.0e6))
                 f_edge = self._data['rvacuum'] * self._data['bvacuum']
                 psinorm = np.linspace(0.0, 1.0, self._data['nr'])
-                fmod = f_span * psinorm
-                # fmod = f_span * (1.0 - 0.6 * np.exp(-psinorm / 0.2) - 0.05 * (1.0 - psinorm))
-                # fmod = f_span * (0.95 * (np.exp(8.0 * psinorm) - 1.0) / (np.exp(8.0) - 1.0) + 0.05 * psinorm)
+                fmod = f_span * (0.95 * (np.exp(8.0 * psinorm) - 1.0) / (np.exp(8.0) - 1.0) + 0.05 * psinorm)
                 f = (1.0 + fmod[::-1]) * f_edge
                 self.define_f_profile(f, smooth=False, symmetrical=False, redefine_bcentre=True)
 
@@ -881,8 +875,8 @@ class FixedBoundaryEquilibrium():
         for level in levels:
             ll = np.sign(dpsi) * level
             npoints = compute_adjusted_contour_resolution(
-                self._data['rmagx'], 
-                self._data['zmagx'], 
+                self._data['rmagx'],
+                self._data['zmagx'],
                 self._data['rbdry'],
                 self._data['zbdry'],
                 contours[ll][:, 0],
@@ -953,16 +947,6 @@ class FixedBoundaryEquilibrium():
             self._fit['fpol_fs']['tck'] if 'fpol_fs' in self._fit else None
         )
         contours[float(self._data['sibdry'])].update(compute_flux_surface_average_factors(contours[float(self._data['sibdry'])]))
-        #contours[float(self._data['sibdry'])] = compute_flux_surface_quantities_boundary(
-        #    psinorm[-1],
-        #    self._data['rbdry'],
-        #    self._data['zbdry'],
-        #    self._data['rmagx'],
-        #    self._data['zmagx'],
-        #    self._fit['gradr_bdry']['tck'] if 'gradr_bdry' in self._fit else None,
-        #    self._fit['gradz_bdry']['tck'] if 'gradz_bdry' in self._fit else None,
-        #    self._fit['fpol_fs']['tck'] if 'fpol_fs' in self._fit else None
-        #)
         return contours
 
 
@@ -1227,6 +1211,8 @@ class FixedBoundaryEquilibrium():
         i_f_grid = np.sum(j_f_grid) * self._data['hrz']
         j_f_target = float(self._data['cpasma'] - i_p_grid)
         scale = float(j_f_target / i_f_grid)  # This scaling does not account for 2D current distribution mismatch
+        if scale <= 0.0:
+            raise ValueError('Requested plasma current is less than the computed pressure contribution!')
         print('scale:', scale, self._data['cpasma'])
         print('pre-components:', i_p_grid, i_f_grid)
 
@@ -1253,22 +1239,30 @@ class FixedBoundaryEquilibrium():
             ir2_fs[~trust_fs] = (psinorm[~trust_fs] - psinorm[idx_trust]) * (ir2_fs[0] - ir2_fs[idx_trust]) / (psinorm[0] - psinorm[idx_trust])
             area_fs[~trust_fs] = (psinorm[~trust_fs] - psinorm[idx_trust]) * (area_fs[0] - area_fs[idx_trust]) / (psinorm[0] - psinorm[idx_trust])
 
-        ffprime = copy.deepcopy(self._data['ffprime']) * scale
+        # Identify current hole
+        pprime = self._data['pprime'] / dpsi_dpsinorm
+        dpprime = np.where((np.diff(-pprime)[1:] - np.diff(-pprime)[:-1]) < 0.0)[0]
+        ffprime_hole = np.zeros_like(self._data['ffprime'])
+        if len(dpprime) > 0 and dpprime[0] > 0 and dpprime[0] < (2 * len(pprime) // 3):
+            ffprime_hole[:dpprime[0]] = mu0 * (pprime[dpprime[0]] - pprime[:dpprime[0]]) * vprime_fs / ir2_fs
+
+        ffprime = self._data['ffprime'] / dpsi_dpsinorm
         # Core constraint, if specified (applies to FF')
         if 'qaxis_target' in self._data:
-            relaxf = 0.95
-            ffprime_axis = (self._data['ffprime'][1] / dpsi_dpsinorm) * (self._data['qpsi'][1] / self._data['qaxis_target']) ** 2.0
-            print('F target:', ffprime_axis, ffprime[1] / dpsi_dpsinorm)
-            forms = [np.ones_like(ffprime), 1.0 - psinorm, 1.0 - 2.0 * psinorm]
+            # relaxf = 1.0
+            ffprime_axis = (self._data['ffprime'][0] / dpsi_dpsinorm) * self._data['qpsi'][0] / self._data['qaxis_target']
+            ffprime_target = ffprime_axis #0.5 * (ffprime_axis + ffprime[1])
+            print('F target:', ffprime_axis, ffprime[1])
+            forms = [np.sqrt(psinorm), 1.0 - psinorm, 1.0 - 2.0 * psinorm]
             for exp in np.linspace(1.0, 15.0, 8):
                 # Need to redistribute FF' such that total current is conserved by value on axis pushes towards requested q0
                 # forms.append(generalized_zero_integral_exponential_shape(psinorm, exponent=exp) / (ir2_fs * vprime_fs))
                 forms.append(weighted_exponential_shape(psinorm, exponent=exp))
             forms = np.stack(forms, axis=0)
-            # TODO: Need to pass in vprime and ir2 for accurate current matching
-            weights = optimize_ffprime(psinorm, forms, ffprime_axis, j_f_target, self._data['xpsi'], self._data['rpsi'], self._data['inout'], self._data['hrz'], np.nanmax(np.abs(ffprime)), 8.0)
-            ffprime += relaxf * (np.sum(weights * forms * dpsi_dpsinorm, axis=0) - ffprime)
-            ffp_grid_check = np.interp(self._data['xpsi'], psinorm, ffprime) / dpsi_dpsinorm
+            weights = optimize_ffprime(psinorm, forms, ffprime_target, j_f_target, self._data['xpsi'], self._data['rpsi'], self._data['inout'], self._data['hrz'], np.nanmax(np.abs(ffprime)), 10.0, ffprime_hole)
+            ffprime = np.sum(weights * forms, axis=0) + ffprime_hole
+            # ffprime += relaxf * (np.sum(weights * forms, axis=0) - ffprime)
+            ffp_grid_check = np.interp(self._data['xpsi'], psinorm, ffprime)
             j_f_grid_check = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp_grid_check.ravel(), 0.0))
             i_f_grid_check = np.sum(j_f_grid_check) * self._data['hrz']
             scale = float((self._data['cpasma'] - i_p_grid) / i_f_grid_check)
@@ -1276,6 +1270,12 @@ class FixedBoundaryEquilibrium():
         # Edge constraint, if specified (applies to FF')
         if 'qedge_target' in self._data:
             ffprime_edge = 2 * np.pi * self._data['qedge_target'] / ir2_fs[-1]
+
+        ffprime *= scale
+        # ffprime = np.where(ffprime > ffprime_hole, ffprime_hole, ffprime)
+        ffp_grid_check = np.interp(self._data['xpsi'], psinorm, ffprime) / dpsi_dpsinorm
+        j_f_grid_check = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp_grid_check.ravel(), 0.0))
+        i_f_grid_check = np.sum(j_f_grid_check) * self._data['hrz']
 
         f2prime = 2.0 * ffprime
         f2_flip = -1.0 * cumulative_simpson(f2prime[::-1], x=np.abs(psinorm[::-1] - psinorm[-1]), initial=0.0) * dpsi_dpsinorm
@@ -1290,7 +1290,7 @@ class FixedBoundaryEquilibrium():
 
         # Computing post-adjustment current split between P' and FF'
         i_p_trap = trapezoid(-1.0 * self._data['pprime'] * vprime_fs, x=psinorm)
-        i_f_trap = trapezoid(-1.0 * ffprime * ir2_fs * vprime_fs / mu0, x=psinorm)
+        i_f_trap = trapezoid(-1.0 * ffprime * dpsi_dpsinorm * ir2_fs / mu0, x=psinorm)  # ir2_fs = <1/R^2> * V'
         print('post-components:', i_p_trap, i_f_trap, self._data['cpasma'])
 
         return fpol
