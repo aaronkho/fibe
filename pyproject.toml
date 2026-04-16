@@ -43,6 +43,7 @@ dependencies = [
 dev = ["coverage", "pytest", "pytest-cov"]
 docs = ["sphinx", "furo", "sphinx-rtd-theme"]
 build = ["build", "twine"]
+optuna = ["optuna"]
 
 [project.urls]
 "Homepage" = "https://gitlab.com/aaronkho/fibe"
@@ -51,6 +52,7 @@ build = ["build", "twine"]
 
 [project.scripts]
 fibe_regrid_geqdsk = "fibe.scripts.regrid_eqdsk:main"
+fibe_q_with_bo = "fibe.scripts.bayesian_optimization:main"
 
 [tool.setuptools.dynamic]
 version = {attr = "fibe.__version__"}
