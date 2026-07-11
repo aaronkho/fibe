@@ -72,7 +72,7 @@ Console entry points (installed via `pyproject.toml`):
 - `src/fibe/core/math.py` — stateless numerical routines called by `classes.py`. No solver state is
   held here; everything is passed in/out as plain arrays.
 
-### Typical call sequence
+### Typical call sequence (see README.md for the canonical example)
 
 1. **Grid + boundary**: `define_grid`/`define_grid_and_boundary_with_mxh` (or `define_boundary`,
    `define_boundary_with_mxh`, `define_wall`) — MXH (Miller Extended Harmonic) coefficients
@@ -180,3 +180,74 @@ initialization, just the crude seed from `generate_initial_psi`). Once `fpol` is
 converges to the true equilibrium, so the achieved `jstar` profile (check via
 `compute_flux_surface_averaged_jstar_profile`) can still drift from the target `jstar` after a full
 solve, even though it matches almost exactly right after `initialize_psi()`.
+
+## JAX autodiff scaffold (`src/fibe/jax/`, `jax-autodiff` branch, experimental)
+
+Differentiates a converged GS solution w.r.t. profile shape / `cpasma` via implicit
+differentiation, instead of unrolling the numpy Picard loop through autodiff. Requires the `jax`
+extra (`pip install -e ".[jax]"`). Enables `jax_enable_x64` at import time — JAX's float32 default
+silently caps agreement with the numpy solver (which converges to `erreq~1e-8`) at ~1e-7 relative
+precision.
+
+- `profiles.py` — hand-rolled JAX (Cox-de Boor recursion) evaluation of the cubic B-splines
+  `core.math.generate_bounded_1d_spline` produces, validated against `scipy.interpolate.splev` to
+  ~1e-10. Treats a fitted `(t, c, k)` as the interface — knots `t`/degree `k` frozen, coefficient
+  vector `c` the differentiable leaf — rather than re-deriving `splrep`'s own (nonlinear, when
+  smoothed) knot placement in JAX. `BSplineTCK` is a hand-registered pytree (not a `NamedTuple`)
+  with `k` pinned as static aux data; a `NamedTuple` lets `jax.jit` trace `k`, which breaks the
+  python-level slicing (`c[1:n]`, `range(k+1)`) that assumes it's concrete.
+- `residual.py` — `gs_residual(psi, params, grid)` = `A @ psi + s5*cur(psi, theta)`, the same
+  fixed-point equation `core.math.compute_psi`'s Picard step encodes
+  (`psi_new = -solver(s5*cur)` ⟺ `A@psi_new + s5*cur(psi_old) = 0` at convergence). `A` is reused
+  directly from `eq._data['matrix']` via `jax.experimental.sparse.BCOO`, not re-derived — only the
+  nonlinear current term needs to be JAX-native. `GSGridConstants.grid_from_equilibrium(eq)`
+  freezes grid/boundary geometry and the magnetic-axis grid index from an already-converged
+  `FixedBoundaryEquilibrium`; `GSProfileParams.params_from_equilibrium(eq)` extracts the
+  differentiable profile coefficients + `cpasma`. Only profile shape and `cpasma` are
+  differentiable in this first pass — boundary-shape sensitivity would additionally require
+  `A`/`s5`/the axis index themselves to become functions of theta.
+  - `magnetic_axis_flux` ports `find_extrema_with_taylor_expansion`'s quadratic-Taylor axis-value
+    formula, freezing only the `argmax` *grid index* (envelope theorem: the axis is a stationary
+    point, so its location is insensitive to psi to first order) — the value itself stays a live,
+    differentiable function of psi. `grid_from_equilibrium` must restrict that argmax search to
+    `ijin` (interior points): `eq._data['psi']` has usually been through
+    `extend_psi_beyond_boundary()`, which extrapolates *exterior* points to large values for
+    plotting, and an unrestricted argmax grabs one of those instead of the true axis.
+- `solve.py` — `solve_gs_implicit(params, grid, eq)` wires `gs_residual` into
+  `jax.lax.custom_root`: the forward solve reuses `eq.solve_psi()` unchanged via
+  `jax.pure_callback` (mutates `eq` in place — fine for the single-equilibrium case this targets,
+  but will misbehave under `jax.vmap` over multiple parameter sets, which would all fight over the
+  same mutable `eq`). The backward pass solves `J @ dpsi = y` (`J = ∂(gs_residual)/∂psi`) via a
+  **dense** `jax.jacfwd` + `jnp.linalg.solve` — `jax.scipy.sparse.linalg.gmres` looks like the
+  natural fit (`J` isn't symmetric, so CG is invalid) but reliably crashes with
+  `NotImplementedError` when nested as `tangent_solve` inside `custom_root` (reproduced in a
+  minimal case with no sparse ops at all — looks like a genuine `custom_root`/`custom_linear_solve`
+  AD incompatibility in jax 0.10.2, not something specific to this codebase). The dense fallback is
+  O(n²) memory, so it won't scale past the grid sizes tested here (tens of thousands of points) —
+  revisit once the gmres/custom_root nesting issue is understood.
+
+### Bug this surfaced in `classes.py` (not fixed there yet)
+
+`solve_psi()`'s final `normalize_psi_to_original()` step affinely rescales `psi` to match
+`simagx_orig`/`sibdry_orig` — the axis flux from whichever `solve_psi()` call happened to run
+*first* — on every subsequent (non-`scratch`) call on the same object. Calling `solve_psi()` more
+than once on one `FixedBoundaryEquilibrium` (e.g. after tweaking a profile) silently rescales the
+new result back toward the *first* solve's scale, masking the true sensitivity to whatever
+changed. `jax/solve.py`'s `_numpy_forward_solve` works around this by forcing `eq.scratch = True`
+before every call (confirmed correct against an independent from-scratch numpy re-solve); any
+other code path that reuses one equilibrium object across multiple `solve_psi()` calls should be
+checked against this.
+
+### Validation status (33×33 test grid)
+
+- Forward solve matches direct `eq.solve_psi()` to ~1e-8.
+- `d(psi)/d(pressure spline coefficient)` matches an independent from-scratch numpy finite
+  difference to ~1e-7 relative error.
+- `d(psi)/d(cpasma)` is off by ~17%, stable across FD step sizes spanning two orders of magnitude
+  and unchanged by Newton-correcting `gs_residual` to machine-precision zero first (rules out
+  truncation error and residual-nonzero-ness). A manual implicit-function-theorem calculation
+  bypassing `custom_root` entirely reproduces the same ~17%-off value (rules out a `custom_root`
+  wiring bug). Remaining suspect: `gs_residual`'s model of how `cpasma` enters through the
+  `curscale` global renormalization — the one place a parameter feeds in through a domain-wide
+  integral rather than pointwise. Not yet resolved — treat `cpasma` sensitivities from this module
+  as directionally right but not quantitatively trustworthy until this is root-caused.
