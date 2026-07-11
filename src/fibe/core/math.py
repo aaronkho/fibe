@@ -11,9 +11,11 @@ from scipy.interpolate import (
     make_interp_spline,
 )
 from scipy.sparse import spdiags
-from scipy.optimize import brentq
-from scipy.integrate import quad
+from scipy.optimize import brentq, least_squares
+from scipy.integrate import quad, trapezoid
 from scipy.signal import windows, convolve
+from scipy.stats import gamma, beta
+from scipy.special import j0, j1
 import contourpy
 from shapely import Point, Polygon
 from megpy import (
@@ -311,19 +313,18 @@ def generate_finite_difference_grid(rvec, zvec, rbdry, zbdry):
 def compute_jtor(rpsi, ffprime, pprime):
     '''Compute current density over grid. Scale to Ip'''
     mu0 = 4.0e-7 * np.pi
-    jtor = -1.0 * (ffprime / (mu0 * rpsi) + rpsi * pprime)
+    jtor = -1.0 * (ffprime / (mu0 * rpsi) + rpsi * pprime)  # This -1 is for COCOS convention
     return jtor
 
 
 def compute_psi(solver, s5, current):
-    return -1.0 * solver(s5 * current)
+    return -1.0 * solver(s5 * current)  # This -1 is necessary from GS equation
 
 
-def compute_jpar(inout, btot, fpol, fprime, pprime):
+def compute_jpar(btot, fpol, fprime, pprime):
     mu0 = 4.0e-7 * np.pi
-    jpar = -1.0 * (mu0 * fpol * pprime / btot + fprime * btot)
-    flat_current = np.where(inout == 0, 0.0, jpar.ravel())
-    return flat_current
+    jpar = -1.0 * (fpol * pprime / btot + fprime * btot / mu0)  # This -1 is for COCOS convention
+    return jpar
 
 
 def compute_finite_difference_matrix(nr, nz, s1, s2, s3, s4):
@@ -1052,49 +1053,154 @@ def compute_flux_surface_quantities_boundary(psinorm, r_contour, z_contour, r_re
     return out
 
 
+def compute_flux_surface_line_integral_factors(contour):
+    dl = np.array([0.0])
+    bpm = np.array([0.0])
+    btm = np.array([contour['btor'][0]]) if contour.get('btor', np.array([])).size > 0 else np.array([0.0])
+    rcm = np.array([contour['r'][0]]) if contour.get('r', np.array([])).size > 0 else np.array([0.0])
+    zcm = np.array([contour['z'][0]]) if contour.get('z', np.array([])).size > 0 else np.array([0.0])
+    if contour.get('r', np.array([])).size > 1:
+        dl = np.sqrt(np.square(np.diff(contour['r'])) + np.square(np.diff(contour['z']))).flatten()
+        bpm = 0.5 * (contour['bpol'][1:] + contour['bpol'][:-1]).flatten()
+        btm = 0.5 * (contour['btor'][1:] + contour['btor'][:-1]).flatten()
+        rcm = 0.5 * (contour['r'][1:] + contour['r'][:-1]).flatten()
+        zcm = 0.5 * (contour['z'][1:] + contour['z'][:-1]).flatten()
+    return dl, bpm, btm, rcm, zcm
+
+
+def compute_flux_surface_cross_sectional_area(contour, r_reference=None, z_reference=None):
+    dl, bpm, btm, rcm, zcm = compute_flux_surface_line_integral_factors(contour)
+    if r_reference is None:
+        r_reference = 0.5 * (np.nanmax(rcm) + np.nanmin(rcm))
+    if z_reference is None:
+        z_reference = 0.5 * (np.nanmax(zcm) + np.nanmin(zcm))
+    area = 0.0
+    if rcm.size > 2 and zcm.size > 2:
+        theta = np.angle(rcm + 1.0j * zcm - r_reference - 1.0j * z_reference).flatten()
+        theta -= theta[0]
+        mask = (theta < 0.0)
+        theta[mask] = theta[mask] + 2.0 * np.pi
+        area = float(trapezoid(0.5 * (rcm * np.gradient(zcm, theta) + zcm * np.gradient(rcm, theta)), x=theta))
+    return area
+
+
+def compute_flux_surface_average_factors(contour):
+    dl, bpm, btm, rcm, zcm = compute_flux_surface_line_integral_factors(contour)
+    vprime = 0.0
+    r = float(contour['r'][0]) if contour.get('r', np.array([])).size > 0 else 0.0
+    r2 = float(contour['r'][0]) ** 2 if contour.get('r', np.array([])).size > 0 else 0.0
+    z = float(contour['z'][0]) if contour.get('z', np.array([])).size > 0 else 0.0
+    ir = 1.0 / float(contour['r'][0]) if contour.get('r', np.array([])).size > 0 else 0.0
+    ir2 = 1.0 / float(contour['r'][0]) ** 2 if contour.get('r', np.array([])).size > 0 else 0.0
+    bp2 = float(contour['bpol'][0]) ** 2 if contour.get('bpol', np.array([])).size > 0 else 0.0
+    bt2 = float(contour['btor'][0]) ** 2 if contour.get('bpol', np.array([])).size > 0 else 0.0
+    if dl.size > 1:
+        dl_over_bp = dl / bpm
+        vprime = np.sum(dl_over_bp)
+        r = np.sum(rcm * dl_over_bp)
+        r2 = np.sum(np.square(rcm) * dl_over_bp)
+        z = np.sum(zcm * dl_over_bp)
+        ir = np.sum(dl_over_bp / rcm)
+        ir2 = np.sum(dl_over_bp / np.square(rcm))
+        bp2 = np.sum(dl_over_bp * np.square(bpm))
+        bt2 = np.sum(dl_over_bp * np.square(btm))
+    out = {
+        'fs_vprime': vprime,
+        'fs_r': r,
+        'fs_r2': r2,
+        'fs_z': z,
+        'fs_ir': ir,
+        'fs_ir2': ir2,
+        'fs_bp2': bp2,
+        'fs_bt2': bt2,
+    }
+    return out
+
+
+def compute_volume_derivative_contour_integral(contour):
+    val = 0.0
+    if contour.get('r', np.array([])).size > 1:
+        fsa = compute_flux_surface_average_factors(contour)
+        val = fsa['fs_vprime']
+    return val
+
+
 def compute_safety_factor_contour_integral(contour, current_inside=None):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
-        dl = np.sqrt(np.square(np.diff(contour['r'])) + np.square(np.diff(contour['z']))).flatten()
-        rcm = 0.5 * (contour['r'][1:] + contour['r'][:-1]).flatten()
-        #zcm = 0.5 * (contour['z'][1:] + contour['z'][:-1]).flatten()
-        bpm = 0.5 * (contour['bpol'][1:] + contour['bpol'][:-1]).flatten()
-        #btm = 0.5 * (contour['btor'][1:] + contour['btor'][:-1]).flatten()
-        dl_over_bp = dl / bpm
-        vp = np.sum(dl_over_bp)
-        ir2 = np.sum(dl_over_bp / np.square(rcm)) / np.sum(dl_over_bp)
-        bp2 = np.sum(dl_over_bp * np.square(bpm)) / np.sum(dl_over_bp)
-        val = (0.5 * contour['fpol'].item() * ir2 / np.pi) * vp
+        fsa = compute_flux_surface_average_factors(contour)
+        val = 0.5 * contour['fpol'].item() * fsa['fs_ir2'] / np.pi
         # Current constraint needs more testing, advised NOT to use
         if isinstance(current_inside, float):
-            val = (0.5 * contour['fpol'].item() * ir2 / np.pi) * np.square(vp) * bp2 / (4.0e-7 * np.pi * current_inside)
+            val = (0.5 * contour['fpol'].item() * fsa['fs_ir2'] / np.pi) * fsa['fs_bp2'] / (4.0e-7 * np.pi * current_inside)
+    return val
+
+
+def compute_ffprime_from_jstar_pprime_and_contour(jstar, pp, contour):
+    val = 0.0
+    if contour.get('r', np.array([])).size > 1:
+        mu0 = 4.0e-7 * np.pi
+        fsa = compute_flux_surface_average_factors(contour)
+        val = (-mu0 / fsa['fs_ir2']) * (jstar - fsa['fs_vprime'] * pp)
     return val
 
 
 def compute_f_from_safety_factor_and_contour(q, contour):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
-        dl = np.sqrt(np.square(np.diff(contour['r'])) + np.square(np.diff(contour['z']))).flatten()
-        rcm = 0.5 * (contour['r'][1:] + contour['r'][:-1]).flatten()
-        bpm = 0.5 * (contour['bpol'][1:] + contour['bpol'][:-1]).flatten()
-        dl_over_bp = dl / bpm
-        vp = np.sum(dl_over_bp)
-        rm2 = np.sum(dl_over_bp / np.square(rcm)) / vp
-        val = 2.0 * np.pi * q / (vp * rm2)
+        fsa = compute_flux_surface_average_factors(contour)
+        val = 2.0 * np.pi * q / fsa['fs_ir2']
+    return val
+
+
+def compute_jtor_from_f_contour_integral(contour, ffp):
+    val = 0.0
+    if contour.get('r', np.array([])).size > 1:
+        dl, bpm, _, rcm, _ = compute_flux_surface_line_integral_factors(contour)
+        jtor_f = compute_jtor(contour['r'], np.zeros_like(contour['r']) + ffp, np.zeros_like(contour['r']))
+        jtfm = 0.5 * (jtor_f[1:] + jtor_f[:-1]).flatten()
+        val = np.sum(jtfm * dl / (bpm * rcm)) / np.sum(dl / bpm)
+    return val
+
+
+def compute_jtor_from_p_contour_integral(contour, pp):
+    val = 0.0
+    if contour.get('r', np.array([])).size > 1:
+        dl, bpm, _, rcm, _ = compute_flux_surface_line_integral_factors(contour)
+        jtor_p = compute_jtor(contour['r'], np.zeros_like(contour['r']), np.zeros_like(contour['r']) + pp)
+        jtpm = 0.5 * (jtor_p[1:] + jtor_p[:-1]).flatten()
+        val = np.sum(jtpm * dl / (bpm * rcm)) / np.sum(dl / bpm)
     return val
 
 
 def compute_jtor_contour_integral(contour, ffp, pp):
     val = 0.0
     if contour.get('r', np.array([])).size > 1:
+        dl, bpm, _, rcm, _ = compute_flux_surface_line_integral_factors(contour)
         jtor = compute_jtor(contour['r'], np.zeros_like(contour['r']) + ffp, np.zeros_like(contour['r']) + pp)
-        dl = np.sqrt(np.square(np.diff(contour['r'])) + np.square(np.diff(contour['z']))).flatten()
-        rcm = 0.5 * (contour['r'][1:] + contour['r'][:-1]).flatten()
-        bpm = 0.5 * (contour['bpol'][1:] + contour['bpol'][:-1]).flatten()
         jtm = 0.5 * (jtor[1:] + jtor[:-1]).flatten()
-        dl_over_bp = dl / bpm
-        vp = np.sum(dl_over_bp)
-        val = np.sum(jtm * dl_over_bp) / np.sum(dl_over_bp)
+        val = np.sum(jtm * dl / (bpm * rcm)) / np.sum(dl / bpm)
+    return val
+
+
+def compute_jpar_contour_integral(contour, f, fp, pp):
+    val = 0.0
+    if contour.get('r', np.array([])).size > 1:
+        dl, bpm, _, _, _ = compute_flux_surface_line_integral_factors(contour)
+        btot = np.sqrt(np.square(contour['bpol']) + np.square(contour['btor'])).flatten()
+        jpar = compute_jpar(btot, np.zeros_like(contour['r']) + f, np.zeros_like(contour['r']) + fp, np.zeros_like(contour['r']) + pp)
+        jpm = 0.5 * (jpar[1:] + jpar[:-1]).flatten()
+        val = np.sum(jpm * dl / bpm) / np.sum(dl / bpm)
+    return val
+
+
+def compute_jstar_contour_integral(contour, ffp, pp):
+    val = 0.0
+    if contour.get('r', np.array([])).size > 1:
+        dl, bpm, _, rcm, _ = compute_flux_surface_line_integral_factors(contour)
+        jtor = compute_jtor(contour['r'], np.zeros_like(contour['r']) + ffp, np.zeros_like(contour['r']) + pp)
+        jtm = 0.5 * (jtor[1:] + jtor[:-1]).flatten()
+        val = np.sum(jtm * dl / (bpm * rcm)) / np.sum(dl / (bpm * rcm))
     return val
 
 
@@ -1182,8 +1288,12 @@ def trace_contour_with_megpy(rvec, zvec, psi, level, rcheck, zcheck, boundary=Fa
     )
     if len(loops['contours']) > 0:
         loop = np.array(loops['contours'][0]).T
-        contour_out['r'] = np.concatenate([loop[:, 0].flatten(), np.array([loop[0, 0]])])
-        contour_out['z'] = np.concatenate([loop[:, 1].flatten(), np.array([loop[0, 1]])])
+        contour_out['r'] = loop[:, 0].flatten()
+        contour_out['z'] = loop[:, 1].flatten()
+        if contour_out['r'][0] != contour_out['r'][-1]:
+            contour_out['r'] = np.concatenate([contour_out['r'], np.array([contour_out['r'][0]])])
+        if contour_out['z'][0] != contour_out['z'][-1]:
+            contour_out['z'] = np.concatenate([contour_out['z'], np.array([contour_out['z'][0]])])
     return contour_out
 
 
@@ -1253,3 +1363,90 @@ def check_fully_contained_contours(r_inner, z_inner, r_outer, z_outer):
         if not polygon.contains(point_inside):
             return False
     return True
+
+
+def f_profile_shape_guesser(psinorm, linearity=0.0):
+    f_norm = 0.75 * (np.exp(-5.0 * psinorm) - psinorm * np.exp(-5.0)) + 0.25 - 0.25 * psinorm
+    f_base = 0.75 * (np.exp(-5.0 * psinorm) - psinorm * np.exp(-5.0)) + 0.25 - 0.25 * psinorm
+    if linearity > 0.0 and linearity <= 1.0:
+        # f_extreme = (1.0 - 0.2 * psinorm) - 0.8 * (psinorm ** 20)
+        f_extreme = 0.9 * (np.exp(-2.0 * psinorm) - psinorm * np.exp(-2.0)) + 0.1 - 0.1 * (psinorm ** 15)
+        f_norm = (1.0 - linearity) * f_base + linearity * f_extreme
+    if linearity < 0.0 and linearity >= -1.0:
+        # f_extreme = 0.9 * (np.exp(-6.0 * psinorm) - psinorm * np.exp(-6.0)) + 0.1 - 0.1 * psinorm
+        f_extreme = 0.9 * (1.0 - psinorm ** 10) - 0.1 * psinorm + 0.1
+        f_norm = (1.0 + linearity) * f_base - linearity * f_extreme
+    return f_norm
+
+
+def jtor_profile_shape_guesser(psinorm, linearity=0.0):
+    j_norm = 0.5 * (1.0 - (psinorm ** 2)) * np.exp(-(psinorm ** 2) / 0.2) - 0.5 * (psinorm - 1.0)
+    j_base = 0.5 * (1.0 - (psinorm ** 2)) * np.exp(-(psinorm ** 2) / 0.2) - 0.5 * (psinorm - 1.0)
+    if linearity > 0.0 and linearity <= 1.0:
+        j_extreme = (1.0 - 0.1 * psinorm) * (1.0 - psinorm ** 9)
+        j_norm = (1.0 - linearity) * j_base + linearity * j_extreme
+    if linearity < 0.0 and linearity >= -1.0:
+        j_extreme = 0.9 * np.exp(-10.0 * psinorm) - 0.1 * psinorm + 0.1
+        j_norm = (1.0 + linearity) * j_base - linearity * j_extreme
+    return j_norm
+
+
+def generalized_zero_integral_cubic_polynomial_shape(psinorm, skew=0.0):
+    form = 1.0 - skew * psinorm - (6.0 - 2.0 * skew) * (psinorm ** 2)
+    return (1.0 - psinorm) * form
+
+
+def generalized_zero_integral_exponential_shape(psinorm, exponent=1.0):
+    factor = 2.0 * (1.0 / exponent - (1.0 - np.exp(-exponent)) / exponent ** 2)
+    form = (np.exp(-exponent * psinorm) - factor) / (1.0 - factor)
+    return (1.0 - psinorm) * form
+
+
+def generalized_zero_integral_shape(psinorm, degree=1):
+    form = 1.0 - 3.0 * psinorm
+    if degree >= 1:
+        d = int(degree)
+        form = 1.0 - 0.5 * float((d + 1) * (d + 2)) * psinorm ** d
+    return (1.0 - psinorm) * form
+
+
+def weighted_beta_shape(psinorm, weight=None, skew=0.0):
+    w = weight if isinstance(weight, (float, int, np.ndarray)) else np.ones_like(psinorm)
+    left = 1.0 - 4.0 * skew if skew < 0.0 and skew >= -1.0 else 5.0
+    right = 1.0 + 4.0 * skew if skew > 0.0 and skew <= 1.0 else 5.0
+    func = beta(left, right).pdf(psinorm) / w
+    return func
+
+
+def weighted_exponential_shape(psinorm, weight=None, exponent=1.0):
+    w = weight if isinstance(weight, (float, int, np.ndarray)) else np.ones_like(psinorm)
+    # norm = 1.0 - 1.0 / np.exp(exponent)
+    norm = 1.0
+    func = np.exp(-exponent * psinorm) / (norm * w)
+    return func
+
+
+def optimize_ffprime(psinorm, functions, ffp_axis_target, current_target, psinorm_grid, r_grid, mask, area_grid, ffp_max=1.0, exponent_target=3.0, required=None):
+    axis_weight = 1.0
+    current_weight = 1.0
+    regpar = 0.1
+    exp = exponent_target
+    ffprime_required = required if isinstance(required, np.ndarray) else np.zeros_like(psinorm)
+    def objective(x):
+        ffprime = np.sum(np.atleast_2d(x).T * functions, axis=0)
+        ffp_grid = np.interp(psinorm_grid, psinorm, ffprime)
+        j_f_grid = np.where(mask == 0, 0.0, compute_jtor(r_grid.ravel(), ffp_grid.ravel(), 0.0))
+        i_f_grid = np.sum(j_f_grid) * area_grid
+        form_target = (ffprime[0] - ffprime[-1]) * (np.exp(-exp * psinorm) - np.exp(-exp)) / (1.0 - np.exp(-exp)) + ffprime[-1]
+        # print(ffprime[0] / ffp_axis_target, i_f_grid / current_target, np.sum((ffprime - form_target) ** 2))
+        ffprime += ffprime_required
+        residual = (
+            axis_weight * (1.0 - ffprime[0] / ffp_axis_target) ** 2 +
+            current_weight * (1.0 - i_f_grid / current_target) ** 2 +
+            regpar * np.sum((1.0 - ffprime / form_target) ** 2)
+        )
+        return residual
+    guess = np.zeros((functions.shape[0], )) - 0.1
+    bounds = (-5.0 * ffp_max * np.ones_like(guess), 5.0 * ffp_max * np.ones_like(guess))
+    result = least_squares(objective, x0=guess, bounds=bounds, method='trf', ftol=1.0e-4, xtol=1.0e-4)
+    return np.atleast_2d(result.x).T
