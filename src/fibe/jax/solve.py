@@ -50,18 +50,21 @@
 #   - d(psi)/d(pressure spline coefficient) matches FD to ~1e-7 relative
 #     error -- the primary use case this was built for (gradient-based
 #     profile shaping) looks solid.
-#   - d(psi)/d(cpasma) is systematically off by ~17%, stable across FD step
-#     sizes from 3e2 to 3e4 (i.e. not truncation error) and unchanged by
-#     exactly Newton-correcting gs_residual to machine-precision zero before
-#     differentiating (i.e. not residual-nonzero-ness at the "root" either).
-#     A manual implicit-function-theorem calculation (jacfwd, no
-#     custom_root involved) reproduces the same ~17%-off value, so it is
-#     not a custom_root/tangent_solve wiring bug -- gs_residual's own model
-#     of how cpasma enters (through the curscale global renormalization,
-#     the one place a parameter feeds in through a domain-wide integral
-#     rather than pointwise) is the remaining suspect, not yet isolated
-#     further. Treat cpasma sensitivities from this module as directionally
-#     right but not yet quantitatively trustworthy until this is resolved.
+#   - d(psi)/d(cpasma) initially looked systematically off by ~17%, stable
+#     across FD step sizes and unchanged by Newton-correcting gs_residual to
+#     machine-precision zero first, and reproduced exactly by a manual
+#     implicit-function-theorem calculation bypassing custom_root entirely
+#     -- so not a wiring bug and not truncation/residual-nonzero-ness. Root
+#     cause turned out to be in the *test*, not this module: the from-
+#     scratch FD reference called classes.define_vacuum_toroidal_field()
+#     for each perturbed cpasma to seed fpol, and that seed generator's
+#     f_span is itself a function of cpasma (f_span = 0.005*(1e-6*cpasma)),
+#     so the "reference" was silently varying the F-profile shape along
+#     with cpasma while gs_residual (correctly) holds it fixed -- two
+#     different partial derivatives being compared. Holding fpol truly
+#     fixed in the FD reference (defining it once via define_f_profile and
+#     reusing the same array for every cpasma value) brought the relative
+#     error down to ~1e-10. d(psi)/d(cpasma) is validated.
 from typing import Any
 
 import numpy as np

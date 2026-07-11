@@ -243,11 +243,18 @@ checked against this.
 - Forward solve matches direct `eq.solve_psi()` to ~1e-8.
 - `d(psi)/d(pressure spline coefficient)` matches an independent from-scratch numpy finite
   difference to ~1e-7 relative error.
-- `d(psi)/d(cpasma)` is off by ~17%, stable across FD step sizes spanning two orders of magnitude
-  and unchanged by Newton-correcting `gs_residual` to machine-precision zero first (rules out
-  truncation error and residual-nonzero-ness). A manual implicit-function-theorem calculation
-  bypassing `custom_root` entirely reproduces the same ~17%-off value (rules out a `custom_root`
-  wiring bug). Remaining suspect: `gs_residual`'s model of how `cpasma` enters through the
-  `curscale` global renormalization — the one place a parameter feeds in through a domain-wide
-  integral rather than pointwise. Not yet resolved — treat `cpasma` sensitivities from this module
-  as directionally right but not quantitatively trustworthy until this is root-caused.
+- `d(psi)/d(cpasma)` initially looked off by ~17%, reproducibly (stable across FD step sizes,
+  unaffected by Newton-correcting `gs_residual` to machine-precision zero first, and reproduced
+  exactly by a manual implicit-function-theorem calculation bypassing `custom_root` entirely — so
+  not truncation error, not residual-nonzero-ness, not a `custom_root` wiring bug). Root cause was
+  in the *test*, not `gs_residual`: the from-scratch finite-difference reference called
+  `classes.define_vacuum_toroidal_field()` to seed `fpol` for each perturbed `cpasma` value, and
+  that seed generator's `f_span` is itself a function of `cpasma`
+  (`f_span = 0.005*(1e-6*cpasma)`) — so the "reference" was silently varying the F-profile shape
+  along with `cpasma`, while `gs_residual` (correctly) holds it fixed; two different partial
+  derivatives were being compared. Holding `fpol` truly fixed in the FD reference (define it once,
+  reuse the same array for every `cpasma` value) brings the relative error to ~1e-10.
+  `d(psi)/d(cpasma)` is validated. (Worth knowing on its own: `define_vacuum_toroidal_field`'s
+  auto-generated seed `fpol` depends on whatever `cpasma` happens to be set at the time it's
+  called — calling it again after changing `cpasma`, expecting only `bcentr` to change, will
+  silently reshape the F-profile too.)
