@@ -6,7 +6,7 @@ from collections.abc import MutableMapping, Mapping, MutableSequence, Sequence, 
 import numpy as np
 import pandas as pd
 from scipy.interpolate import splev, bisplev
-from scipy.integrate import cumulative_simpson, trapezoid
+from scipy.integrate import cumulative_trapezoid, cumulative_simpson, trapezoid
 from scipy.sparse.linalg import factorized
 from scipy.optimize import root
 from shapely import Point, Polygon
@@ -49,12 +49,15 @@ from .math import (
     compute_flux_surface_cross_sectional_area,
     compute_flux_surface_average_factors,
     generalized_zero_integral_cubic_polynomial_shape,
-    generalized_zero_integral_exponential_shape,
+    generalized_zero_integral_exponential_decay_shape,
+    generalized_zero_integral_exponential_growth_shape,
     generalized_zero_integral_shape,
     weighted_exponential_shape,
+    weighted_gaussian_shape,
     #f_profile_shape_guesser,
     #jtor_profile_shape_guesser,
     optimize_ffprime,
+    optimize_jtor,
 )
 from ..utils.eqdsk import (
     read_geqdsk_file,
@@ -1029,12 +1032,31 @@ class FixedBoundaryEquilibrium():
             self.extend_psi_beyond_boundary()
         self._fs = self.trace_flux_surfaces()
         psinorm = np.zeros((len(self._fs), ), dtype=float)
+        fpol = np.zeros_like(psinorm)
+        ir2_fs = np.zeros_like(psinorm)
         qpsi = np.zeros_like(psinorm)
+        trust_fs = np.full(psinorm.shape, True)
+        full_area_estimate = np.sum(np.where(self._data['inout'] == 0, 0.0, self._data['hrz']))
         for i, (level, contour) in enumerate(self._fs.items()):
             #current_inside = float(np.abs(self._data['cpasma'])) if level == float(self._data['sibdry']) else None
             psinorm[i] = (level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
+            fpol[i] = contour['fpol']
+            ir2_fs[i] = contour['fs_ir2']
             qpsi[i] = np.sign(self._data['cpasma']) * compute_safety_factor_contour_integral(contour, current_inside=None)
-        qpsi[0] = 2.0 * qpsi[1] - qpsi[2]  # Linear interpolation to axis
+            area = compute_flux_surface_cross_sectional_area(contour, r_reference=self._data['rmagx'], z_reference=self._data['zmagx'])
+            if (len(contour.get('r', np.array([]))) <= 4) or ((area / full_area_estimate) <= 0.01):
+                trust_fs[i] = False
+        if np.any(trust_fs[1:]):
+            idx_trust = np.where(trust_fs)[0][0]
+            # ir2_trust = (ir2_fs[0] - ir2_fs[idx_trust]) * ((psinorm[~trust_fs] - psinorm[idx_trust]) / (psinorm[0] - psinorm[idx_trust])) ** 2 + ir2_fs[idx_trust]
+            # qpsi[~trust_fs] = qpsi[~trust_fs] * ir2_trust / ir2_fs[~trust_fs]
+            qpsi[~trust_fs] = (psinorm[~trust_fs] - psinorm[idx_trust]) * (qpsi[idx_trust+1] - qpsi[idx_trust]) / (psinorm[idx_trust+1] - psinorm[idx_trust]) + qpsi[idx_trust]
+            # qpsi[~trust_fs] = (qpsi_axis - qpsi[idx_trust]) * ((psinorm[~trust_fs] - psinorm[idx_trust]) / (psinorm[0] - psinorm[idx_trust])) ** 2 + qpsi[idx_trust]
+            # qpsi[0] = 0.5 * fpol[0] / (np.pi * self._data['rmagx'] ** 2)
+            # qpsi[~trust_fs] = (psinorm[~trust_fs] - psinorm[idx_trust]) * (qpsi[0] - qpsi[idx_trust]) / (psinorm[0] - psinorm[idx_trust]) + qpsi[idx_trust]
+        # qpsi = 0.5 * fpol * ir2_fs / np.pi
+        else:
+            qpsi[0] = 2.0 * qpsi[1] - qpsi[2]  # Linear interpolation to axis
         if approximate_lcfs:
             qpsi[-1] = qpsi[-2] + 2.0 * (qpsi[-2] - qpsi[-3])  # Linear interpolation to separatrix with increased slope
         #self._fit['qpsi_fs'] = generate_bounded_1d_spline(qpsi, xnorm=psinorm, symmetrical=True, smooth=False)
@@ -1223,59 +1245,176 @@ class FixedBoundaryEquilibrium():
         ir2_fs = np.zeros(length)
         area_fs = np.zeros(length)
         trust_fs = np.full(psinorm.shape, True)
+        full_area_estimate = np.sum(np.where(self._data['inout'] == 0, 0.0, self._data['hrz']))
         for k, (level, contour) in enumerate(self._fs.items()):
             psinorm[k] = (level - self._data['simagx']) / dpsi_dpsinorm  #renormalization
             vprime_fs[k] = contour['fs_vprime']
             ir2_fs[k] = contour['fs_ir2']
             area_fs[k] = compute_flux_surface_cross_sectional_area(contour, r_reference=self._data['rmagx'], z_reference=self._data['zmagx'])
-            if (len(contour.get('r', np.array([]))) <= 4) or (area_fs[k] <= 3.0 * self._data['hrz']):
+            if (len(contour.get('r', np.array([]))) <= 4) or ((area_fs[k] / full_area_estimate) <= 0.01):
                 trust_fs[k] = False
         vprime_fs[0] = 2.0 * vprime_fs[1] - vprime_fs[2]
         ir2_fs[0] = 1.0 / self._data['rmagx'] ** 2
         area_fs[0] = 0.0
         if np.any(trust_fs[1:]):
             idx_trust = np.where(trust_fs)[0][0]
-            vprime_fs[~trust_fs] = (psinorm[~trust_fs] - psinorm[idx_trust]) * (vprime_fs[idx_trust+1] - vprime_fs[idx_trust]) / (psinorm[idx_trust+1] - psinorm[idx_trust])
-            ir2_fs[~trust_fs] = (psinorm[~trust_fs] - psinorm[idx_trust]) * (ir2_fs[0] - ir2_fs[idx_trust]) / (psinorm[0] - psinorm[idx_trust])
-            area_fs[~trust_fs] = (psinorm[~trust_fs] - psinorm[idx_trust]) * (area_fs[0] - area_fs[idx_trust]) / (psinorm[0] - psinorm[idx_trust])
+            vprime_fs[~trust_fs] = (psinorm[~trust_fs] - psinorm[idx_trust]) * (vprime_fs[idx_trust+1] - vprime_fs[idx_trust]) / (psinorm[idx_trust+1] - psinorm[idx_trust]) + vprime_fs[idx_trust]
+            # vprime_fs[~trust_fs] = vprime_fs[idx_trust]
+            ir2_fs[~trust_fs] = (ir2_fs[0] - ir2_fs[idx_trust]) * ((psinorm[~trust_fs] - psinorm[idx_trust]) / (psinorm[0] - psinorm[idx_trust])) ** 2 + ir2_fs[idx_trust]
+            area_fs[~trust_fs] = (psinorm[~trust_fs] - psinorm[idx_trust]) * (area_fs[0] - area_fs[idx_trust]) / (psinorm[0] - psinorm[idx_trust]) + area_fs[idx_trust]
 
         # Identify current hole
+        hole_mult = 1.1
         pprime = self._data['pprime'] / dpsi_dpsinorm
-        dpprime = np.where((np.diff(-pprime)[1:] - np.diff(-pprime)[:-1]) < 0.0)[0]
+        dpprime = np.diff(-pprime)[1:] * np.diff(-pprime)[:-1]
+        indices = np.where(dpprime < 0.0)[0]
         ffprime_hole = np.zeros_like(self._data['ffprime'])
-        if len(dpprime) > 0 and dpprime[0] > 0 and dpprime[0] < (2 * len(pprime) // 3):
-            ffprime_hole[:dpprime[0]] = mu0 * (pprime[dpprime[0]] - pprime[:dpprime[0]]) * vprime_fs / ir2_fs
+        if len(indices) > 0 and indices[0] > 0 and indices[0] < (2 * len(pprime) // 3):
+            # idx = indices[0]
+            # ffprime_hole[:idx] = np.minimum(hole_mult * mu0 * (pprime[idx] - pprime[:idx]) * vprime_fs[:idx] / ir2_fs[:idx], 0.0)
+            idx = indices[0] + 2
+            grad_j_p_hole = hole_mult * (pprime[idx-1] - pprime[idx]) * np.linspace(0.0, 1.0, idx) ** 2
+            j_p_hole = cumulative_trapezoid(-grad_j_p_hole[::-1], initial=0.0)[::-1] + pprime[idx-1]
+            ffprime_hole[:idx] = np.minimum(mu0 * (j_p_hole - pprime[:idx]) * vprime_fs[:idx] / ir2_fs[:idx], 0.0)
 
+        use_jtor = False
         ffprime = self._data['ffprime'] / dpsi_dpsinorm
+        ffprime_axis_target = None
+        ffprime_edge_target = None
+        jtor_axis_target = np.nanmax(-pprime) * dpsi_dpsinorm
+        jtor_edge_target = -1.01 * pprime[-1] * dpsi_dpsinorm
         # Core constraint, if specified (applies to FF')
         if 'qaxis_target' in self._data:
             # relaxf = 1.0
-            ffprime_axis = (self._data['ffprime'][0] / dpsi_dpsinorm) * self._data['qpsi'][0] / self._data['qaxis_target']
-            ffprime_target = ffprime_axis #0.5 * (ffprime_axis + ffprime[1])
-            print('F target:', ffprime_axis, ffprime[1])
-            forms = [np.sqrt(psinorm), 1.0 - psinorm, 1.0 - 2.0 * psinorm]
-            for exp in np.linspace(1.0, 15.0, 8):
+            # ffprime_axis = (ffprime[0] - ffprime_hole[0]) * self._data['qpsi'][0] / self._data['qaxis_target']
+            ffprime_axis = ffprime[0] * self._data['qpsi'][0] / self._data['qaxis_target']
+            ffprime_axis_target = ffprime_axis #0.5 * (ffprime_axis + ffprime[1])
+            print('FF\' axis target:', ffprime_axis_target, ffprime[0]) #(ffprime[0] - ffprime_hole[0]))
+            jtor_axis_target = -dpsi_dpsinorm * ffprime_axis * ir2_fs[0] / (mu0 * vprime_fs[0])
+            print('j axis target:', jtor_axis_target, -dpsi_dpsinorm * ffprime[0] * ir2_fs[0] / (mu0 * vprime_fs[0])) #(ffprime[0] - ffprime_hole[0]))
+        # Edge constraint, if specified (applies to FF')
+        if 'qedge_target' in self._data:
+            # ffprime_edge = 2 * np.pi * self._data['qedge_target'] / ir2_fs[-1]
+            # ffprime_edge = (ffprime[-1] - ffprime_hole[-1]) * self._data['qpsi'][-1] / self._data['qedge_target']
+            ffprime_edge = ffprime[-1] * self._data['qpsi'][-1] / self._data['qedge_target']
+            ffprime_edge_target = ffprime_edge
+            print('FF\' edge target:', ffprime_edge_target, ffprime[-1]) #(ffprime[-1] - ffprime_hole[-1]))
+            jtor_edge_target = -dpsi_dpsinorm * (ffprime_edge * ir2_fs[-1] / (mu0 * vprime_fs[-1]) + pprime[-1])
+            print('j edge target:', jtor_edge_target, -dpsi_dpsinorm * (ffprime[-1] * ir2_fs[-1] / (mu0 * vprime_fs[-1]) + pprime[-1])) #(ffprime[-1] - ffprime_hole[-1]))
+        if use_jtor:
+            relaxj = 1.0
+            jtor_axis_target = self._data['jpsi'][0] + relaxj * (jtor_axis_target - self._data['jpsi'][0])
+            # jtor_base = (jtor_axis_target - jtor_edge_target) * (-np.tanh(3.0 * (psinorm - 0.5)) + 1.0) / (np.tanh(1.5) - np.tanh(-1.5)) + jtor_edge_target
+            jmax = 10.0 * self._data['cpasma'] / area_fs[-1]
+            # forms = [(-0.5 * np.tanh(3.0 * (psinorm - 0.6)) + 0.425) / vprime_fs, psinorm / vprime_fs]
+            # lower_bounds = [0.1 * jmax, -1.0 * jmax]
+            # upper_bounds = [5.0 * jmax, 1.0 * jmax]
+            # for exp in [1.0, 5.0, 10.0]:
+                # forms.append(generalized_zero_integral_exponential_decay_shape(psinorm, exponent=exp, fixed='right') / vprime_fs)
+                # lower_bounds.append(-1.0 * jmax)
+                # upper_bounds.append(1.0 * jmax)
+            # for exp in [1.0, 5.0, 10.0]:
+            #     forms.append(generalized_zero_integral_exponential_growth_shape(psinorm, exponent=exp, fixed='left') / vprime_fs)
+            #     lower_bounds.append(-1.0 * jmax)
+            #     upper_bounds.append(1.0 * jmax)
+            # for mu in [0.0, 0.1]:
+            #     forms.append(weighted_gaussian_shape(psinorm, mean=mu))
+            #     lower_bounds.append(-1.0 * jmax)
+            #     upper_bounds.append(5.0 * jmax)
+            # forms = np.stack(forms, axis=0)
+            # bounds = (np.stack(lower_bounds, axis=0), np.stack(upper_bounds, axis=0))
+            # weights = optimize_jtor(
+            #     psinorm, forms, bounds, self._data['cpasma'], vprime_fs,
+            #     jtor_axis_target=jtor_axis_target,
+            #     jtor_edge_target=jtor_edge_target,
+            #     minimum_jtor=-dpsi_dpsinorm * pprime,
+            # )
+            # ffprime = ((np.sum(weights * forms, axis=0) + jtor_base) / dpsi_dpsinorm + pprime) * mu0 * vprime_fs / ir2_fs
+            # jtor_new = np.sum(weights * forms, axis=0)
+            jmin = -dpsi_dpsinorm * (pprime + ffprime_hole * ir2_fs / (mu0 * vprime_fs))
+            print(jmax)
+            weights = optimize_jtor(
+                psinorm, jmax, self._data['cpasma'], vprime_fs,
+                jtor_axis_target=jtor_axis_target,
+                jtor_edge_target=jtor_edge_target,
+                minimum_jtor=jmin,
+            )
+            # ffprime = -1.0 * (jtor_new / dpsi_dpsinorm + pprime) * mu0 * vprime_fs / ir2_fs
+            # ffprime += relaxf * (np.sum(weights * forms, axis=0) - ffprime)
+            jtor_new = weights + jmin
+            ffprime = -1.0 * (weights * mu0 * vprime_fs / ir2_fs - ffprime_hole) / dpsi_dpsinorm
+            i_f_trap_check = trapezoid(-1.0 * ffprime * dpsi_dpsinorm * ir2_fs / mu0, x=psinorm)  # ir2_fs = <1/R^2> * V'
+            i_trap_check = trapezoid(jtor_new * vprime_fs, x=psinorm)
+            check = float(j_f_target / (i_trap_check - i_p_grid))
+            print('optimized:', check, i_f_trap_check)
+            scale = check if check > 0.0 else 1.0
+            # fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+            # for j, w in enumerate(weights):
+            #     ax.plot(psinorm, w * forms[j] * vprime_fs, label=f'Form {j}')
+            # ax.set_xlabel('psi_norm')
+            # ax.set_ylabel('j contribution')
+            # ax.legend(loc='best')
+            # fig.tight_layout()
+            # fig.savefig('j_modes.png')
+            # plt.close(fig)
+        elif ffprime_axis_target is not None or ffprime_edge_target is not None:
+            ffpmax = np.nanmax(np.abs(ffprime))
+            # forms = [np.ones_like(psinorm), psinorm, 1.0 - psinorm, 1.0 - 2.0 * psinorm]
+            forms = [np.ones_like(psinorm), psinorm]
+            lower_bounds = [-0.1 * ffpmax, -0.5 * ffpmax]
+            upper_bounds = [0.1 * ffpmax, 0.5 * ffpmax]
+            # for exp in np.linspace(1.0, 15.0, 8):
+            for exp in [1.0, 5.0, 10.0, 20.0]:
                 # Need to redistribute FF' such that total current is conserved by value on axis pushes towards requested q0
                 # forms.append(generalized_zero_integral_exponential_shape(psinorm, exponent=exp) / (ir2_fs * vprime_fs))
                 forms.append(weighted_exponential_shape(psinorm, exponent=exp))
+                lower_bounds.append(-1.0 * ffpmax)
+                upper_bounds.append(1.0 * ffpmax)
+            for mu in [0.0, 0.1, 0.2]:
+                forms.append(weighted_gaussian_shape(psinorm, mean=mu))
+                lower_bounds.append(-0.5 * ffpmax)
+                upper_bounds.append(0.5 * ffpmax)
+            for exp in [5.0, 10.0, 30.0, 50.0]:
+                forms.append(generalized_zero_integral_exponential_decay_shape(psinorm, exponent=exp, fixed='right') * (ir2_fs[0] * vprime_fs[0]) / (ir2_fs * vprime_fs))
+                lower_bounds.append(-0.5 * ffpmax)
+                upper_bounds.append(0.5 * ffpmax)
+            for exp in [5.0, 10.0, 30.0, 50.0]:
+                forms.append(generalized_zero_integral_exponential_growth_shape(psinorm, exponent=exp, fixed='left') * (ir2_fs[-1] * vprime_fs[-1]) / (ir2_fs * vprime_fs))
+                lower_bounds.append(-0.1 * ffpmax)
+                upper_bounds.append(0.1 * ffpmax)
             forms = np.stack(forms, axis=0)
-            weights = optimize_ffprime(psinorm, forms, ffprime_target, j_f_target, self._data['xpsi'], self._data['rpsi'], self._data['inout'], self._data['hrz'], np.nanmax(np.abs(ffprime)), 10.0, ffprime_hole)
-            ffprime = np.sum(weights * forms, axis=0) + ffprime_hole
+            bounds = (np.stack(lower_bounds, axis=0), np.stack(upper_bounds, axis=0))
+            weights = optimize_ffprime(
+                psinorm, forms, bounds, j_f_target, self._data['xpsi'], self._data['rpsi'], self._data['inout'], self._data['hrz'],
+                ffp_axis_target=ffprime_axis_target,
+                ffp_edge_target=ffprime_edge_target,
+                # ffp_max=ffpmax,
+                # exponent_target=None, #10.0,
+                shape_target=ffprime_hole,
+                # mandatory=ffprime_hole
+            )
+            ffprime = np.sum(weights * forms, axis=0) #+ ffprime_hole
             # ffprime += relaxf * (np.sum(weights * forms, axis=0) - ffprime)
             ffp_grid_check = np.interp(self._data['xpsi'], psinorm, ffprime)
             j_f_grid_check = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp_grid_check.ravel(), 0.0))
             i_f_grid_check = np.sum(j_f_grid_check) * self._data['hrz']
             scale = float((self._data['cpasma'] - i_p_grid) / i_f_grid_check)
-            print('scan:', scale, i_f_grid_check)
-        # Edge constraint, if specified (applies to FF')
-        if 'qedge_target' in self._data:
-            ffprime_edge = 2 * np.pi * self._data['qedge_target'] / ir2_fs[-1]
+            # print('scan:', scale, i_f_grid_check)
+            fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+            for j, w in enumerate(weights):
+                ax.plot(psinorm, w * forms[j], label=f'Form {j}')
+            ax.set_xlabel('psi_norm')
+            ax.set_ylabel('F contribution')
+            ax.legend(loc='best')
+            fig.tight_layout()
+            fig.savefig('f_modes.png')
+            plt.close(fig)
 
         ffprime *= scale
         # ffprime = np.where(ffprime > ffprime_hole, ffprime_hole, ffprime)
-        ffp_grid_check = np.interp(self._data['xpsi'], psinorm, ffprime) / dpsi_dpsinorm
-        j_f_grid_check = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp_grid_check.ravel(), 0.0))
-        i_f_grid_check = np.sum(j_f_grid_check) * self._data['hrz']
+        # ffp_grid_check = np.interp(self._data['xpsi'], psinorm, ffprime)
+        # j_f_grid_check = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp_grid_check.ravel(), 0.0))
+        # i_f_grid_check = np.sum(j_f_grid_check) * self._data['hrz']
 
         f2prime = 2.0 * ffprime
         f2_flip = -1.0 * cumulative_simpson(f2prime[::-1], x=np.abs(psinorm[::-1] - psinorm[-1]), initial=0.0) * dpsi_dpsinorm
@@ -1347,23 +1486,41 @@ class FixedBoundaryEquilibrium():
 
     def compute_flux_surface_averaged_jtor_profile(self):
         if self._fs:
+            psinorm = np.zeros((len(self._fs), ), dtype=float)
             jtor = np.zeros((len(self._fs), ), dtype=float)
+            trust_fs = np.full(jtor.shape, True)
+            full_area_estimate = np.sum(np.where(self._data['inout'] == 0, 0.0, self._data['hrz']))
             for i, (level, contour) in enumerate(self._fs.items()):
-                psinorm = (level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
-                ffp, pp = self.compute_ffprime_and_pprime_grid(np.array([psinorm]), internal_cutoff=-1.0)
+                psinorm[i] = (level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
+                ffp, pp = self.compute_ffprime_and_pprime_grid(np.array([psinorm[i]]), internal_cutoff=-1.0)
                 jtor[i] = compute_jtor_contour_integral(contour, ffp, pp)
-            if 'curscale' in self._data:
-                jtor *= self._data['curscale']
+                area = compute_flux_surface_cross_sectional_area(contour, r_reference=self._data['rmagx'], z_reference=self._data['zmagx'])
+                if (len(contour.get('r', np.array([]))) <= 4) or ((area / full_area_estimate) <= 0.01):
+                    trust_fs[i] = False
+            if np.any(trust_fs[1:]):
+                idx_trust = np.where(trust_fs)[0][0]
+                # jtor[~trust_fs] = (psinorm[~trust_fs] - psinorm[idx_trust]) * (jtor[idx_trust+1] - jtor[idx_trust]) / (psinorm[idx_trust+1] - psinorm[idx_trust]) + jtor[idx_trust]
+            # if 'curscale' in self._data:
+                # jtor *= self._data['curscale']
             self._data['jpsi'] = copy.deepcopy(jtor)
 
 
     def compute_flux_surface_averaged_jstar_profile(self):
         if self._fs:
+            psinorm = np.zeros((len(self._fs), ), dtype=float)
             jstar = np.zeros((len(self._fs), ), dtype=float)
+            trust_fs = np.full(jstar.shape, True)
+            full_area_estimate = np.sum(np.where(self._data['inout'] == 0, 0.0, self._data['hrz']))
             for i, (level, contour) in enumerate(self._fs.items()):
-                psinorm = (level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
-                ffp, pp = self.compute_ffprime_and_pprime_grid(np.array([psinorm]), internal_cutoff=-1.0)
+                psinorm[i] = (level - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
+                ffp, pp = self.compute_ffprime_and_pprime_grid(np.array([psinorm[i]]), internal_cutoff=-1.0)
                 jstar[i] = compute_jstar_contour_integral(contour, ffp, pp)
+                area = compute_flux_surface_cross_sectional_area(contour, r_reference=self._data['rmagx'], z_reference=self._data['zmagx'])
+                if (len(contour.get('r', np.array([]))) <= 4) or ((area / full_area_estimate) <= 0.01):
+                    trust_fs[i] = False
+            if np.any(trust_fs[1:]):
+                idx_trust = np.where(trust_fs)[0][0]
+                # jstar[~trust_fs] = (psinorm[~trust_fs] - psinorm[idx_trust]) * (jstar[idx_trust+1] - jstar[idx_trust]) / (psinorm[idx_trust+1] - psinorm[idx_trust]) + jstar[idx_trust]
             # if 'jscale' in self._data:
             #     jstar *= self._data['jscale']
             jstar[0] = 2.0 * jstar[1] - jstar[2]  # Linear interpolation to axis
@@ -1420,7 +1577,7 @@ class FixedBoundaryEquilibrium():
         # Loop to solve psi using Picard iteration
         self._data['psi_error'] = np.inf
         for n in range(self._options['nxiter']):
-            print("starting iteration", n)
+            # print("starting iteration", n)
             ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
             cur_new = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp.ravel(), pp.ravel()))
             #REPLACE UPDATE CURRENT WITH NEW FUNCTION THAT COMPUTES FOR F POL ONLY SCALING
@@ -1509,6 +1666,7 @@ class FixedBoundaryEquilibrium():
             history['psi_error_inner'].append(self._data['psi_error_history'])
 
             #plot after every solve psi loop 
+            self.compute_flux_surface_averaged_jtor_profile()
             self.compute_flux_surface_averaged_jstar_profile()
             self.plot_profiles(save=f'profiles_fiter_{n+1:02d}.png', show=False)
             self.plot_contour(save=f'contours_fiter{n+1:02d}.png', show=False)
@@ -1523,9 +1681,9 @@ class FixedBoundaryEquilibrium():
 
             # make nonzero
             denom = np.where(np.abs(fpol_after - fpol_after[-1] + 1.0) < 1.0e-30, 1.0e-30, fpol_after - fpol_after[-1] + 1.0)
-            f_error = float(np.nanmax(np.abs(fpol_after - fpol_before) / denom))
+            f_error = float(np.nanmax(np.abs((fpol_after - fpol_before) / denom)))
             denom_fprime = np.where(np.abs(fprime_after) < 1.0e-30, 1.0e-30, fprime_after)
-            fprime_error = float(np.nanmax(np.abs(fprime_after - fprime_before) / denom_fprime))
+            fprime_error = float(np.nanmax(np.abs((fprime_after - fprime_before) / denom_fprime)))
 
             #plot convergence 
             history['f_error'].append(f_error)

@@ -1080,7 +1080,7 @@ def compute_flux_surface_cross_sectional_area(contour, r_reference=None, z_refer
         theta -= theta[0]
         mask = (theta < 0.0)
         theta[mask] = theta[mask] + 2.0 * np.pi
-        area = float(trapezoid(0.5 * (rcm * np.gradient(zcm, theta) + zcm * np.gradient(rcm, theta)), x=theta))
+        area = float(trapezoid(0.5 * (rcm * np.gradient(zcm, theta) - zcm * np.gradient(rcm, theta)), x=theta))
     return area
 
 
@@ -1391,23 +1391,49 @@ def jtor_profile_shape_guesser(psinorm, linearity=0.0):
     return j_norm
 
 
-def generalized_zero_integral_cubic_polynomial_shape(psinorm, skew=0.0):
+def generalized_zero_integral_cubic_polynomial_shape(psinorm, skew=0.0, fixed=None):
     form = 1.0 - skew * psinorm - (6.0 - 2.0 * skew) * (psinorm ** 2)
-    return (1.0 - psinorm) * form
+    norm = psinorm * (1.0 - psinorm)
+    if fixed == 'left':
+        norm = psinorm
+    if fixed == 'right':
+        norm = 1.0 - psinorm
+    return norm * form
 
 
-def generalized_zero_integral_exponential_shape(psinorm, exponent=1.0):
+def generalized_zero_integral_exponential_decay_shape(psinorm, exponent=1.0, fixed=None):
     factor = 2.0 * (1.0 / exponent - (1.0 - np.exp(-exponent)) / exponent ** 2)
     form = (np.exp(-exponent * psinorm) - factor) / (1.0 - factor)
-    return (1.0 - psinorm) * form
+    norm = psinorm * (1.0 - psinorm)
+    if fixed == 'left':
+        norm = psinorm
+    if fixed == 'right':
+        norm = 1.0 - psinorm
+    return norm * form
 
 
-def generalized_zero_integral_shape(psinorm, degree=1):
+def generalized_zero_integral_exponential_growth_shape(psinorm, exponent=1.0, fixed=None):
+    factor = 2.0 * (1.0 / exponent - (1.0 - np.exp(-exponent)) / exponent ** 2)
+    form = (np.exp(exponent * (psinorm - 1.0)) - factor) / (1.0 - factor)
+    norm = psinorm * (1.0 - psinorm)
+    if fixed == 'left':
+        norm = psinorm
+    if fixed == 'right':
+        norm = 1.0 - psinorm
+    return norm * form
+
+
+def generalized_zero_integral_shape(psinorm, degree=1, fixed=None):
     form = 1.0 - 3.0 * psinorm
     if degree >= 1:
         d = int(degree)
         form = 1.0 - 0.5 * float((d + 1) * (d + 2)) * psinorm ** d
-    return (1.0 - psinorm) * form
+    norm = psinorm * (1.0 - psinorm)
+    if fixed == 'left':
+        norm = psinorm
+    if fixed == 'right':
+        norm = 1.0 - psinorm
+    return norm * form
 
 
 def weighted_beta_shape(psinorm, weight=None, skew=0.0):
@@ -1420,33 +1446,90 @@ def weighted_beta_shape(psinorm, weight=None, skew=0.0):
 
 def weighted_exponential_shape(psinorm, weight=None, exponent=1.0):
     w = weight if isinstance(weight, (float, int, np.ndarray)) else np.ones_like(psinorm)
-    # norm = 1.0 - 1.0 / np.exp(exponent)
     norm = 1.0
     func = np.exp(-exponent * psinorm) / (norm * w)
     return func
 
 
-def optimize_ffprime(psinorm, functions, ffp_axis_target, current_target, psinorm_grid, r_grid, mask, area_grid, ffp_max=1.0, exponent_target=3.0, required=None):
-    axis_weight = 1.0
-    current_weight = 1.0
-    regpar = 0.1
-    exp = exponent_target
-    ffprime_required = required if isinstance(required, np.ndarray) else np.zeros_like(psinorm)
+def weighted_gaussian_shape(psinorm, weight=None, mean=0.0):
+    w = weight if isinstance(weight, (float, int, np.ndarray)) else np.ones_like(psinorm)
+    func = np.exp(-0.5 * ((psinorm - mean) / (0.25 * mean + 0.05)) ** 2) / w
+    return func
+
+
+def optimize_ffprime(psinorm, functions, bounds, current_target, psinorm_grid, r_grid, mask, area_grid, ffp_axis_target=None, ffp_edge_target=None, shape_target=None, mandatory=None):
+    ffp_axis = ffp_axis_target if isinstance(ffp_axis_target, (float, int)) else 1.0
+    ffp_edge = ffp_edge_target if isinstance(ffp_edge_target, (float, int)) else 1.0
+    axis_weight = 1.0 if isinstance(ffp_axis_target, (float, int)) else 0.0
+    edge_weight = 1.0 if isinstance(ffp_edge_target, (float, int)) else 0.0
+    current_weight = 5.0
+    regpar = 1.0e-2
+    # exp = exponent_target if isinstance(exponent_target, (float, int)) else 10.0
+    ffprime_max = shape_target if isinstance(shape_target, np.ndarray) else np.zeros_like(psinorm)
+    ffprime_plus = mandatory if isinstance(mandatory, np.ndarray) else np.zeros_like(psinorm)
     def objective(x):
         ffprime = np.sum(np.atleast_2d(x).T * functions, axis=0)
-        ffp_grid = np.interp(psinorm_grid, psinorm, ffprime)
+        ffprime_full = ffprime + ffprime_plus
+        ffp_grid = np.interp(psinorm_grid, psinorm, ffprime_full)
         j_f_grid = np.where(mask == 0, 0.0, compute_jtor(r_grid.ravel(), ffp_grid.ravel(), 0.0))
         i_f_grid = np.sum(j_f_grid) * area_grid
-        form_target = (ffprime[0] - ffprime[-1]) * (np.exp(-exp * psinorm) - np.exp(-exp)) / (1.0 - np.exp(-exp)) + ffprime[-1]
-        # print(ffprime[0] / ffp_axis_target, i_f_grid / current_target, np.sum((ffprime - form_target) ** 2))
-        ffprime += ffprime_required
-        residual = (
-            axis_weight * (1.0 - ffprime[0] / ffp_axis_target) ** 2 +
-            current_weight * (1.0 - i_f_grid / current_target) ** 2 +
-            regpar * np.sum((1.0 - ffprime / form_target) ** 2)
-        )
+        # form_axis = ffp_axis if isinstance(ffp_axis_target, (float, int)) else ffprime_full[0]
+        # form_edge = ffp_edge if isinstance(ffp_edge_target, (float, int)) else -1.0e-3
+        # form_target = (form_axis - form_edge) * (np.exp(-exp * psinorm) - np.exp(-exp)) / (1.0 - np.exp(-exp)) + form_edge
+        # mono_factor = np.sum(np.maximum(ffprime_full, 0.0))
+        mono_factor = np.sum(np.maximum(ffprime_full - ffprime_max, 0.0))
+        residual = [
+            axis_weight * (1.0 - ffprime[0] / ffp_axis),
+            edge_weight * (1.0 - ffprime[-1] / ffp_edge),
+            current_weight * (1.0 - i_f_grid / current_target),
+            regpar * mono_factor,
+            # regpar * np.sqrt(np.sum((1.0 - ffprime / form_target) ** 2)),
+        ]
         return residual
-    guess = np.zeros((functions.shape[0], )) - 0.1
-    bounds = (-5.0 * ffp_max * np.ones_like(guess), 5.0 * ffp_max * np.ones_like(guess))
+    guess = 0.5 * (bounds[0] + bounds[1])
     result = least_squares(objective, x0=guess, bounds=bounds, method='trf', ftol=1.0e-4, xtol=1.0e-4)
     return np.atleast_2d(result.x).T
+
+
+def optimize_jtor(psinorm, jtor_max, current_target, geometric_factor, jtor_axis_target=None, jtor_edge_target=None, minimum_jtor=None):
+    jtor_axis = jtor_axis_target if isinstance(jtor_axis_target, (float, int)) else current_target / 10.0
+    jtor_edge = jtor_edge_target if isinstance(jtor_edge_target, (float, int)) else 0.0
+    axis_weight = 1.0e1 if isinstance(jtor_axis_target, (float, int)) else 0.0
+    edge_weight = 1.0e1 if isinstance(jtor_edge_target, (float, int)) else 0.0
+    current_weight = 1.0e2
+    # pos_weight = 1.0e1
+    mono_weight = 1.0e2
+    # regpar = 1.0e1
+    vprime = geometric_factor if isinstance(geometric_factor, np.ndarray) else np.ones_like(psinorm)
+    # jtor_base = (jtor_axis - jtor_edge) * (-np.tanh(3.0 * (psinorm - 0.5)) + 1.0) / (np.tanh(1.5) - np.tanh(-1.5)) + jtor_edge
+    jtor_min = minimum_jtor if isinstance(minimum_jtor, np.ndarray) else np.zeros_like(psinorm)
+    def objective(x):
+        # jtor = np.sum(np.atleast_2d(x).T * functions, axis=0)
+        jtor = x + jtor_min
+        i_trap = trapezoid(jtor * vprime, x=psinorm)
+        # j_grid = np.where(mask == 0, 0.0, np.interp(psinorm_grid, psinorm, jtor).ravel())
+        # i_grid = np.sum(j_grid) * area_grid
+        # form_axis = ffp_axis if isinstance(ffp_axis_target, (float, int)) else ffprime_full[0]
+        # form_edge = ffp_edge if isinstance(ffp_edge_target, (float, int)) else -1.0e-3
+        # form_target = (form_axis - form_edge) * (np.exp(-exp * psinorm) - np.exp(-exp)) / (1.0 - np.exp(-exp)) + form_edge
+        # mono_factor = np.sum(np.maximum(ffprime_full, 0.0))
+        jtor_norm = np.maximum(np.mean(jtor), 1.0)
+        # pos_factor = np.sum(np.minimum(jtor, 0.0)) / jtor_norm
+        mono_factor = np.sum(np.maximum(np.diff(jtor), 0.0)) / jtor_norm
+        # mini_factor = np.sum(np.maximum(jtor_min - jtor, 0.0)) / jtor_norm
+        residual = [
+            axis_weight * (1.0 - jtor[0] / jtor_axis),
+            edge_weight * (1.0 - jtor[-1] / jtor_edge),
+            current_weight * (1.0 - i_trap / current_target),
+            # pos_weight * pos_factor,
+            mono_weight * mono_factor,
+            # regpar * mini_factor,
+        ]
+        return residual
+    # guess = 0.5 * (bounds[0] + bounds[1])
+    # guess = (jtor_axis - jtor_edge) * (-np.tanh(2.0 * (psinorm - 0.5)) + 1.0) / (np.tanh(1.0) - np.tanh(-1.0)) + jtor_edge
+    guess = 0.99 * np.ones_like(psinorm) * jtor_max
+    bounds = (np.zeros_like(psinorm), np.ones_like(psinorm) * jtor_max)
+    result = least_squares(objective, x0=guess, bounds=bounds, method='trf', ftol=1.0e-4, xtol=1.0e-4)
+    # return np.atleast_2d(result.x).T
+    return result.x
