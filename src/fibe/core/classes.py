@@ -131,6 +131,7 @@ class FixedBoundaryEquilibrium():
             'erreq': 1.0e-8,
             'relax': 1.0,
             'relaxj': 1.0,
+            'fixed_pressure': False,
         }
         self._fs = None
         if isinstance(geqdsk, (str, Path)):
@@ -1076,22 +1077,25 @@ class FixedBoundaryEquilibrium():
         self._data['cur'] = current_new * self._data['curscale']
 
 
-    def _compute_curscalef(self, current_new, relax = 1.0):
-        #if relax > 0.0 and relax < 1.0: # not sure what this means but i'll keep for consistency
-        current_new = self._data['cur'] + relax * (current_new - self._data['cur'])
-        # J_Total = J_Pressure + J_fpol
-        j_pressure = -1.0 * (self._data['rpsi'] * self._data['pprime']) # calculate pressure contribution
-        # f driven current must be everything else
-        j_pressure = j_pressure.ravel()
+    def _update_current_fixed_pressure(self, current_new, pp_grid, relax=1.0, min_f_fraction=0.05):
+        if relax > 0.0 and relax < 1.0:
+            current_new = self._data['cur'] + relax * (current_new - self._data['cur'])
+        # J_Total = J_Pressure + J_Fpol; hold J_Pressure fixed to the true (fixed) p(psi) and only rescale J_Fpol to hit cpasma
+        j_pressure = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), 0.0, pp_grid.ravel()))
         j_f = current_new - j_pressure
-        # integrate to find total
-        i_target = self._data['cpasma'] # truth value
-        i_pressure = np.sum(j_pressure)*self._data['hrz'] #density * area
+        i_pressure = np.sum(j_pressure) * self._data['hrz']
         i_f = np.sum(j_f) * self._data['hrz']
-        #compute scaling factor
-        #i_f * curscale + i_pressure = i_target 
-        curscalef = (i_target - i_pressure) / i_f
-        self._data['curscalef'] = curscalef
+        if abs(i_f) < min_f_fraction * abs(self._data['cpasma']):
+            # F-driven current too weak relative to cpasma to safely divide by: a fixed-pressure-only
+            # rescale would amplify noise into a huge, sign-flipping correction. Fall back to a uniform
+            # rescale for this step instead (current_new is already relaxed, so use relax=1.0 here).
+            self._update_current(current_new, relax=1.0)
+            self._data['curscalef'] = float(self._data['curscale'])
+        else:
+            # i_f * curscalef + i_pressure = cpasma
+            self._data['curscalef'] = float((self._data['cpasma'] - i_pressure) / i_f)
+            self._data['cur'] = j_pressure + self._data['curscalef'] * j_f
+            self._data['curscale'] = float(self._data['cpasma'] / (np.sum(self._data['cur']) * self._data['hrz']))
 
 
     def _compute_flux_surface_averaged_fpol(self):
@@ -1379,6 +1383,7 @@ class FixedBoundaryEquilibrium():
         pnaxis=None,  # Normalized psi below which to apply j modification: recommend None (auto)
         approxq=False,
         symmetrical=True,
+        fixed_pressure=False,  # If True, hold the pressure-driven current fixed and only rescale the F-driven current to match cpasma
     ):
         '''RUN THE EQ SOLVER'''
 
@@ -1392,6 +1397,8 @@ class FixedBoundaryEquilibrium():
             self._options['relax'] = relax
         if isinstance(relaxj, float):
             self._options['relaxj'] = relaxj
+        if isinstance(fixed_pressure, bool):
+            self._options['fixed_pressure'] = fixed_pressure
         if isinstance(pnaxis, float):
             self._options['pnaxis'] = pnaxis
         elif self.scratch:
@@ -1423,9 +1430,10 @@ class FixedBoundaryEquilibrium():
             print("starting iteration", n)
             ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
             cur_new = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp.ravel(), pp.ravel()))
-            #REPLACE UPDATE CURRENT WITH NEW FUNCTION THAT COMPUTES FOR F POL ONLY SCALING
-            #self._compute_curscalef(cur_new, relax=self._options['relaxj'] if n > 0 else 1.0)
-            self._update_current(cur_new, relax=self._options['relaxj'] if n > 0 else 1.0)
+            if self._options.get('fixed_pressure', False):
+                self._update_current_fixed_pressure(cur_new, pp, relax=self._options['relaxj'] if n > 0 else 1.0)
+            else:
+                self._update_current(cur_new, relax=self._options['relaxj'] if n > 0 else 1.0)
             psi_new = compute_psi(self.solver, self._data['s5'], self._data['cur'])
             self._update_psi(psi_new, relax=self._options['relax'])
             self.find_magnetic_axis_from_grid()
@@ -1503,6 +1511,7 @@ class FixedBoundaryEquilibrium():
                 pnaxis=pnaxis,
                 approxq=approxq,
                 symmetrical=symmetrical,
+                fixed_pressure=True,
             )
             self.scratch = False
             print('q:', self._data['qpsi'][0], self._data['qpsi'][-1])
