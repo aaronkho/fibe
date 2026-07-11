@@ -305,14 +305,37 @@ class FixedBoundaryEquilibrium():
         if 'jstar' in self._data:
             if self._fs is None:
                 self._fs = self.trace_flux_surfaces()
-            vprime = np.zeros((self._data['nr'], ))
-            for i, (level, contour) in enumerate(self._fs.items()):
-                if level != self._data['simagx']:
-                    vprime[i] = compute_volume_derivative_contour_integral(contour)
-            vprime[0] = 2.0 * vprime[1] - vprime[2]
-            self._data['cpasma'] = float(trapezoid(self._data['jstar'] * vprime * (self._data['sibdry'] - self._data['simagx']), x=np.linspace(0.0, 1.0, self._data['nr'])))
-            fpol = self.recompute_f_from_toroidal_current_density()
-            self.define_f_profile(fpol, smooth=True, symmetrical=False)
+            # cpasma is deliberately not computed directly from jstar here: jstar is
+            # <Jtor/R>_fs/<1/R>_fs (see compute_jstar_contour_integral), not the plain
+            # flux-surface average of Jtor, so integrating jstar*V' over psi does not
+            # recover the true total current; it's computed below from the derived
+            # fpol via the same grid current integral the non-jstar branch uses.
+            #
+            # recompute_f_from_toroidal_current_density needs the *true* physical psi
+            # span (sibdry-simagx) to convert pprime into true dP/dpsi units, but that
+            # span is only known after cpasma -- and hence the psi_mult renormalization
+            # initialize_psi() applies afterward -- is computed from the very fpol
+            # profile being derived here. Iterate to a self-consistent span (fpol and
+            # cpasma both derived from the same assumed span) before settling on a
+            # final fpol/cpasma; this is a well-behaved scalar fixed point, not a
+            # from-scratch Picard solve.
+            psi_span = self._data['sibdry'] - self._data['simagx']
+            for _ in range(20):
+                fpol = self.recompute_f_from_toroidal_current_density(psi_span=psi_span)
+                self.define_f_profile(fpol, smooth=True, symmetrical=False)
+                ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], psi_span=psi_span)
+                cur = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp.ravel(), pp.ravel()))
+                cpasma_trial = float(np.sum(cur) * self._data['hrz'])
+                # initialize_psi() swaps simagx/sibdry if psi_mult comes out negative, so the
+                # true span is always positive (this codebase's fixed COCOS convention: axis
+                # flux < boundary flux) regardless of the sign of cpasma/psi_mult here.
+                psi_span_new = abs((self._data['sibdry'] - self._data['simagx']) * (-4.0e-7 * np.pi * cpasma_trial * 0.5 * self._data['rdim']))
+                if abs(psi_span_new - psi_span) <= 1.0e-8 * abs(psi_span_new):
+                    psi_span = psi_span_new
+                    break
+                psi_span = psi_span_new
+            self._data['cur'] = cur
+            self._data['cpasma'] = cpasma_trial
             logger.info(f'Initialized plasma current from toroidal current density: {self._data["cpasma"]} A')
         elif 'bcentr' in self._data:
             self.define_toroidal_field(self._data['bcentr'])
@@ -712,8 +735,8 @@ class FixedBoundaryEquilibrium():
             self.recompute_q_profile(smooth=smooth)
 
 
-    def compute_ffprime_and_pprime_grid(self, psinorm, internal_cutoff=0.01, no_fit=False):
-        dpsinorm_dpsi = 1.0 / (self._data['sibdry'] - self._data['simagx'])
+    def compute_ffprime_and_pprime_grid(self, psinorm, internal_cutoff=0.01, no_fit=False, psi_span=None):
+        dpsinorm_dpsi = 1.0 / (psi_span if psi_span is not None else (self._data['sibdry'] - self._data['simagx']))
         ffp = np.zeros_like(psinorm)
         pp = np.zeros_like(psinorm)
         if not no_fit and 'fpol_fs' in self._fit:
@@ -986,7 +1009,7 @@ class FixedBoundaryEquilibrium():
             self._data['bcentr'] = float(np.sign(self._data['bcentr']) * np.abs(fpol_axis / self._data['rmagx']))
 
 
-    def recompute_f_from_toroidal_current_density(self):
+    def recompute_f_from_toroidal_current_density(self, psi_span=None):
         fpol = np.zeros((self._data['nr'], ))
         if 'fpol' in self._data:
             fpol = self._data['fpol'].copy()
@@ -1000,18 +1023,27 @@ class FixedBoundaryEquilibrium():
             if self._data['psi'][0, 0] == self._data['psi'][-1, -1] and self._data['psi'][0, -1] == self._data['psi'][-1, 0]:
                 self.extend_psi_beyond_boundary()
             self._fs = self.trace_flux_surfaces()
+            psi_scale = psi_span if psi_span is not None else (self._data['sibdry'] - self._data['simagx'])
+            dpsinorm_dpsi = 1.0 / psi_scale
             psi = np.zeros((len(self._fs), ), dtype=float)
             ffprime = np.zeros_like(psi)
             for i, (level, contour) in enumerate(self._fs.items()):
                 psi[i] = level
                 if level != self._data['simagx']:
-                    ffprime[i] = compute_ffprime_from_jstar_pprime_and_contour(self._data['jstar'][i], self._data['pprime'][i], contour)
+                    ffprime[i] = compute_ffprime_from_jstar_pprime_and_contour(self._data['jstar'][i], self._data['pprime'][i] * dpsinorm_dpsi, contour)
             fpol_bc = fpol[-1]
             if 'bcentr' in self._data and 'rcentr' in self._data:
                 fpol_bc = float(self._data['bcentr'] * self._data['rcentr'])
             if 'bvacuum' in self._data and 'rvacuum' in self._data:
                 fpol_bc = float(self._data['bvacuum'] * self._data['rvacuum'])
-            f2 = cumulative_simpson(-2.0 * ffprime[::-1], x=np.abs(psi[::-1] - psi[-1]), initial=0.0) + np.square(fpol_bc)
+            # ffprime is now in true dF/dpsi units (via dpsinorm_dpsi above), so the
+            # integration variable must be in matching true-psi units too -- psi[i]
+            # (raw flux-surface levels) is only in those units when psi_span matches
+            # the array self._data['psi'] was actually traced from (self._data['sibdry']
+            # - self._data['simagx']); rescale explicitly so a bootstrapped psi_span
+            # override stays self-consistent with the ffprime it multiplies against.
+            x_true = np.abs(psi[::-1] - psi[-1]) * (psi_scale / (self._data['sibdry'] - self._data['simagx']))
+            f2 = cumulative_simpson(-2.0 * ffprime[::-1], x=x_true, initial=0.0) + np.square(fpol_bc)
             fpol = np.sqrt(f2[::-1])
             fpol[0] = 2.0 * fpol[1] - fpol[2]  # Linear interpolation to axis
         return fpol

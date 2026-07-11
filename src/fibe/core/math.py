@@ -1141,7 +1141,7 @@ def compute_ffprime_from_jstar_pprime_and_contour(jstar, pp, contour):
     if contour.get('r', np.array([])).size > 1:
         mu0 = 4.0e-7 * np.pi
         fsa = compute_flux_surface_average_factors(contour)
-        val = (-mu0 / fsa['fs_ir2']) * (jstar - fsa['fs_vprime'] * pp)
+        val = (-mu0 / fsa['fs_ir2']) * (jstar * fsa['fs_ir'] + fsa['fs_vprime'] * pp)
     return val
 
 
