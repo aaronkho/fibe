@@ -1235,9 +1235,9 @@ class FixedBoundaryEquilibrium():
         area_fs[0] = 0.0
         if np.any(trust_fs[1:]):
             idx_trust = np.where(trust_fs)[0][0]
-            vprime_fs[~trust_fs] = (psinorm[~trust_fs] - psinorm[idx_trust]) * (vprime_fs[idx_trust+1] - vprime_fs[idx_trust]) / (psinorm[idx_trust+1] - psinorm[idx_trust])
-            ir2_fs[~trust_fs] = (psinorm[~trust_fs] - psinorm[idx_trust]) * (ir2_fs[0] - ir2_fs[idx_trust]) / (psinorm[0] - psinorm[idx_trust])
-            area_fs[~trust_fs] = (psinorm[~trust_fs] - psinorm[idx_trust]) * (area_fs[0] - area_fs[idx_trust]) / (psinorm[0] - psinorm[idx_trust])
+            vprime_fs[~trust_fs] = vprime_fs[idx_trust] + (psinorm[~trust_fs] - psinorm[idx_trust]) * (vprime_fs[idx_trust+1] - vprime_fs[idx_trust]) / (psinorm[idx_trust+1] - psinorm[idx_trust])
+            ir2_fs[~trust_fs] = ir2_fs[idx_trust] + (psinorm[~trust_fs] - psinorm[idx_trust]) * (ir2_fs[0] - ir2_fs[idx_trust]) / (psinorm[0] - psinorm[idx_trust])
+            area_fs[~trust_fs] = area_fs[idx_trust] + (psinorm[~trust_fs] - psinorm[idx_trust]) * (area_fs[0] - area_fs[idx_trust]) / (psinorm[0] - psinorm[idx_trust])
 
         # Identify current hole
         pprime = self._data['pprime'] / dpsi_dpsinorm
