@@ -1281,7 +1281,7 @@ class FixedBoundaryEquilibrium():
         dpprime = np.where((np.diff(-pprime)[1:] - np.diff(-pprime)[:-1]) < 0.0)[0]
         ffprime_hole = np.zeros_like(self._data['ffprime'])
         if len(dpprime) > 0 and dpprime[0] > 0 and dpprime[0] < (2 * len(pprime) // 3):
-            ffprime_hole[:dpprime[0]] = mu0 * (pprime[dpprime[0]] - pprime[:dpprime[0]]) * vprime_fs / ir2_fs
+            ffprime_hole[:dpprime[0]] = mu0 * (pprime[dpprime[0]] - pprime[:dpprime[0]]) * vprime_fs[:dpprime[0]] / ir2_fs[:dpprime[0]]
 
         ffprime = self._data['ffprime'] / dpsi_dpsinorm
         # Core constraint, if specified (applies to FF')
