@@ -10,7 +10,6 @@ from scipy.integrate import cumulative_simpson, trapezoid
 from scipy.sparse.linalg import factorized
 from scipy.optimize import root
 from shapely import Point, Polygon
-import matplotlib.pyplot as plt 
 
 from .math import (
     find_null_points,
@@ -71,6 +70,7 @@ from ..utils.plotting import (
     plot_equilibrium_profiles,
     plot_equilibrium_shaping_coefficients,
     plot_equilibrium_boundary_gradients,
+    plot_equilibrium_f_solver_convergence,
 )
 
 logger = logging.getLogger('fibe')
@@ -122,6 +122,7 @@ class FixedBoundaryEquilibrium():
         self.scratch = True
         self._data = {}
         self._fit = {}
+        self._diagnostics = {}
         self.solver = None
         self.psi_error = None
         self.q_error = None
@@ -1249,10 +1250,10 @@ class FixedBoundaryEquilibrium():
         scale = float(j_f_target / i_f_grid)  # This scaling does not account for 2D current distribution mismatch
         if scale <= 0.0:
             raise ValueError('Requested plasma current is less than the computed pressure contribution!')
-        print('scale:', scale, self._data['cpasma'])
-        print('pre-components:', i_p_grid, i_f_grid)
+        # print('scale:', scale, self._data['cpasma'])
+        # print('pre-components:', i_p_grid, i_f_grid)
 
-        length = len(self._fs) #amount of flux surfaces to be evaluted on 
+        length = len(self._fs) #amount of flux surfaces to be evaluted on
         dpsi_dpsinorm = (self._data['sibdry'] - self._data['simagx'])
         psinorm = np.zeros(length)
         vprime_fs = np.zeros(length)
@@ -1288,7 +1289,6 @@ class FixedBoundaryEquilibrium():
             # relaxf = 1.0
             ffprime_axis = (self._data['ffprime'][0] / dpsi_dpsinorm) * self._data['qpsi'][0] / self._data['qaxis_target']
             ffprime_target = ffprime_axis #0.5 * (ffprime_axis + ffprime[1])
-            print('F target:', ffprime_axis, ffprime[1])
             forms = [np.sqrt(psinorm), 1.0 - psinorm, 1.0 - 2.0 * psinorm]
             for exp in np.linspace(1.0, 15.0, 8):
                 # Need to redistribute FF' such that total current is conserved by value on axis pushes towards requested q0
@@ -1302,7 +1302,6 @@ class FixedBoundaryEquilibrium():
             j_f_grid_check = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp_grid_check.ravel(), 0.0))
             i_f_grid_check = np.sum(j_f_grid_check) * self._data['hrz']
             scale = float((self._data['cpasma'] - i_p_grid) / i_f_grid_check)
-            print('scan:', scale, i_f_grid_check)
         # Edge constraint, if specified (applies to FF')
         if 'qedge_target' in self._data:
             ffprime_edge = 2 * np.pi * self._data['qedge_target'] / ir2_fs[-1]
@@ -1325,9 +1324,9 @@ class FixedBoundaryEquilibrium():
         fpol = np.sqrt(f2)
 
         # Computing post-adjustment current split between P' and FF'
-        i_p_trap = trapezoid(-1.0 * self._data['pprime'] * vprime_fs, x=psinorm)
-        i_f_trap = trapezoid(-1.0 * ffprime * dpsi_dpsinorm * ir2_fs / mu0, x=psinorm)  # ir2_fs = <1/R^2> * V'
-        print('post-components:', i_p_trap, i_f_trap, self._data['cpasma'])
+        # i_p_trap = trapezoid(-1.0 * self._data['pprime'] * vprime_fs, x=psinorm)
+        # i_f_trap = trapezoid(-1.0 * ffprime * dpsi_dpsinorm * ir2_fs / mu0, x=psinorm)  # ir2_fs = <1/R^2> * V'
+        # print('post-components:', i_p_trap, i_f_trap, self._data['cpasma'])
 
         return fpol
 
@@ -1459,7 +1458,6 @@ class FixedBoundaryEquilibrium():
         # Loop to solve psi using Picard iteration
         self._data['psi_error'] = np.inf
         for n in range(self._options['nxiter']):
-            print("starting iteration", n)
             ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
             cur_new = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp.ravel(), pp.ravel()))
             if self._options.get('fixed_pressure', False):
@@ -1520,9 +1518,11 @@ class FixedBoundaryEquilibrium():
         if isinstance(relaxf, float):
             self._options['relaxf'] = relaxf
         f_error = np.inf
-        
-        #for plotting
-        history = {
+
+        # Information needed to plot F-solver convergence (see plot_f_solver_convergence /
+        # utils.plotting.plot_equilibrium_f_solver_convergence); thresholds themselves are not
+        # duplicated here since they're already recoverable afterward from self._options.
+        self._diagnostics['f_solver'] = {
             'f_error': [],
             'psi_error': [],
             'fpol_axis': [],
@@ -1531,10 +1531,10 @@ class FixedBoundaryEquilibrium():
             'psi_edge': [],
             'psi_error_inner': [],
         }
-        self._data['psi_error_history'] = []
+        history = self._diagnostics['f_solver']
 
         for n in range(self._options['nfiter']):
-            print('starting fiter', n)
+            self._data['psi_error_history'] = []
             self.solve_psi(
                 nxiter=nxiter,
                 erreq=erreq,
@@ -1546,13 +1546,12 @@ class FixedBoundaryEquilibrium():
                 fixed_pressure=True,
             )
             self.scratch = False
-            print('q:', self._data['qpsi'][0], self._data['qpsi'][-1])
-            history['psi_error_inner'].append(self._data['psi_error_history'])
+            history['psi_error_inner'].append(list(self._data['psi_error_history']))
 
-            #plot after every solve psi loop 
+            #plot after every solve psi loop
             self.compute_flux_surface_averaged_jstar_profile()
-            self.plot_profiles(save=f'profiles_fiter_{n+1:02d}.png', show=False)
-            self.plot_contour(save=f'contours_fiter{n+1:02d}.png', show=False)
+            # self.plot_profiles(save=f'profiles_fiter_{n+1:02d}.png', show=False)
+            # self.plot_contour(save=f'contours_fiter{n+1:02d}.png', show=False)
 
             fpol_before = copy.deepcopy(self._data['fpol'])
             fprime_before = np.gradient(fpol_before.flatten(), np.linspace(0.0, 1.0, self._data['nr']).flatten(), axis=0)
@@ -1568,7 +1567,6 @@ class FixedBoundaryEquilibrium():
             denom_fprime = np.where(np.abs(fprime_after) < 1.0e-30, 1.0e-30, fprime_after)
             fprime_error = float(np.nanmax(np.abs(fprime_after - fprime_before) / denom_fprime))
 
-            #plot convergence 
             history['f_error'].append(f_error)
             history['psi_error'].append(self._data['psi_error'])
             history['fpol_axis'].append(float(fpol_after[0]))
@@ -1592,33 +1590,6 @@ class FixedBoundaryEquilibrium():
             self._data['cur'] = cur_new
 
             # self.recompute_q_profile_from_scratch(smooth=False, approximate_lcfs=False)
-
-        iters = np.arange(1, len(history['f_error']) + 1)
-        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-        fig.suptitle('F-solver convergence history')
-
-        axes[0].semilogy(iters, history['f_error'], 'o-')
-        axes[0].axhline(self._options['errf'], color='r', linestyle='--', label='errf threshold')
-        axes[0].set_xlabel('Outer iteration')
-        axes[0].set_ylabel('Max relative F error')
-        axes[0].legend()
-
-        axes[1].semilogy(iters, history['psi_error'], 'o-')
-        axes[1].axhline(erreq, color='r', linestyle='--', label='erreq threshold')
-        axes[1].set_xlabel('Outer iteration')
-        axes[1].set_ylabel('Max relative psi error (outer)')
-        axes[1].legend()
-
-        for i, psi_hist in enumerate(history['psi_error_inner']):
-            axes[2].semilogy(psi_hist, label=f'F-iter {i+1}')
-        axes[2].axhline(erreq, color='r', linestyle='--', label='erreq threshold')
-        axes[2].set_xlabel('Picard iteration')
-        axes[2].set_ylabel('Max relative psi error (inner)')
-        axes[2].legend()
-
-        plt.tight_layout()
-        plt.savefig('convergence_history.png')
-        plt.close()
 
         if n + 1 == self._options['nfiter']:
             logger.info(
@@ -1776,6 +1747,7 @@ class FixedBoundaryEquilibrium():
             if clean:
                 self._data = {}
                 self._fit = {}
+                self._diagnostics = {}
                 self.solver = None
                 self.error = None
                 self.converged = None
@@ -1881,3 +1853,7 @@ class FixedBoundaryEquilibrium():
 
     def plot_boundary_gradients(self, save=None, show=True):
         plot_equilibrium_boundary_gradients(self, save=save, show=show)
+
+
+    def plot_f_solver_convergence(self, save=None, show=True):
+        plot_equilibrium_f_solver_convergence(self, save=save, show=show)
