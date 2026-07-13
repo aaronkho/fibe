@@ -1457,6 +1457,7 @@ class FixedBoundaryEquilibrium():
             self.define_plasma_current(self._data['cpasma'])
         # Loop to solve psi using Picard iteration
         self._data['psi_error'] = np.inf
+        converged_psi = False
         for n in range(self._options['nxiter']):
             ffp, pp = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
             cur_new = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp.ravel(), pp.ravel()))
@@ -1472,7 +1473,9 @@ class FixedBoundaryEquilibrium():
             #self.extend_psi_beyond_boundary()
             # Early exit if psi converged
             self._data['psi_error_history'].append(float(self._data['psi_error']))
-            if self._data['psi_error'] <= self._options['erreq']: break
+            if self._data['psi_error'] <= self._options['erreq']:
+                converged_psi = True
+                break
         self.create_boundary_gradient_splines(smooth=True)
         self.extend_psi_beyond_boundary()
         self.normalize_psi_to_original()
@@ -1481,7 +1484,7 @@ class FixedBoundaryEquilibrium():
         self.find_magnetic_axis()
         self.recompute_q_profile_from_scratch(smooth=approxq, approximate_lcfs=approxq)
 
-        if n + 1 == self._options['nxiter']:
+        if not converged_psi:
             logger.info(f'Failed to converge after {n + 1} iterations with maximum psi error of {self._data["psi_error"]:8.2e}')
             self.converged = False
         else:
@@ -1533,6 +1536,7 @@ class FixedBoundaryEquilibrium():
         }
         history = self._diagnostics['f_solver']
 
+        converged_f = False
         for n in range(self._options['nfiter']):
             self._data['psi_error_history'] = []
             self.solve_psi(
@@ -1581,7 +1585,9 @@ class FixedBoundaryEquilibrium():
                 f'max relative F\' error = {fprime_error:8.2e}'
             )
 
-            if f_error <= self._options['errf'] and fprime_error <= self._options['errf']: break
+            if f_error <= self._options['errf'] and fprime_error <= self._options['errf']:
+                converged_f = True
+                break
 
             self.define_f_profile(fpol_after, smooth=False, symmetrical=False, redefine_bcentre=True)
 
@@ -1591,7 +1597,7 @@ class FixedBoundaryEquilibrium():
 
             # self.recompute_q_profile_from_scratch(smooth=False, approximate_lcfs=False)
 
-        if n + 1 == self._options['nfiter']:
+        if not converged_f:
             logger.info(
                 f'F-solver failed to converge after {n + 1} iterations '
                 f'with max relative F error of {f_error:8.2e}'
@@ -1633,20 +1639,23 @@ class FixedBoundaryEquilibrium():
             self.define_toroidal_field(self._data['bcentr'], rcentr=self._data['rcentr'] if 'rcentr' in self._data else None)
         #if 'qpsi' not in self._data:
         #    self.recompute_q_profile_from_scratch()
+        converged_q = False
         for n in range(self._options['nxqiter']):
             q_old = copy.deepcopy(self._data['qpsi'])
             #if n > 0 or 'fpol' not in self._data:
             #    self.recompute_f_profile_from_scratch()
             self.solve_psi(nxiter=nxiter, erreq=erreq, relax=relax, relaxj=relaxj, pnaxis=pnaxis)
             self._update_q(self._data['qpsi'], q_old=q_old, relax=self._options['relaxq'])
-            if self._data['q_error'] <= self._options['errq']: break
+            if self._data['q_error'] <= self._options['errq']:
+                converged_q = True
+                break
             if n == 0:
                 self.recompute_f_profile_from_scratch()
             else:
                 self._step_f_with_q_error(relax=relaxq)
             logger.info(f'Iteration {n + 1}: Max relative error in q = {self._data["q_error"]:8.2e}')
 
-        if n + 1 == self._options['nxqiter']:
+        if not converged_q:
             logger.info(f'Failed to converge after {n + 1} iterations with maximum safety factor error of {self._data["q_error"]:8.2e}')
             self.converged = False
         else:
