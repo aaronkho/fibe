@@ -84,7 +84,14 @@ Console entry points (installed via `pyproject.toml`):
    `define_toroidal_field`/`define_toroidal_current_density_profile` setters — each fits a bounded
    1D spline over normalized psi. `define_toroidal_current_density_profile` sets a target `jstar`
    (toroidal-current-density) profile instead of `fpol` directly; `initialize_current` then derives
-   a consistent `fpol` from it (see "j*-driven initialization" below).
+   a consistent `fpol` from it (see "j*-driven initialization" below). `define_toroidal_field`/
+   `define_vacuum_toroidal_field` only auto-seed `fpol` when it isn't set yet, and that seed's
+   shape (`f_span = 0.005*(1e-6*cpasma)`) depends on `cpasma` already being present in `self._data`
+   — set `cpasma` (e.g. via `define_plasma_current`) *before* calling either, or the seed silently
+   falls back to `cpasma=1e6`. `initialize_profiles_with_minimal_input` was fixed for exactly this
+   ordering bug (was setting `self._data['bcentr']` directly instead of calling
+   `define_toroidal_field()`, so `fpol` was never seeded at all and `initialize_psi()` crashed with
+   `KeyError: 'fpol'`).
 3. **Psi initialization**: `initialize_psi()` builds the irregular-boundary finite-difference
    stencil (`create_finite_difference_grid` → `math.generate_finite_difference_grid`), factorizes
    the sparse GS operator (`make_solver` → `scipy.sparse.linalg.factorized`), generates a seed
@@ -329,7 +336,8 @@ of perturbation size.
   along with `cpasma`, while `gs_residual` (correctly) holds it fixed; two different partial
   derivatives were being compared. Holding `fpol` truly fixed in the FD reference (define it once,
   reuse the same array for every `cpasma` value) brings the relative error to ~1e-10.
-  `d(psi)/d(cpasma)` is validated. (Worth knowing on its own: `define_vacuum_toroidal_field`'s
-  auto-generated seed `fpol` depends on whatever `cpasma` happens to be set at the time it's
-  called — calling it again after changing `cpasma`, expecting only `bcentr` to change, will
+  `d(psi)/d(cpasma)` is validated. (Worth knowing on its own: `define_vacuum_toroidal_field` (and
+  `define_toroidal_field`, see the "Profiles" step above) auto-generated seed `fpol` depends on
+  whatever `cpasma` happens to be set at the time it's called — calling it again after changing
+  `cpasma`, expecting only `bcentr` to change, will
   silently reshape the F-profile too.)
