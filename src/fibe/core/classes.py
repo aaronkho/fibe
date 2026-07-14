@@ -254,9 +254,9 @@ class FixedBoundaryEquilibrium():
             pressure = pressure_axis * (gamma ** 2) / (np.linspace(0.0, 1.0, self._data['nr']) ** 2 + gamma ** 2)
             self.define_pressure_profile(pressure)
             self._data['cpasma'] = ip
-            self._data['bcentr'] = bt
             if legacy_ip:
                 self._data['cpasma'] *= -1.0
+            self.define_toroidal_field(bt)
 
 
     def initialize_psi(self):
