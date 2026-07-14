@@ -213,6 +213,20 @@ precision.
     `ijin` (interior points): `eq._data['psi']` has usually been through
     `extend_psi_beyond_boundary()`, which extrapolates *exterior* points to large values for
     plotting, and an unrestricted argmax grabs one of those instead of the true axis.
+    `axis_index = argmax(|psi[ijin] - sibdry|)`, **not** `argmax(|psi[ijin]|)` — the magnetic axis
+    is the interior extremum of psi, i.e. the point *farthest* from the boundary flux value, and
+    the two formulas only coincide when `sibdry` happens to be 0. That's always true mid-Picard-
+    iteration and hence for a from-scratch equilibrium that's never left `scratch=True`, but false
+    for an already-converged equilibrium loaded from a G-EQDSK (`sibdry~8.8`, not 0, once
+    `solve_psi()`'s final `normalize_psi_to_original()` rescales psi to the source file's physical
+    scale) — there, `argmax(|psi|)` picks a point *near the boundary* instead, and every downstream
+    quantity (gradients included) is silently wrong, not just a mislabeled index. Found via a JAX
+    gradient off by a large, roughly-constant factor across many orders of magnitude of
+    perturbation size (ruling out nonlinearity/step-size effects) on `arc_v3a_maestro_input.geqdsk`
+    at native 129×129 resolution — see "Bugs this surfaced" below.
+  - `grid.sibdry` is **always frozen at `0.0`**, never `eq._data['sibdry']` at capture time — see
+    `solve.py`'s forced `scratch=True` below for why; the two are coupled and must be revisited
+    together if either changes.
 - `solve.py` — `solve_gs_implicit(params, grid, eq)` wires `gs_residual` into
   `jax.lax.custom_root`: the forward solve reuses `eq.solve_psi()` unchanged via
   `jax.pure_callback` (mutates `eq` in place — fine for the single-equilibrium case this targets,
@@ -234,13 +248,57 @@ precision.
 than once on one `FixedBoundaryEquilibrium` (e.g. after tweaking a profile) silently rescales the
 new result back toward the *first* solve's scale, masking the true sensitivity to whatever
 changed. `jax/solve.py`'s `_numpy_forward_solve` works around this by forcing `eq.scratch = True`
-before every call (confirmed correct against an independent from-scratch numpy re-solve); any
-other code path that reuses one equilibrium object across multiple `solve_psi()` calls should be
-checked against this.
+before every call; any other code path that reuses one equilibrium object across multiple
+`solve_psi()` calls should be checked against this.
+
+**Consequence for `jax/residual.py`, not just a `classes.py`-local workaround**: forcing
+`scratch=True` means `normalize_psi_to_original()` *never* rescales — so every psi
+`_numpy_forward_solve` returns stays on the Picard loop's raw internal convention
+(`zero_magnetic_boundary()` pins the boundary to `sibdry=0` every iteration, independent of the
+source equilibrium's real physical scale) rather than the source equilibrium's `sibdry~8.8`-style
+physical scale. `GSGridConstants.sibdry` must be frozen at `0.0` to match what's actually returned
+— see `grid_from_equilibrium` above and the two bugs below, both surfaced together by the same
+symptom.
+
+### Bugs this surfaced in `residual.py` (fixed)
+
+Found while validating this scaffold end-to-end on a real, native-resolution (129×129), loaded
+G-EQDSK (`arc_v3a_maestro_input.geqdsk`) for the first time — the original validation below only
+ever exercised a small **from-scratch-built** 33×33 test equilibrium, where both bugs happen to be
+invisible (see each entry). Symptom: `jax.grad`/`jax.jvp` gave a directional derivative wrong by a
+large, roughly-constant factor (~1800× too small, cosine similarity ~0.64 with the true direction)
+across four orders of magnitude of perturbation size — ruling out step-size/nonlinearity effects,
+since a genuine linearization error shrinks toward the true value as the step shrinks and this
+didn't move at all.
+
+1. **`axis_index` used `argmax(|psi|)` instead of `argmax(|psi - sibdry|)`.** Only correct when
+   `sibdry=0`, which is coincidentally always true for the scaffold's own from-scratch 33×33 test
+   equilibrium (see the `scratch=True` note above) but false for a loaded, F-solver-converged
+   equilibrium (`sibdry~8.8`). Picked a boundary-adjacent point instead of the true magnetic axis;
+   `magnetic_axis_flux` then returned a value near 0 instead of the true `simagx`.
+2. **`GSGridConstants.sibdry` was captured as `eq._data['sibdry']`** (the equilibrium's cosmetic
+   physical value, e.g. ~8.8) **instead of being frozen at `0.0`** (the raw convention
+   `_numpy_forward_solve` actually returns psi in, per the `scratch=True` note above). Again
+   coincidentally correct only when the source equilibrium's own `sibdry` happens to be 0.
+
+Both were needed together: fixing only #1 still leaves `gs_residual` evaluated with a mismatched
+`sibdry`, so `psinorm` is computed on the wrong scale and the "fix" alone measurably made the
+directional-derivative error *worse* (ratio ~5.9×10⁷, cosine similarity negative) before #2 was
+also applied. Verified by evaluating `gs_residual` directly at the true numpy-solved psi: with
+both fixes, `‖gs_residual‖ ~ 2.5e-05` (a genuine root); with the old `sibdry~8.8`, `~0.27` (not a
+root at all) — `custom_root`'s implicit-function-theorem derivative is meaningless when evaluated
+away from an actual root, which is what made the original bug's error magnitude look arbitrary
+rather than a clean, explicable constant. After both fixes, the same directional-derivative check
+matches to ratio `1.00` and cosine similarity `~1.000000` across the same four orders of magnitude
+of perturbation size.
 
 ### Validation status (33×33 test grid)
 
 - Forward solve matches direct `eq.solve_psi()` to ~1e-8.
+- **Only ever exercised a from-scratch-built equilibrium** (`initialize_psi()` → first-ever
+  `solve_psi()`, where `sibdry` stays 0 by construction) until the native-129×129-loaded-G-EQDSK
+  check above — that's why the two `residual.py` bugs (both keyed on `sibdry=0` vs. `sibdry≠0`)
+  went undetected here despite this validation passing.
 - `d(psi)/d(pressure spline coefficient)` matches an independent from-scratch numpy finite
   difference to ~1e-7 relative error.
 - `d(psi)/d(cpasma)` initially looked off by ~17%, reproducibly (stable across FD step sizes,

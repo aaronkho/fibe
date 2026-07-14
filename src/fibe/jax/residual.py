@@ -53,7 +53,12 @@ class GSGridConstants:
         self.s5 = s5                    # flat (nr*nz,), current-term grid metric factor
         self.A = A                      # (nr*nz, nr*nz), frozen FD operator
         self.axis_index = axis_index    # static, flat grid index nearest the magnetic axis
-        self.sibdry = sibdry            # pinned to 0.0 by fibe's internal convention
+        # Always 0.0 (see grid_from_equilibrium) -- NOT read from the source
+        # equilibrium's own eq._data['sibdry'], which can be a nonzero
+        # "cosmetic" physical value (e.g. ~8.8 for a loaded, F-solver-
+        # converged G-EQDSK) that solve.py's _numpy_forward_solve never
+        # actually returns psi in, since it permanently forces scratch=True.
+        self.sibdry = sibdry
 
     def tree_flatten(self):
         children = (
@@ -101,8 +106,28 @@ def grid_from_equilibrium(eq) -> GSGridConstants:
     # plotting/analysis -- restrict the argmax to interior (ijin) points, or
     # a stray large extrapolated value outside the LCFS gets mistaken for the
     # magnetic axis.
+    #
+    # argmax(|psi - sibdry|), not argmax(|psi|): the magnetic axis is the
+    # interior extremum of psi -- i.e. the point *farthest* from the
+    # boundary flux value -- and only coincides with argmax(|psi|) when
+    # sibdry happens to be pinned at 0 (true mid-Picard-iteration, and hence
+    # also true for a from-scratch equilibrium whose solve_psi() call never
+    # got past scratch=True to rescale it away from that). For an
+    # already-converged equilibrium loaded from a G-EQDSK (sibdry~8.8, not
+    # 0, once solve_psi()'s final normalize_psi_to_original() rescales psi
+    # to match the source file's physical scale), argmax(|psi|) instead
+    # picks a point *near the boundary* (where |psi| is largest) and
+    # magnetic_axis_flux ends up evaluating a Taylor expansion centered
+    # there -- silently wrong for every derived quantity, not just a
+    # labeling error, since gs_residual's current term is evaluated relative
+    # to this same (bogus) "axis" value. Found via a ~1800x-too-small,
+    # roughly sign-scrambled JAX gradient (confirmed not a nonlinearity
+    # effect: the mismatch factor stayed ~constant across 4 orders of
+    # magnitude of perturbation size) that traced back to
+    # magnetic_axis_flux(psi, grid) returning a value near 0 instead of the
+    # true simagx.
     ijin = np.asarray(data['ijin'])
-    axis_index = int(ijin[np.abs(psi_flat[ijin]).argmax()])
+    axis_index = int(ijin[np.abs(psi_flat[ijin] - data['sibdry']).argmax()])
     A = jsparse.BCOO.from_scipy_sparse(data['matrix'].tocoo())
     return GSGridConstants(
         nr=int(data['nr']),
@@ -117,7 +142,25 @@ def grid_from_equilibrium(eq) -> GSGridConstants:
         s5=jnp.asarray(data['s5']),
         A=A,
         axis_index=axis_index,
-        sibdry=float(data['sibdry']),
+        # 0.0, not float(data['sibdry']): data['sibdry'] here is eq's current
+        # *cosmetic* physical boundary flux (e.g. ~8.8 for a loaded,
+        # F-solver-converged G-EQDSK), used just above to correctly locate
+        # axis_index in that reference frame. But every psi this frozen grid
+        # will ever be paired with (via gs_residual, from
+        # solve.py's _numpy_forward_solve) comes back on the raw internal
+        # Picard-loop convention instead (boundary pinned to 0 by
+        # zero_magnetic_boundary(), independent of eq's cosmetic scale),
+        # because that bridge function permanently forces eq.scratch=True to
+        # dodge a *different* bug (normalize_psi_to_original() otherwise
+        # rescaling every subsequent solve back toward whichever equilibrium
+        # happened to converge first) and never rescales back afterward.
+        # Freezing sibdry=8.8 here while gs_residual is actually evaluated
+        # against sibdry=0 psi arrays put every downstream quantity on the
+        # wrong psinorm scale -- confirmed by gs_residual's own norm at the
+        # true numpy solution: ~2.5e-05 with sibdry=0 (a genuine root) vs.
+        # ~0.27 with sibdry=8.8 (not a root at all). If solve.py's forced
+        # scratch=True/raw-convention behavior ever changes, this must too.
+        sibdry=0.0,
     )
 
 
