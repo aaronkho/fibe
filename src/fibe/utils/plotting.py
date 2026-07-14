@@ -379,3 +379,43 @@ def plot_equilibrium_boundary_gradients(eq_obj, save=None, show=True):
         if show:
             plt.show()
         plt.close(fig)
+
+
+def plot_equilibrium_f_solver_convergence(eq_obj, save=None, show=True):
+    history = eq_obj._diagnostics.get('f_solver', {})
+    if history.get('f_error'):
+        import matplotlib.pyplot as plt
+        errf = eq_obj._options.get('errf')
+        erreq = eq_obj._options.get('erreq')
+        iters = np.arange(1, len(history['f_error']) + 1)
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+        fig.suptitle('F-solver convergence history')
+
+        axes[0].semilogy(iters, history['f_error'], 'o-')
+        if errf is not None:
+            axes[0].axhline(errf, color='r', linestyle='--', label='errf threshold')
+        axes[0].set_xlabel('Outer iteration')
+        axes[0].set_ylabel('Max relative F error')
+        axes[0].legend()
+
+        axes[1].semilogy(iters, history['psi_error'], 'o-')
+        if erreq is not None:
+            axes[1].axhline(erreq, color='r', linestyle='--', label='erreq threshold')
+        axes[1].set_xlabel('Outer iteration')
+        axes[1].set_ylabel('Max relative psi error (outer)')
+        axes[1].legend()
+
+        for i, psi_hist in enumerate(history['psi_error_inner']):
+            axes[2].semilogy(psi_hist, label=f'F-iter {i+1}')
+        if erreq is not None:
+            axes[2].axhline(erreq, color='r', linestyle='--', label='erreq threshold')
+        axes[2].set_xlabel('Picard iteration')
+        axes[2].set_ylabel('Max relative psi error (inner)')
+        axes[2].legend()
+
+        fig.tight_layout()
+        if isinstance(save, (str, Path)):
+            fig.savefig(save, dpi=100)
+        if show:
+            plt.show()
+        plt.close(fig)

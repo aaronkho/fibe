@@ -1076,11 +1076,21 @@ def compute_flux_surface_cross_sectional_area(contour, r_reference=None, z_refer
         z_reference = 0.5 * (np.nanmax(zcm) + np.nanmin(zcm))
     area = 0.0
     if rcm.size > 2 and zcm.size > 2:
-        theta = np.angle(rcm + 1.0j * zcm - r_reference - 1.0j * z_reference).flatten()
-        theta -= theta[0]
-        mask = (theta < 0.0)
-        theta[mask] = theta[mask] + 2.0 * np.pi
-        area = float(trapezoid(0.5 * (rcm * np.gradient(zcm, theta) + zcm * np.gradient(rcm, theta)), x=theta))
+        # Flux surfaces are expected to be convex/star-shaped about the reference point, so a
+        # single +2*pi mask correction (kept below, commented out, in case it's ever preferred
+        # again) is normally equivalent to a full unwrap -- verified to agree to within machine
+        # precision on real traced contours. np.unwrap is used here instead since it costs
+        # nothing extra and stays correct even if a future non-convex/shaped contour crosses the
+        # -pi/pi branch more than once, which the single-mask correction would silently miss.
+        # theta = np.angle(rcm + 1.0j * zcm - r_reference - 1.0j * z_reference).flatten()
+        # theta -= theta[0]
+        # mask = (theta < 0.0)
+        # theta[mask] = theta[mask] + 2.0 * np.pi
+        theta = np.unwrap(np.angle(rcm + 1.0j * zcm - r_reference - 1.0j * z_reference).flatten())
+        # Area via Green's theorem, 0.5 * oint(x dy - y dx) -- the minus sign is required: a "+"
+        # here integrates the exact differential 0.5 * d(R*Z), which vanishes over any closed
+        # loop, so it was silently returning near-zero quadrature noise instead of the true area.
+        area = float(trapezoid(0.5 * (rcm * np.gradient(zcm, theta) - zcm * np.gradient(rcm, theta)), x=theta))
     return area
 
 
@@ -1141,7 +1151,7 @@ def compute_ffprime_from_jstar_pprime_and_contour(jstar, pp, contour):
     if contour.get('r', np.array([])).size > 1:
         mu0 = 4.0e-7 * np.pi
         fsa = compute_flux_surface_average_factors(contour)
-        val = (-mu0 / fsa['fs_ir2']) * (jstar - fsa['fs_vprime'] * pp)
+        val = (-mu0 / fsa['fs_ir2']) * (jstar * fsa['fs_ir'] + fsa['fs_vprime'] * pp)
     return val
 
 
@@ -1294,6 +1304,17 @@ def trace_contour_with_megpy(rvec, zvec, psi, level, rcheck, zcheck, boundary=Fa
             contour_out['r'] = np.concatenate([contour_out['r'], np.array([contour_out['r'][0]])])
         if contour_out['z'][0] != contour_out['z'][-1]:
             contour_out['z'] = np.concatenate([contour_out['z'], np.array([contour_out['z'][0]])])
+        # The underlying tracer does not guarantee a fixed winding direction, but every other
+        # contour source in this codebase (e.g. G-EQDSK rbdry/zbdry, trace_contour_with_splines)
+        # is ordered counter-clockwise, matching FiBE's fixed internal COCOS=2 (spol=+1, standard
+        # poloidal-angle handedness). Enforce the same orientation here so signed-area/orientation
+        # -sensitive quantities computed from these contours stay consistent across all sources.
+        signed_area = 0.5 * np.sum(
+            contour_out['r'][:-1] * contour_out['z'][1:] - contour_out['r'][1:] * contour_out['z'][:-1]
+        )
+        if signed_area < 0.0:
+            contour_out['r'] = contour_out['r'][::-1]
+            contour_out['z'] = contour_out['z'][::-1]
     return contour_out
 
 

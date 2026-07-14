@@ -455,7 +455,7 @@ def write_geqdsk_file_fibe(
         kk = 0
         for ii in range(nbdry):
             ff.write(f'{rbdry[ii]:16.9E}')
-            if (kk + 1) % 5 == 0 and (ii + 1) != nbdry:
+            if (kk + 1) % 5 == 0:
                 ff.write('\n')
             kk += 1
             ff.write(f'{zbdry[ii]:16.9E}')
@@ -467,11 +467,11 @@ def write_geqdsk_file_fibe(
         kk = 0
         for ii in range(nlim):
             ff.write(f'{rlim[ii]:16.9E}')
-            if (kk + 1) % 5 == 0 and (kk + 1) != nlim:
+            if (kk + 1) % 5 == 0:
                 ff.write('\n')
             kk += 1
             ff.write(f'{zlim[ii]:16.9E}')
-            if (kk + 1) % 5 == 0 and (kk + 1) != nlim:
+            if (kk + 1) % 5 == 0 and (ii + 1) != nlim:
                 ff.write('\n')
             kk += 1
     logger.info(f'Output EQDSK file saved as {fpath}.')
