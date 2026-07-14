@@ -44,6 +44,7 @@ dev = ["coverage", "pytest", "pytest-cov"]
 docs = ["sphinx", "furo", "sphinx-rtd-theme"]
 build = ["build", "twine"]
 optuna = ["optuna"]
+jax = ["jax"]
 
 [project.urls]
 "Homepage" = "https://gitlab.com/aaronkho/fibe"

@@ -72,7 +72,7 @@ Console entry points (installed via `pyproject.toml`):
 - `src/fibe/core/math.py` — stateless numerical routines called by `classes.py`. No solver state is
   held here; everything is passed in/out as plain arrays.
 
-### Typical call sequence
+### Typical call sequence (see README.md for the canonical example)
 
 1. **Grid + boundary**: `define_grid`/`define_grid_and_boundary_with_mxh` (or `define_boundary`,
    `define_boundary_with_mxh`, `define_wall`) — MXH (Miller Extended Harmonic) coefficients
@@ -84,7 +84,14 @@ Console entry points (installed via `pyproject.toml`):
    `define_toroidal_field`/`define_toroidal_current_density_profile` setters — each fits a bounded
    1D spline over normalized psi. `define_toroidal_current_density_profile` sets a target `jstar`
    (toroidal-current-density) profile instead of `fpol` directly; `initialize_current` then derives
-   a consistent `fpol` from it (see "j*-driven initialization" below).
+   a consistent `fpol` from it (see "j*-driven initialization" below). `define_toroidal_field`/
+   `define_vacuum_toroidal_field` only auto-seed `fpol` when it isn't set yet, and that seed's
+   shape (`f_span = 0.005*(1e-6*cpasma)`) depends on `cpasma` already being present in `self._data`
+   — set `cpasma` (e.g. via `define_plasma_current`) *before* calling either, or the seed silently
+   falls back to `cpasma=1e6`. `initialize_profiles_with_minimal_input` was fixed for exactly this
+   ordering bug (was setting `self._data['bcentr']` directly instead of calling
+   `define_toroidal_field()`, so `fpol` was never seeded at all and `initialize_psi()` crashed with
+   `KeyError: 'fpol'`).
 3. **Psi initialization**: `initialize_psi()` builds the irregular-boundary finite-difference
    stencil (`create_finite_difference_grid` → `math.generate_finite_difference_grid`), factorizes
    the sparse GS operator (`make_solver` → `scipy.sparse.linalg.factorized`), generates a seed
@@ -180,3 +187,157 @@ initialization, just the crude seed from `generate_initial_psi`). Once `fpol` is
 converges to the true equilibrium, so the achieved `jstar` profile (check via
 `compute_flux_surface_averaged_jstar_profile`) can still drift from the target `jstar` after a full
 solve, even though it matches almost exactly right after `initialize_psi()`.
+
+## JAX autodiff scaffold (`src/fibe/jax/`, `jax-autodiff` branch, experimental)
+
+Differentiates a converged GS solution w.r.t. profile shape / `cpasma` via implicit
+differentiation, instead of unrolling the numpy Picard loop through autodiff. Requires the `jax`
+extra (`pip install -e ".[jax]"`). Enables `jax_enable_x64` at import time — JAX's float32 default
+silently caps agreement with the numpy solver (which converges to `erreq~1e-8`) at ~1e-7 relative
+precision.
+
+- `profiles.py` — hand-rolled JAX (Cox-de Boor recursion) evaluation of the cubic B-splines
+  `core.math.generate_bounded_1d_spline` produces, validated against `scipy.interpolate.splev` to
+  ~1e-10. Treats a fitted `(t, c, k)` as the interface — knots `t`/degree `k` frozen, coefficient
+  vector `c` the differentiable leaf — rather than re-deriving `splrep`'s own (nonlinear, when
+  smoothed) knot placement in JAX. `BSplineTCK` is a hand-registered pytree (not a `NamedTuple`)
+  with `k` pinned as static aux data; a `NamedTuple` lets `jax.jit` trace `k`, which breaks the
+  python-level slicing (`c[1:n]`, `range(k+1)`) that assumes it's concrete.
+- `residual.py` — `gs_residual(psi, params, grid)` = `A @ psi + s5*cur(psi, theta)`, the same
+  fixed-point equation `core.math.compute_psi`'s Picard step encodes
+  (`psi_new = -solver(s5*cur)` ⟺ `A@psi_new + s5*cur(psi_old) = 0` at convergence). `A` is reused
+  directly from `eq._data['matrix']` via `jax.experimental.sparse.BCOO`, not re-derived — only the
+  nonlinear current term needs to be JAX-native. `GSGridConstants.grid_from_equilibrium(eq)`
+  freezes grid/boundary geometry and the magnetic-axis grid index from an already-converged
+  `FixedBoundaryEquilibrium`; `GSProfileParams.params_from_equilibrium(eq)` extracts the
+  differentiable profile coefficients + `cpasma`. Only profile shape and `cpasma` are
+  differentiable in this first pass — boundary-shape sensitivity would additionally require
+  `A`/`s5`/the axis index themselves to become functions of theta.
+  - `magnetic_axis_flux` ports `find_extrema_with_taylor_expansion`'s quadratic-Taylor axis-value
+    formula, freezing only the `argmax` *grid index* (envelope theorem: the axis is a stationary
+    point, so its location is insensitive to psi to first order) — the value itself stays a live,
+    differentiable function of psi. `grid_from_equilibrium` must restrict that argmax search to
+    `ijin` (interior points): `eq._data['psi']` has usually been through
+    `extend_psi_beyond_boundary()`, which extrapolates *exterior* points to large values for
+    plotting, and an unrestricted argmax grabs one of those instead of the true axis.
+    `axis_index = argmax(|psi[ijin] - sibdry|)`, **not** `argmax(|psi[ijin]|)` — the magnetic axis
+    is the interior extremum of psi, i.e. the point *farthest* from the boundary flux value, and
+    the two formulas only coincide when `sibdry` happens to be 0. That's always true mid-Picard-
+    iteration and hence for a from-scratch equilibrium that's never left `scratch=True`, but false
+    for an already-converged equilibrium loaded from a G-EQDSK (`sibdry~8.8`, not 0, once
+    `solve_psi()`'s final `normalize_psi_to_original()` rescales psi to the source file's physical
+    scale) — there, `argmax(|psi|)` picks a point *near the boundary* instead, and every downstream
+    quantity (gradients included) is silently wrong, not just a mislabeled index. Found via a JAX
+    gradient off by a large, roughly-constant factor across many orders of magnitude of
+    perturbation size (ruling out nonlinearity/step-size effects) on `arc_v3a_maestro_input.geqdsk`
+    at native 129×129 resolution — see "Bugs this surfaced" below.
+  - `grid.sibdry` is **always frozen at `0.0`**, never `eq._data['sibdry']` at capture time — see
+    `solve.py`'s forced `scratch=True` below for why; the two are coupled and must be revisited
+    together if either changes.
+  - `grid.simagx_orig`/`grid.sibdry_orig` separately freeze the source equilibrium's *true*
+    physical axis/boundary flux (e.g. `simagx~0`, `sibdry~8.8` for a loaded, F-solver-converged
+    G-EQDSK), captured once alongside `grid.sibdry` but never fed into `gs_residual` itself — purely
+    for `psi_to_physical_scale` below.
+  - `psi_to_physical_scale(psi, grid)` affinely rescales a raw psi (`grid.sibdry=0` convention, as
+    `solve_gs_implicit` always returns) onto `grid.simagx_orig`/`grid.sibdry_orig` — i.e. back onto
+    the source equilibrium's own physical psi scale, the same remapping `classes.renormalize_psi`
+    does, reimplemented in JAX so it composes and differentiates cleanly with `solve_gs_implicit`.
+    Recomputes `magnetic_axis_flux` on the raw psi dynamically (not cached), so it stays correct
+    under perturbation. By construction the axis/boundary *values* always land exactly on the
+    frozen `simagx_orig`/`sibdry_orig` after this rescale — differentiating an axis-flux-like
+    quantity computed *from* the rescaled psi is therefore trivially zero-gradient; anything
+    wanting the axis value's real sensitivity to the profile (as opposed to the field's shape
+    elsewhere) needs the raw, un-rescaled psi instead. Only meaningful on interior (`ijin`) points —
+    exterior points are hard-zeroed in the raw convention (Dirichlet BC) but hold meaningful
+    extrapolated values (`extend_psi_beyond_boundary()`) in the source equilibrium's own psi, so
+    the two conventions aren't comparable there.
+- `solve.py` — `solve_gs_implicit(params, grid, eq)` wires `gs_residual` into
+  `jax.lax.custom_root`: the forward solve reuses `eq.solve_psi()` unchanged via
+  `jax.pure_callback` (mutates `eq` in place — fine for the single-equilibrium case this targets,
+  but will misbehave under `jax.vmap` over multiple parameter sets, which would all fight over the
+  same mutable `eq`). The backward pass solves `J @ dpsi = y` (`J = ∂(gs_residual)/∂psi`) via a
+  **dense** `jax.jacfwd` + `jnp.linalg.solve` — `jax.scipy.sparse.linalg.gmres` looks like the
+  natural fit (`J` isn't symmetric, so CG is invalid) but reliably crashes with
+  `NotImplementedError` when nested as `tangent_solve` inside `custom_root` (reproduced in a
+  minimal case with no sparse ops at all — looks like a genuine `custom_root`/`custom_linear_solve`
+  AD incompatibility in jax 0.10.2, not something specific to this codebase). The dense fallback is
+  O(n²) memory, so it won't scale past the grid sizes tested here (tens of thousands of points) —
+  revisit once the gmres/custom_root nesting issue is understood.
+
+### Bug this surfaced in `classes.py` (not fixed there yet)
+
+`solve_psi()`'s final `normalize_psi_to_original()` step affinely rescales `psi` to match
+`simagx_orig`/`sibdry_orig` — the axis flux from whichever `solve_psi()` call happened to run
+*first* — on every subsequent (non-`scratch`) call on the same object. Calling `solve_psi()` more
+than once on one `FixedBoundaryEquilibrium` (e.g. after tweaking a profile) silently rescales the
+new result back toward the *first* solve's scale, masking the true sensitivity to whatever
+changed. `jax/solve.py`'s `_numpy_forward_solve` works around this by forcing `eq.scratch = True`
+before every call; any other code path that reuses one equilibrium object across multiple
+`solve_psi()` calls should be checked against this.
+
+**Consequence for `jax/residual.py`, not just a `classes.py`-local workaround**: forcing
+`scratch=True` means `normalize_psi_to_original()` *never* rescales — so every psi
+`_numpy_forward_solve` returns stays on the Picard loop's raw internal convention
+(`zero_magnetic_boundary()` pins the boundary to `sibdry=0` every iteration, independent of the
+source equilibrium's real physical scale) rather than the source equilibrium's `sibdry~8.8`-style
+physical scale. `GSGridConstants.sibdry` must be frozen at `0.0` to match what's actually returned
+— see `grid_from_equilibrium` above and the two bugs below, both surfaced together by the same
+symptom.
+
+### Bugs this surfaced in `residual.py` (fixed)
+
+Found while validating this scaffold end-to-end on a real, native-resolution (129×129), loaded
+G-EQDSK (`arc_v3a_maestro_input.geqdsk`) for the first time — the original validation below only
+ever exercised a small **from-scratch-built** 33×33 test equilibrium, where both bugs happen to be
+invisible (see each entry). Symptom: `jax.grad`/`jax.jvp` gave a directional derivative wrong by a
+large, roughly-constant factor (~1800× too small, cosine similarity ~0.64 with the true direction)
+across four orders of magnitude of perturbation size — ruling out step-size/nonlinearity effects,
+since a genuine linearization error shrinks toward the true value as the step shrinks and this
+didn't move at all.
+
+1. **`axis_index` used `argmax(|psi|)` instead of `argmax(|psi - sibdry|)`.** Only correct when
+   `sibdry=0`, which is coincidentally always true for the scaffold's own from-scratch 33×33 test
+   equilibrium (see the `scratch=True` note above) but false for a loaded, F-solver-converged
+   equilibrium (`sibdry~8.8`). Picked a boundary-adjacent point instead of the true magnetic axis;
+   `magnetic_axis_flux` then returned a value near 0 instead of the true `simagx`.
+2. **`GSGridConstants.sibdry` was captured as `eq._data['sibdry']`** (the equilibrium's cosmetic
+   physical value, e.g. ~8.8) **instead of being frozen at `0.0`** (the raw convention
+   `_numpy_forward_solve` actually returns psi in, per the `scratch=True` note above). Again
+   coincidentally correct only when the source equilibrium's own `sibdry` happens to be 0.
+
+Both were needed together: fixing only #1 still leaves `gs_residual` evaluated with a mismatched
+`sibdry`, so `psinorm` is computed on the wrong scale and the "fix" alone measurably made the
+directional-derivative error *worse* (ratio ~5.9×10⁷, cosine similarity negative) before #2 was
+also applied. Verified by evaluating `gs_residual` directly at the true numpy-solved psi: with
+both fixes, `‖gs_residual‖ ~ 2.5e-05` (a genuine root); with the old `sibdry~8.8`, `~0.27` (not a
+root at all) — `custom_root`'s implicit-function-theorem derivative is meaningless when evaluated
+away from an actual root, which is what made the original bug's error magnitude look arbitrary
+rather than a clean, explicable constant. After both fixes, the same directional-derivative check
+matches to ratio `1.00` and cosine similarity `~1.000000` across the same four orders of magnitude
+of perturbation size.
+
+### Validation status (33×33 test grid)
+
+- Forward solve matches direct `eq.solve_psi()` to ~1e-8.
+- **Only ever exercised a from-scratch-built equilibrium** (`initialize_psi()` → first-ever
+  `solve_psi()`, where `sibdry` stays 0 by construction) until the native-129×129-loaded-G-EQDSK
+  check above — that's why the two `residual.py` bugs (both keyed on `sibdry=0` vs. `sibdry≠0`)
+  went undetected here despite this validation passing.
+- `d(psi)/d(pressure spline coefficient)` matches an independent from-scratch numpy finite
+  difference to ~1e-7 relative error.
+- `d(psi)/d(cpasma)` initially looked off by ~17%, reproducibly (stable across FD step sizes,
+  unaffected by Newton-correcting `gs_residual` to machine-precision zero first, and reproduced
+  exactly by a manual implicit-function-theorem calculation bypassing `custom_root` entirely — so
+  not truncation error, not residual-nonzero-ness, not a `custom_root` wiring bug). Root cause was
+  in the *test*, not `gs_residual`: the from-scratch finite-difference reference called
+  `classes.define_vacuum_toroidal_field()` to seed `fpol` for each perturbed `cpasma` value, and
+  that seed generator's `f_span` is itself a function of `cpasma`
+  (`f_span = 0.005*(1e-6*cpasma)`) — so the "reference" was silently varying the F-profile shape
+  along with `cpasma`, while `gs_residual` (correctly) holds it fixed; two different partial
+  derivatives were being compared. Holding `fpol` truly fixed in the FD reference (define it once,
+  reuse the same array for every `cpasma` value) brings the relative error to ~1e-10.
+  `d(psi)/d(cpasma)` is validated. (Worth knowing on its own: `define_vacuum_toroidal_field` (and
+  `define_toroidal_field`, see the "Profiles" step above) auto-generated seed `fpol` depends on
+  whatever `cpasma` happens to be set at the time it's called — calling it again after changing
+  `cpasma`, expecting only `bcentr` to change, will
+  silently reshape the F-profile too.)
