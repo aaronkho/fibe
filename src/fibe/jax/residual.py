@@ -40,7 +40,7 @@ class GSGridConstants:
     and break that indexing (see profiles.BSplineTCK for the same issue).
     '''
 
-    def __init__(self, nr, nz, rpsi, hrz, hrm1, hrm2, hzm1, hzm2, inout_mask, s5, A, axis_index, sibdry):
+    def __init__(self, nr, nz, rpsi, hrz, hrm1, hrm2, hzm1, hzm2, inout_mask, s5, A, axis_index, sibdry, simagx_orig, sibdry_orig):
         self.nr = nr                    # static
         self.nz = nz                    # static
         self.rpsi = rpsi                # flat (nr*nz,), grid R value at each point
@@ -58,12 +58,24 @@ class GSGridConstants:
         # "cosmetic" physical value (e.g. ~8.8 for a loaded, F-solver-
         # converged G-EQDSK) that solve.py's _numpy_forward_solve never
         # actually returns psi in, since it permanently forces scratch=True.
+        # This is the scale gs_residual/custom_root require for correctness
+        # -- see psi_to_physical_scale below for recovering the source
+        # equilibrium's own psi convention for display/comparison purposes
+        # without disturbing this.
         self.sibdry = sibdry
+        # simagx_orig/sibdry_orig: the source equilibrium's true physical
+        # axis/boundary flux (e.g. simagx~0, sibdry~8.8 for a loaded,
+        # F-solver-converged G-EQDSK), captured once here before any
+        # differentiable perturbation runs. Frozen constants, only consumed
+        # by psi_to_physical_scale -- gs_residual itself must keep using
+        # `sibdry` (always 0) above, not these.
+        self.simagx_orig = simagx_orig
+        self.sibdry_orig = sibdry_orig
 
     def tree_flatten(self):
         children = (
             self.rpsi, self.hrz, self.hrm1, self.hrm2, self.hzm1, self.hzm2,
-            self.inout_mask, self.s5, self.A, self.sibdry,
+            self.inout_mask, self.s5, self.A, self.sibdry, self.simagx_orig, self.sibdry_orig,
         )
         aux_data = (self.nr, self.nz, self.axis_index)
         return children, aux_data
@@ -71,8 +83,8 @@ class GSGridConstants:
     @classmethod
     def tree_unflatten(cls, aux_data, children):
         nr, nz, axis_index = aux_data
-        rpsi, hrz, hrm1, hrm2, hzm1, hzm2, inout_mask, s5, A, sibdry = children
-        return cls(nr, nz, rpsi, hrz, hrm1, hrm2, hzm1, hzm2, inout_mask, s5, A, axis_index, sibdry)
+        rpsi, hrz, hrm1, hrm2, hzm1, hzm2, inout_mask, s5, A, sibdry, simagx_orig, sibdry_orig = children
+        return cls(nr, nz, rpsi, hrz, hrm1, hrm2, hzm1, hzm2, inout_mask, s5, A, axis_index, sibdry, simagx_orig, sibdry_orig)
 
 
 jax.tree_util.register_pytree_node(GSGridConstants, GSGridConstants.tree_flatten, GSGridConstants.tree_unflatten)
@@ -161,6 +173,8 @@ def grid_from_equilibrium(eq) -> GSGridConstants:
         # ~0.27 with sibdry=8.8 (not a root at all). If solve.py's forced
         # scratch=True/raw-convention behavior ever changes, this must too.
         sibdry=0.0,
+        simagx_orig=float(data['simagx']),
+        sibdry_orig=float(data['sibdry']),
     )
 
 
@@ -206,6 +220,31 @@ def magnetic_axis_flux(psi_flat: jnp.ndarray, grid: GSGridConstants) -> jnp.ndar
         + arz * rmax * zmax
     )
     return psi_extrema * jnp.sign(psi_flat[k])
+
+
+def psi_to_physical_scale(psi_flat: jnp.ndarray, grid: GSGridConstants) -> jnp.ndarray:
+    '''Affinely rescale a raw psi (grid.sibdry=0 convention, as returned by
+    solve.py's solve_gs_implicit) onto the source equilibrium's true physical
+    scale (grid.simagx_orig, grid.sibdry_orig) -- e.g. to match psi as
+    originally stored in a loaded G-EQDSK, or to compare directly against
+    eq._data['psi'] saved *before* any of this differentiable machinery ran.
+
+    This is the same affine remapping classes.renormalize_psi performs
+    (psi_new = scale*(psi_old - simagx_old) + simagx_new with
+    scale = (sibdry_new-simagx_new)/(sibdry_old-simagx_old)), reimplemented
+    here in JAX so it can be composed with solve_gs_implicit and
+    differentiated through directly -- unlike calling eq.renormalize_psi()
+    itself, which would require a second numpy round-trip and isn't
+    traceable. `simagx_raw = magnetic_axis_flux(psi_flat, grid)` is
+    recomputed dynamically (not cached), so gradients through this
+    rescaling stay correct even though the raw axis value shifts slightly
+    with the perturbed profile. Purely a presentation/comparison transform:
+    gs_residual/custom_root must keep operating on the raw (un-rescaled)
+    psi -- see grid.sibdry's docstring.
+    '''
+    simagx_raw = magnetic_axis_flux(psi_flat, grid)
+    scale = (grid.sibdry_orig - grid.simagx_orig) / (grid.sibdry - simagx_raw)
+    return scale * (psi_flat - simagx_raw) + grid.simagx_orig
 
 
 def gs_residual(psi_flat: jnp.ndarray, params: GSProfileParams, grid: GSGridConstants) -> jnp.ndarray:

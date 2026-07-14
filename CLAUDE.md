@@ -227,6 +227,23 @@ precision.
   - `grid.sibdry` is **always frozen at `0.0`**, never `eq._data['sibdry']` at capture time — see
     `solve.py`'s forced `scratch=True` below for why; the two are coupled and must be revisited
     together if either changes.
+  - `grid.simagx_orig`/`grid.sibdry_orig` separately freeze the source equilibrium's *true*
+    physical axis/boundary flux (e.g. `simagx~0`, `sibdry~8.8` for a loaded, F-solver-converged
+    G-EQDSK), captured once alongside `grid.sibdry` but never fed into `gs_residual` itself — purely
+    for `psi_to_physical_scale` below.
+  - `psi_to_physical_scale(psi, grid)` affinely rescales a raw psi (`grid.sibdry=0` convention, as
+    `solve_gs_implicit` always returns) onto `grid.simagx_orig`/`grid.sibdry_orig` — i.e. back onto
+    the source equilibrium's own physical psi scale, the same remapping `classes.renormalize_psi`
+    does, reimplemented in JAX so it composes and differentiates cleanly with `solve_gs_implicit`.
+    Recomputes `magnetic_axis_flux` on the raw psi dynamically (not cached), so it stays correct
+    under perturbation. By construction the axis/boundary *values* always land exactly on the
+    frozen `simagx_orig`/`sibdry_orig` after this rescale — differentiating an axis-flux-like
+    quantity computed *from* the rescaled psi is therefore trivially zero-gradient; anything
+    wanting the axis value's real sensitivity to the profile (as opposed to the field's shape
+    elsewhere) needs the raw, un-rescaled psi instead. Only meaningful on interior (`ijin`) points —
+    exterior points are hard-zeroed in the raw convention (Dirichlet BC) but hold meaningful
+    extrapolated values (`extend_psi_beyond_boundary()`) in the source equilibrium's own psi, so
+    the two conventions aren't comparable there.
 - `solve.py` — `solve_gs_implicit(params, grid, eq)` wires `gs_residual` into
   `jax.lax.custom_root`: the forward solve reuses `eq.solve_psi()` unchanged via
   `jax.pure_callback` (mutates `eq` in place — fine for the single-equilibrium case this targets,
