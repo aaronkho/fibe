@@ -21,6 +21,8 @@ from .math import (
     compute_psi,
     generate_initial_psi,
     compute_grad_psi_vector_from_2d_spline,
+    find_saddle_point_near_contour,
+    remove_contour_points_beyond_saddle,
     generate_x_point_candidates,
     avoid_convex_curvature,
     generate_boundary_splines,
@@ -311,15 +313,6 @@ class FixedBoundaryEquilibrium():
             # flux-surface average of Jtor, so integrating jstar*V' over psi does not
             # recover the true total current; it's computed below from the derived
             # fpol via the same grid current integral the non-jstar branch uses.
-            #
-            # recompute_f_from_toroidal_current_density needs the *true* physical psi
-            # span (sibdry-simagx) to convert pprime into true dP/dpsi units, but that
-            # span is only known after cpasma -- and hence the psi_mult renormalization
-            # initialize_psi() applies afterward -- is computed from the very fpol
-            # profile being derived here. Iterate to a self-consistent span (fpol and
-            # cpasma both derived from the same assumed span) before settling on a
-            # final fpol/cpasma; this is a well-behaved scalar fixed point, not a
-            # from-scratch Picard solve.
             psi_span = self._data['sibdry'] - self._data['simagx']
             for _ in range(20):
                 fpol = self.recompute_f_from_toroidal_current_density(psi_span=psi_span)
@@ -716,7 +709,9 @@ class FixedBoundaryEquilibrium():
             zmax = self._data['zmid'] + 0.5 * self._data['zdim']
 
         if optimal:
-            rmin, rmax, zmin, zmax = generate_optimal_grid(nr, nz, self._data['rbdry'], self._data['zbdry'])
+            rwall = self._data.get('rlim', None)
+            zwall = self._data.get('zlim', None)
+            rmin, rmax, zmin, zmax = generate_optimal_grid(nr, nz, self._data['rbdry'], self._data['zbdry'], rwall=rwall, zwall=zwall)
             self._data['rleft'] = rmin
             self._data['rdim'] = rmax - rmin
             self._data['zmid'] = (zmax + zmin) / 2.0
@@ -775,10 +770,10 @@ class FixedBoundaryEquilibrium():
                 f_scale_factor = np.sign(gamma) * np.sqrt(np.abs(gamma))
                 fpol_new = self._data['fpol'] * f_scale_factor
                 self.define_f_profile(fpol_new, smooth=False, symmetrical=False)
+
     # def rescale_kinetic_profiles(self):
     #     '''
-    #     This function is meant to rescale the pressure and polidal current based on a scaling factor, curscale 
-
+    #     This function is meant to rescale the pressure and polidal current based on a scaling factor, curscale
     #     curscale: scaling factor for the total plasma current I_p
     #     pres: pressure profile
     #     pprime : dPres/dphi 
@@ -786,7 +781,7 @@ class FixedBoundaryEquilibrium():
     #     ffprime: dfpol/dphi
     #     ''' 
     #     if 'curscale' in self._data: # if the scaling factor is defined 
-    #         self.save_original_data(['ffprime', 'pprime', 'fpol', 'pres']) #save original profiles                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+    #         self.save_original_data(['ffprime', 'pprime', 'fpol', 'pres']) #save original profiles
     #         # if 'ffprime' in self._data:
     #         #     self._data['ffprime'] *= self._data['curscale']
     #         # if 'pprime' in self._data:
@@ -1037,12 +1032,6 @@ class FixedBoundaryEquilibrium():
                 fpol_bc = float(self._data['bcentr'] * self._data['rcentr'])
             if 'bvacuum' in self._data and 'rvacuum' in self._data:
                 fpol_bc = float(self._data['bvacuum'] * self._data['rvacuum'])
-            # ffprime is now in true dF/dpsi units (via dpsinorm_dpsi above), so the
-            # integration variable must be in matching true-psi units too -- psi[i]
-            # (raw flux-surface levels) is only in those units when psi_span matches
-            # the array self._data['psi'] was actually traced from (self._data['sibdry']
-            # - self._data['simagx']); rescale explicitly so a bootstrapped psi_span
-            # override stays self-consistent with the ffprime it multiplies against.
             x_true = np.abs(psi[::-1] - psi[-1]) * (psi_scale / (self._data['sibdry'] - self._data['simagx']))
             f2 = cumulative_simpson(-2.0 * ffprime[::-1], x=x_true, initial=0.0) + np.square(fpol_bc)
             fpol = np.sqrt(f2[::-1])
@@ -1119,9 +1108,6 @@ class FixedBoundaryEquilibrium():
         i_pressure = np.sum(j_pressure) * self._data['hrz']
         i_f = np.sum(j_f) * self._data['hrz']
         if abs(i_f) < min_f_fraction * abs(self._data['cpasma']):
-            # F-driven current too weak relative to cpasma to safely divide by: a fixed-pressure-only
-            # rescale would amplify noise into a huge, sign-flipping correction. Fall back to a uniform
-            # rescale for this step instead (current_new is already relaxed, so use relax=1.0 here).
             self._update_current(current_new, relax=1.0)
             self._data['curscalef'] = float(self._data['curscale'])
         else:
@@ -1683,6 +1669,40 @@ class FixedBoundaryEquilibrium():
             self._data['rbdry'] = np.concatenate([rbdry, [rbdry[0]]])
             self._data['zbdry'] = np.concatenate([zbdry, [zbdry[0]]])
             self._data['nbdry'] = len(self._data['rbdry'])
+
+
+    def remove_boundary_legs(self, angle_tol=0.35, radius_margin=1.02, cache_xpoint=True):
+        '''Some EFIT boundary traces (rbdry/zbdry) include a short, out-of-
+        order run of points that continues past the X-point along a private-
+        flux/divertor separatrix leg, interleaved with the true LCFS trace
+        rather than stopping cleanly at the X-point -- this confuses angle-
+        based contour ordering and any downstream fit that assumes a single,
+        non-self-intersecting closed boundary (see find_x_points/
+        old_find_x_points).
+        '''
+        if 'rbdry' not in self._data or 'zbdry' not in self._data:
+            return
+        if 'psi_rz' not in self._fit:
+            self.generate_psi_bivariate_spline()
+        self.save_original_data(['nbdry', 'rbdry', 'zbdry'])
+        saddle, success = find_saddle_point_near_contour(self._data['rbdry'], self._data['zbdry'], self._fit['psi_rz']['tck'])
+        if not success:
+            logger.warning('Could not locate an X-point-like saddle near the boundary; skipping leg removal.')
+            return
+        if cache_xpoint:
+            # find_x_points is fragile, so cache the results here directly
+            self._data['xpoints'] = [np.array([saddle[0], saddle[1]])]
+        keep = remove_contour_points_beyond_saddle(
+            self._data['rbdry'], self._data['zbdry'], self._data['rmagx'], self._data['zmagx'],
+            saddle, angle_tol=angle_tol, radius_margin=radius_margin
+        )
+        n_removed = int((~keep).sum())
+        if n_removed > 0:
+            self._data['rbdry'] = self._data['rbdry'][keep]
+            self._data['zbdry'] = self._data['zbdry'][keep]
+            self._data['nbdry'] = len(self._data['rbdry'])
+            logger.info(f'Removed {n_removed} boundary point(s) beyond the X-point-like saddle at R={saddle[0]:.5f}, Z={saddle[1]:.5f}.')
+        self.enforce_boundary_duplicate_at_end()
 
 
     def enforce_wall_duplicate_at_end(self):
