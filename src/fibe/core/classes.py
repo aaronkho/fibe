@@ -716,7 +716,9 @@ class FixedBoundaryEquilibrium():
             zmax = self._data['zmid'] + 0.5 * self._data['zdim']
 
         if optimal:
-            rmin, rmax, zmin, zmax = generate_optimal_grid(nr, nz, self._data['rbdry'], self._data['zbdry'])
+            rwall = self._data.get('rlim', None)
+            zwall = self._data.get('zlim', None)
+            rmin, rmax, zmin, zmax = generate_optimal_grid(nr, nz, self._data['rbdry'], self._data['zbdry'], rwall=rwall, zwall=zwall)
             self._data['rleft'] = rmin
             self._data['rdim'] = rmax - rmin
             self._data['zmid'] = (zmax + zmin) / 2.0

@@ -63,19 +63,19 @@ def generate_2d_spline(x, y, z, s=0):
     return {'tck': (tr, tz, c, kr, kz), 'bounds': (xmin, ymin, xmax, ymax)}
 
 
-def generate_optimal_grid(nr, nz, rbdry, zbdry):
+def generate_optimal_grid(nr, nz, rbdry, zbdry, rwall=None, zwall=None):
     # Fit grid to boundary
     e = 3.5
     m = float(nr - 1)
     g = 1.0 / ((m - e)**2 - e**2)
-    x0 = np.nanmin(rbdry)
-    x1 = np.nanmax(rbdry)
+    x0 = np.nanmin(rbdry) if rwall is None else np.nanmin(rwall)
+    x1 = np.nanmax(rbdry) if rwall is None else np.nanmax(rwall)
     rmax = m * g * (x1 * (m - e) - x0 * e)
     rmin = m * g * (x0 * (m - e) - x1 * e)
     m = float(nz - 1)
     g = 1.0 / ((m - e)**2 - e**2)
-    y0 = np.nanmin(zbdry)
-    y1 = np.nanmax(zbdry)
+    y0 = np.nanmin(zbdry) if zwall is None else np.nanmin(zwall)
+    y1 = np.nanmax(zbdry) if zwall is None else np.nanmax(zwall)
     zmax = m * g * (y1 * (m - e) - y0 * e)
     zmin = m * g * (y0 * (m - e) - y1 * e)
     if np.isclose(zmax, -zmin):
