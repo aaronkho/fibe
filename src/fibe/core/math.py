@@ -11,7 +11,7 @@ from scipy.interpolate import (
     make_interp_spline,
 )
 from scipy.sparse import spdiags
-from scipy.optimize import brentq, least_squares
+from scipy.optimize import brentq, least_squares, root
 from scipy.integrate import quad, trapezoid
 from scipy.signal import windows, convolve
 from scipy.stats import gamma, beta
@@ -381,6 +381,30 @@ def compute_grad_psi_vector_from_2d_spline(point, spline_tck):
     return np.array([ddim1, ddim2]).flatten()
 
 
+def find_saddle_point_near_contour(r_contour, z_contour, psi_tck):
+    '''Locate the psi null point (X-point-like saddle) closest to a boundary
+    contour, independent of the contour's own point ordering.
+    Returns ((r, z), success).
+    '''
+    dpsidr = np.array([bisplev(r, z, psi_tck, dx=1) for r, z in zip(r_contour, z_contour)]).flatten()
+    dpsidz = np.array([bisplev(r, z, psi_tck, dy=1) for r, z in zip(r_contour, z_contour)]).flatten()
+    iseed = int(np.argmin(dpsidr ** 2 + dpsidz ** 2))
+    sol = root(compute_grad_psi_vector_from_2d_spline, np.array([r_contour[iseed], z_contour[iseed]]), args=(psi_tck, ))
+    return (float(sol.x[0]), float(sol.x[1])), bool(sol.success)
+
+
+def remove_contour_points_beyond_saddle(r_contour, z_contour, r_reference, z_reference, saddle, angle_tol=0.35, radius_margin=1.02):
+    r_contour = np.asarray(r_contour)
+    z_contour = np.asarray(z_contour)
+    theta = np.arctan2(z_contour - z_reference, r_contour - r_reference)
+    radius = np.hypot(r_contour - r_reference, z_contour - z_reference)
+    theta_s = np.arctan2(saddle[1] - z_reference, saddle[0] - r_reference)
+    radius_s = np.hypot(saddle[0] - r_reference, saddle[1] - z_reference)
+    dtheta = np.abs(np.mod(theta - theta_s + np.pi, 2.0 * np.pi) - np.pi)
+    is_leg = (dtheta < angle_tol) & (radius > radius_s * radius_margin)
+    return ~is_leg
+
+
 def order_contour_points_by_angle(r_contour, z_contour, r_reference=None, z_reference=None, close_contour=True, **extra_data):
     if r_reference is None:
         r_reference = 0.5 * (np.nanmax(r_contour) + np.nanmin(r_contour))
@@ -433,6 +457,16 @@ def generate_segments(r_contour, z_contour, indices, cuts=None, r_reference=None
             mask2 = (index_contour <= indices[0])
             v_segment = np.concatenate([v_segment, v_contour.compress(mask2)])
             mask |= mask2
+        if len(v_segment) < 2:
+            widen = 1
+            lo_index = index
+            hi_index = indices[i_next] if i_next < len(indices) else indices[0]
+            while len(v_segment) < 2 and widen <= len(index_contour):
+                lo = max(lo_index - widen, 0)
+                hi = min(hi_index + widen, len(index_contour) - 1)
+                mask_pad = (index_contour >= lo) & (index_contour <= hi)
+                v_segment = v_contour.compress(mask_pad)
+                widen += 1
         if (len(v_segment) + 1) < len(index_contour):
             dv_segment = np.diff(v_segment)
             angle_dv_segment = np.angle(dv_segment)
@@ -517,7 +551,7 @@ def generate_x_point_candidates(rbdry, zbdry, rmagx, zmagx, psi_tck, dr, dz):
     for idz in dpsidz_change:
         if idz not in xpoint_indices and idz + 1 not in xpoint_indices:
             split_indices.append(int(idz))
-    split_indices = sorted(split_indices)
+    split_indices = sorted(set(split_indices))
     for index in split_indices:
         if index + 1 in split_indices:
             split_cut_indices.append(index)
@@ -1076,20 +1110,11 @@ def compute_flux_surface_cross_sectional_area(contour, r_reference=None, z_refer
         z_reference = 0.5 * (np.nanmax(zcm) + np.nanmin(zcm))
     area = 0.0
     if rcm.size > 2 and zcm.size > 2:
-        # Flux surfaces are expected to be convex/star-shaped about the reference point, so a
-        # single +2*pi mask correction (kept below, commented out, in case it's ever preferred
-        # again) is normally equivalent to a full unwrap -- verified to agree to within machine
-        # precision on real traced contours. np.unwrap is used here instead since it costs
-        # nothing extra and stays correct even if a future non-convex/shaped contour crosses the
-        # -pi/pi branch more than once, which the single-mask correction would silently miss.
         # theta = np.angle(rcm + 1.0j * zcm - r_reference - 1.0j * z_reference).flatten()
         # theta -= theta[0]
         # mask = (theta < 0.0)
         # theta[mask] = theta[mask] + 2.0 * np.pi
         theta = np.unwrap(np.angle(rcm + 1.0j * zcm - r_reference - 1.0j * z_reference).flatten())
-        # Area via Green's theorem, 0.5 * oint(x dy - y dx) -- the minus sign is required: a "+"
-        # here integrates the exact differential 0.5 * d(R*Z), which vanishes over any closed
-        # loop, so it was silently returning near-zero quadrature noise instead of the true area.
         area = float(trapezoid(0.5 * (rcm * np.gradient(zcm, theta) - zcm * np.gradient(rcm, theta)), x=theta))
     return area
 
@@ -1304,11 +1329,6 @@ def trace_contour_with_megpy(rvec, zvec, psi, level, rcheck, zcheck, boundary=Fa
             contour_out['r'] = np.concatenate([contour_out['r'], np.array([contour_out['r'][0]])])
         if contour_out['z'][0] != contour_out['z'][-1]:
             contour_out['z'] = np.concatenate([contour_out['z'], np.array([contour_out['z'][0]])])
-        # The underlying tracer does not guarantee a fixed winding direction, but every other
-        # contour source in this codebase (e.g. G-EQDSK rbdry/zbdry, trace_contour_with_splines)
-        # is ordered counter-clockwise, matching FiBE's fixed internal COCOS=2 (spol=+1, standard
-        # poloidal-angle handedness). Enforce the same orientation here so signed-area/orientation
-        # -sensitive quantities computed from these contours stay consistent across all sources.
         signed_area = 0.5 * np.sum(
             contour_out['r'][:-1] * contour_out['z'][1:] - contour_out['r'][1:] * contour_out['z'][:-1]
         )
