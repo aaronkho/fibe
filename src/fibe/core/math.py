@@ -1239,6 +1239,42 @@ def compute_jstar_contour_integral(contour, ffp, pp):
     return val
 
 
+def build_core_smoothed_jstar_target(psinorm, jstar, trust_from=0.5, poly_degree=2):
+    '''Replaces jstar(psinorm) for psinorm < trust_from with a smooth
+    extrapolation from the trusted (psinorm >= trust_from) region, fit as a
+    polynomial in psinorm**2 (guaranteeing zero slope at the true axis,
+    psinorm=0, the physically-expected even-symmetry boundary condition for
+    a well-behaved flux-surface-averaged profile).
+
+    This exists because jstar read directly off a real, as-loaded
+    equilibrium (compute_flux_surface_averaged_jstar_profile) can carry a
+    sharp, unphysical spike in the first few grid points near the axis --
+    a near-axis flux-surface-tracing artifact (tiny, poorly-resolved
+    contours right around the magnetic axis; confirmed in practice against
+    a real device G-EQDSK by megpy's own "Polyfit may be poorly
+    conditioned" warning firing in exactly that region), not real physics.
+    Feeding that raw spike into
+    FixedBoundaryEquilibrium.derive_f_profile_from_jstar_target as a
+    current-density target can produce a genuinely unphysical (non-
+    monotonic/folded) resolved psi map in the core; smoothing it first
+    with this function fixes that.
+
+    `trust_from`/`poly_degree` are left to the caller to judge (no single
+    default suits every device/equilibrium) -- if the near-axis
+    instability visibly extends past the default trust_from=0.5, or the
+    quadratic default under/over-fits the trusted region's curvature,
+    override them.
+    '''
+    psinorm = np.asarray(psinorm)
+    jstar = np.asarray(jstar)
+    trusted = psinorm >= trust_from
+    poly = np.poly1d(np.polyfit(psinorm[trusted] ** 2, jstar[trusted], poly_degree))
+    jstar_target = jstar.copy()
+    core = ~trusted
+    jstar_target[core] = poly(psinorm[core] ** 2)
+    return jstar_target
+
+
 def trace_contours_with_contourpy(rvec, zvec, dmap, levels, rcheck, zcheck):
     point_inside = Point([float(rcheck), float(zcheck)])
     rmesh, zmesh = np.meshgrid(rvec, zvec)

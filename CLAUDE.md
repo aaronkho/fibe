@@ -44,10 +44,30 @@ assume one exists.
 
 Console entry points (installed via `pyproject.toml`):
 - `fibe_regrid_geqdsk` → `src/fibe/scripts/regrid_eqdsk.py` — reload a G-EQDSK, interpolate `psi`
-  onto a new grid resolution, and re-converge.
+  onto a new grid resolution (optionally auto-fit to the boundary via `--optimize`), and
+  re-converge — or, with `--no-solve`, skip the re-convergence and just write out the pure
+  spline-interpolated `psi`/`pres`/`fpol`/`qpsi` as-is (`FixedBoundaryEquilibrium.regrid()` alone
+  already *is* this pure-interpolation step; `solve_psi` is the separate, subsequent
+  re-convergence `--no-solve` skips). This script was broken as originally committed (several
+  typos — `add_arguemnt`, `defualt`, `required=True` on positional args, a missing `Path` import,
+  `args` referenced out of a function it wasn't passed into — none of which had ever actually been
+  run) until fixed alongside adding `--no-solve`; also defaults to `old_method=True` in its
+  `regrid()` call (override with `--new-method`) and skips `solve_psi`'s own axis refinement, for
+  the same `megpy` root-finder bug documented below for `fibe_kinetic_resolve` — this one reroutes
+  through `regrid`'s own boundary-retrace too, not just `solve_psi`'s.
 - `fibe_q_with_bo` → `src/fibe/scripts/bayesian_optimization.py` — example of driving the F-profile
   shape with Optuna Bayesian optimization to hit target q-axis/q-edge values (requires `optuna`,
   which is an optional extra, not a hard dependency).
+- `fibe_kinetic_resolve` → `src/fibe/scripts/resolve_with_kinetic_constraint.py` — reload a
+  G-EQDSK, replace its pressure profile with an externally-supplied kinetic one (ne/Te, or p(psin)
+  directly — read via `utils/profiles.read_profiles_file`), and re-solve while holding the total
+  current *profile* (`jstar(psinorm)`, not just `cpasma`) fixed to the original, via the new
+  `FixedBoundaryEquilibrium.derive_f_profile_from_jstar_target` method — see "j*-driven
+  initialization" below for why this needs its own method rather than just calling
+  `define_toroidal_current_density_profile`/`initialize_current` directly, and "Bugs this surfaced"
+  for the three real bugs (two `megpy`, one `fibe`) chasing this down turned up. Patches
+  `megpy.tracer.contour` at its own import time (scoped to this script's process, not applied
+  inside `fibe` itself — see the script's module docstring for why).
 
 ## Architecture / data flow
 
@@ -187,6 +207,82 @@ initialization, just the crude seed from `generate_initial_psi`). Once `fpol` is
 converges to the true equilibrium, so the achieved `jstar` profile (check via
 `compute_flux_surface_averaged_jstar_profile`) can still drift from the target `jstar` after a full
 solve, even though it matches almost exactly right after `initialize_psi()`.
+
+### Re-solving an *already-loaded* equilibrium against a new pressure profile while preserving jstar
+(`FixedBoundaryEquilibrium.derive_f_profile_from_jstar_target`, `fibe_kinetic_resolve`)
+
+The j*-driven initialization above is documented (and, before this was added, only ever used) for
+from-scratch setup (`initialize_psi()`, before any `solve_psi()` has run). Re-using the same
+`define_toroidal_current_density_profile` + `initialize_current` machinery on an *already-loaded,
+real* G-EQDSK — e.g. to re-solve with a pressure profile from external kinetic measurements while
+holding the *total* current profile fixed to the original reconstruction (so the pressure-driven
+vs. F-driven split changes but the total doesn't — avoiding a "current hole" where naively freezing
+`fpol` outright instead would let the mismatched new p' distort the core) — needs care around three
+bugs, found and fixed while adding `derive_f_profile_from_jstar_target`/`fibe_resolve_kinetic_
+pressure`, none of them hypothetical (all three confirmed against a real device G-EQDSK, `analysis_
+1030516024_0054_s00.geqdsk`, cpasma≈-7.9e5 A, bcentr≈-5.2 T):
+
+1. **`initialize_current` overwrites `self._data['cpasma']`** with its own approximate integral of
+   the newly-derived current — not the true value already present from the loaded G-EQDSK.
+   `derive_f_profile_from_jstar_target` pins it back afterward; `solve_psi`'s own current rescaling
+   (`curscale = cpasma / sum(cur)`) is what should reconcile the derived current against the true
+   total, not this one-shot estimate.
+2. **`recompute_f_from_toroidal_current_density` always returns `fpol = sqrt(F**2)`** — an
+   unconditionally non-negative array, regardless of the true sign of `bcentr`/F. No effect on
+   `Jtor`/`FF'` (both invariant under a global `F -> -F` flip — `compute_jtor`'s explicit COCOS sign
+   flip only ever multiplies `FF'`, never bare `F`), but it does leave `fpol` inconsistently signed
+   relative to `bcentr`, and anything depending on `fpol`'s own sign directly rather than just `FF'`
+   — confirmed for `q`, via `recompute_q_profile_from_scratch` → `compute_safety_factor_contour_
+   integral`, which uses `btor = fpol/r` — comes out with the wrong overall sign as a result.
+   `derive_f_profile_from_jstar_target` re-signs `fpol` (regenerating `ffprime`/`fpol_fs` from it via
+   `define_f_profile`) to match `bcentr` immediately after `initialize_current` runs, if needed.
+3. **`compute_flux_surface_averaged_jstar_profile`'s raw output can integrate to the *opposite*
+   sign from the file's own labeled `cpasma`** — confirmed by direct comparison against the grid-
+   based current integral (`compute_jtor` over the full `(rpsi, ffp_grid, pp_grid)` grid, the exact
+   formula `solve_psi`'s own Picard loop uses): both integrated to `+793671` for a file whose own
+   labeled `cpasma` is `-788791.3125`. Traced to `compute_jtor`'s hardcoded "`# This -1 is for COCOS
+   convention`" factor, apparently not fully compensated by `insert_geqdsk_dict`'s simagx/sibdry-
+   ordering-based sign handling for every G-EQDSK convention. `compute_ffprime_from_jstar_pprime_
+   and_contour` (the inversion `recompute_f_from_toroidal_current_density` uses) is the exact
+   algebraic inverse of `compute_jstar_contour_integral` (verified by hand), so it expects `jstar`
+   in that *same* raw convention — **do not** pre-multiply a `jstar` target by
+   `sign(cpasma)/sign(median(jstar))` or similar before handing it to `derive_f_profile_from_jstar_
+   target`; that produces a self-inconsistent F(psi) (confirmed: derived `cpasma` off by ~20%, `q`
+   and edge `jstar` came out with flipped/garbled signs, `solve_psi`'s `psi_error` plateaued around
+   2-3e-3 instead of converging to `1e-8`). Pass `jstar_target` through exactly as `compute_flux_
+   surface_averaged_jstar_profile` produces it.
+
+Separately (a data-quality issue, not a code bug): the raw `jstar(psinorm)` read directly off a
+real, as-loaded equilibrium can carry a sharp, unphysical spike in the first few grid points near
+the axis — a near-axis flux-surface-tracing artifact (confirmed: `megpy`'s own contour tracer emits
+`RankWarning: Polyfit may be poorly conditioned` right in that region — tiny, poorly-resolved
+near-axis contours), not real physics. Feeding it in as-is can produce a genuinely unphysical
+(non-monotonic/folded) resolved `psi` map in the core. `core/math.build_core_smoothed_jstar_target`
+fixes this by trusting the raw `jstar` only above a `trust_from` psinorm threshold and replacing the
+rest with a smooth (zero-slope-at-axis) polynomial extrapolation in `psinorm**2` — always run a
+real, as-loaded G-EQDSK's `jstar` through this before using it as a `derive_f_profile_from_jstar_
+target` target.
+
+Also found (and worked around, not fixed, since it's third-party): two more real `megpy` bugs in
+`megpy.tracer.contour` (a `TypeError`/`NameError` in its empty-contour branch, and a separate
+`IndexError` in `contour_minmax` for very small/poorly-resolved near-axis contours — both fixed
+`fibe`-side callers already tolerate a gracefully-empty contour, so the correct fix is just to stop
+`contour()` from crashing, not to change any `fibe` logic) and one in `find_nulls` (a
+`scipy.optimize.fsolve` input/output shape mismatch, hit by `find_magnetic_axis`'s root-finder —
+this one reproduces even for the from-scratch/synthetic equilibria `tests/test_resolve_kinetic_
+pressure.py` builds, not just real G-EQDSK files, so it isn't specific to loaded data). None of
+these are patched inside `fibe` itself — `fibe_kinetic_resolve` patches `megpy.tracer.
+contour` at its own import time (scoped to that script's process), and skips the finer root-finder
+`find_magnetic_axis` outright in favor of the coarser (but working) grid-based `find_magnetic_axis_
+from_grid` already used inside `solve_psi`'s own Picard loop; `tests/test_resolve_with_kinetic_constraint.
+py` patches both `megpy.tracer.contour` and (since it also exercises `find_x_points` via a
+from-scratch `initialize_psi()`) `fibe.core.classes.find_null_points` directly — patching `megpy.
+tracer.find_null_points` itself would *not* work, since `classes.py` imports that name directly at
+its own module-load time (`from .math import (find_null_points, ...)`), so the post-hoc patch has
+to target the already-bound copy on `fibe.core.classes`, not the original on `megpy.tracer`. It
+isn't established whether these affect every installed `megpy` version or only the one this was
+found against (`megpy>=2.0.2` per `pyproject.toml`'s own floor) — worth a proper upstream report at
+some point, not done as part of this work.
 
 ## JAX autodiff scaffold (`src/fibe/jax/`, `jax-autodiff` branch, experimental)
 

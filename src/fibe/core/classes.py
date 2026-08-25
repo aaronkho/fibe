@@ -40,6 +40,7 @@ from .math import (
     compute_f_from_safety_factor_and_contour,
     compute_jtor_contour_integral,
     compute_jstar_contour_integral,
+    build_core_smoothed_jstar_target,
     trace_contours_with_contourpy,
     trace_contour_with_splines,
     trace_contour_with_megpy,
@@ -459,6 +460,77 @@ class FixedBoundaryEquilibrium():
             self._fit['jstar_fs'] = generate_bounded_1d_spline(jstar_new, xnorm=psinorm, symmetrical=symmetrical, smooth=smooth)
             self._data['jstar'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['jstar_fs']['tck'])
             self._data['jstar_target'] = copy.deepcopy(self._data['jstar'])
+
+
+    def derive_f_profile_from_jstar_target(self, jstar_target, psinorm=None):
+        '''Derives F(psi) (in place) so that, combined with this equilibrium's
+        *current* pressure profile (define_pressure_profile must already have
+        been called), the total flux-surface-averaged current density
+        reproduces jstar_target(psinorm) -- i.e. only the pressure-driven vs.
+        F-driven *split* of the current changes, not the total current
+        profile itself. Typical use: re-solving an already-loaded equilibrium
+        with an independently-derived pressure profile (e.g. from kinetic
+        ne/Te measurements rather than the original G-EQDSK's own p(psi) fit)
+        while holding the *total* current profile fixed to the original, to
+        avoid the unphysical "current hole" that appears in the core if F(psi)
+        is instead left frozen from the original G-EQDSK while a p'(psi)
+        mismatched to it is swapped in.
+
+        `jstar_target` should already be a trustworthy target -- if it comes
+        from compute_flux_surface_averaged_jstar_profile on a real, as-loaded
+        equilibrium, consider running it through
+        fibe.core.math.build_core_smoothed_jstar_target first, since the raw
+        near-axis jstar from a real G-EQDSK can carry a sharp, unphysical
+        flux-surface-tracing artifact that this method will otherwise
+        faithfully (and wrongly) try to reproduce.
+
+        Thin wrapper around define_toroidal_current_density_profile +
+        initialize_current -- otherwise only ever used for from-scratch
+        (no-G-EQDSK) setup -- plus two fixes needed to use that machinery
+        correctly on an already-loaded, real equilibrium:
+
+        - initialize_current overwrites self._data['cpasma'] with its own
+          approximate integral of the derived current; this method pins it
+          back to the true value already present (e.g. from the loaded
+          G-EQDSK) afterward, since solve_psi's own current rescaling
+          (curscale = cpasma / sum(cur)) is what should reconcile the
+          derived current against the true total, not this one-shot
+          estimate.
+        - recompute_f_from_toroidal_current_density (called inside
+          initialize_current) always returns fpol = sqrt(F**2), an
+          unconditionally non-negative array regardless of the true sign of
+          bcentr/F. This has no effect on Jtor/FF' (both invariant under a
+          global F -> -F flip), but leaves fpol inconsistently signed
+          relative to bcentr, and any downstream quantity that depends on
+          fpol's own sign directly rather than just FF' (confirmed: q, via
+          recompute_q_profile_from_scratch) comes out with the wrong overall
+          sign as a result -- confirmed on a real, negative-Ip/negative-Bt
+          device G-EQDSK. This method re-signs fpol to match bcentr
+          immediately after initialize_current runs, if needed.
+
+        Uses the *current* (pre-derivation) flux-surface geometry to do this
+        decomposition (an implementation detail of initialize_current, not
+        something this method controls) -- a one-shot approximation, since a
+        subsequent solve_psi() treats the resulting F(psi) as fixed and does
+        not re-derive it as the geometry itself relaxes to the new
+        equilibrium. In practice the eventually-resolved jstar ends up
+        correct in shape but can under-match the target in magnitude by a
+        factor of a few (and differ in detail near the edge) -- not an exact
+        fixed point of "F(psi) such that jstar match holds on the final
+        resolved geometry too", but enough to eliminate the core hole this
+        method exists to avoid.
+        '''
+        if psinorm is None:
+            psinorm = np.linspace(0.0, 1.0, self._data['nr'])
+        self.compute_normalized_psi_map()  # populates xpsi, needed inside initialize_current's loop
+        self.generate_psi_bivariate_spline()  # needed by trace_flux_surfaces, called inside initialize_current
+        self.define_toroidal_current_density_profile(jstar_target, psinorm=psinorm, smooth=False)
+        cpasma_true = float(self._data['cpasma'])
+        bcentr_true = float(self._data['bcentr'])
+        self.initialize_current()
+        self._data['cpasma'] = cpasma_true
+        if np.sign(self._data['fpol'][-1]) != np.sign(bcentr_true):
+            self.define_f_profile(-self._data['fpol'], smooth=False, symmetrical=False, redefine_bcentre=False)
 
 
     def compute_normalized_psi_map(self):
