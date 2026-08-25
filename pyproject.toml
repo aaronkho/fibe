@@ -54,6 +54,7 @@ jax = ["jax"]
 [project.scripts]
 fibe_regrid_geqdsk = "fibe.scripts.regrid_eqdsk:main"
 fibe_q_with_bo = "fibe.scripts.bayesian_optimization:main"
+fibe_kinetic_resolve = "fibe.scripts.resolve_with_kinetic_constraint:main"
 
 [tool.setuptools.dynamic]
 version = {attr = "fibe.__version__"}
