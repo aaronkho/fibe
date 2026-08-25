@@ -44,7 +44,17 @@ assume one exists.
 
 Console entry points (installed via `pyproject.toml`):
 - `fibe_regrid_geqdsk` → `src/fibe/scripts/regrid_eqdsk.py` — reload a G-EQDSK, interpolate `psi`
-  onto a new grid resolution, and re-converge.
+  onto a new grid resolution (optionally auto-fit to the boundary via `--optimize`), and
+  re-converge — or, with `--no-solve`, skip the re-convergence and just write out the pure
+  spline-interpolated `psi`/`pres`/`fpol`/`qpsi` as-is (`FixedBoundaryEquilibrium.regrid()` alone
+  already *is* this pure-interpolation step; `solve_psi` is the separate, subsequent
+  re-convergence `--no-solve` skips). This script was broken as originally committed (several
+  typos — `add_arguemnt`, `defualt`, `required=True` on positional args, a missing `Path` import,
+  `args` referenced out of a function it wasn't passed into — none of which had ever actually been
+  run) until fixed alongside adding `--no-solve`; also defaults to `old_method=True` in its
+  `regrid()` call (override with `--new-method`) and skips `solve_psi`'s own axis refinement, for
+  the same `megpy` root-finder bug documented below for `fibe_kinetic_resolve` — this one reroutes
+  through `regrid`'s own boundary-retrace too, not just `solve_psi`'s.
 - `fibe_q_with_bo` → `src/fibe/scripts/bayesian_optimization.py` — example of driving the F-profile
   shape with Optuna Bayesian optimization to hit target q-axis/q-edge values (requires `optuna`,
   which is an optional extra, not a hard dependency).
