@@ -110,7 +110,6 @@ def resolve_with_kinetic_profiles(
     psin_p,
     p_new,
     jstar_trust_from=0.5,
-    jstar_poly_degree=2,
     relax_schedule=DEFAULT_RELAX_SCHEDULE,
     niter=300,
     erreq=1.0e-8,
@@ -132,9 +131,7 @@ def resolve_with_kinetic_profiles(
     eq_orig = FixedBoundaryEquilibrium.from_geqdsk(geqdsk_path)
     compute_original_flux_surface_quantities(eq_orig)
     psin_grid = np.linspace(0.0, 1.0, eq_orig._data['nr'])
-    jstar_target = build_core_smoothed_jstar_target(
-        psin_grid, eq_orig._data['jstar'], trust_from=jstar_trust_from, poly_degree=jstar_poly_degree,
-    )
+    jstar_target = build_core_smoothed_jstar_target(psin_grid, eq_orig._data['jstar'], trust_from=jstar_trust_from)
 
     last_eq = None
     for relax in relax_schedule:
@@ -252,8 +249,7 @@ def parse_args():
     parser.add_argument('--profiles-interface', dest='profiles_interface', type=str, default='xarray', choices=['xarray', 'pandas', 'ascii'], help='Backend to read --profiles with (see fibe.utils.profiles.read_profiles_file)')
     parser.add_argument('--ni-ratio', dest='ni_ratio', type=float, default=1.0, help='n_i = ni_ratio * n_e (only used if --profiles supplies ne/te rather than pres directly)')
     parser.add_argument('--ti-ratio', dest='ti_ratio', type=float, default=1.0, help='T_i = ti_ratio * T_e (only used if --profiles supplies ne/te rather than pres directly)')
-    parser.add_argument('--jstar-trust-from', dest='jstar_trust_from', type=float, default=0.5, help='psin above which the original G-EQDSK jstar is trusted as-is; below it, a smooth extrapolation replaces it (see build_core_smoothed_jstar_target)')
-    parser.add_argument('--jstar-poly-degree', dest='jstar_poly_degree', type=int, default=2, help='Degree (in psin**2) of the core-smoothing polynomial fit')
+    parser.add_argument('--jstar-trust-from', dest='jstar_trust_from', type=float, default=0.5, help='psin above which the original G-EQDSK jstar is trusted as-is; below it, a smooth (quadratic-in-psin, C1-continuous at the join) extrapolation replaces it (see build_core_smoothed_jstar_target)')
     parser.add_argument('--niter', dest='niter', type=int, default=300, help='Max Picard iterations per relax attempt')
     parser.add_argument('--erreq', dest='erreq', type=float, default=1.0e-8, help='Convergence criterion on max relative psi error')
     parser.add_argument('--output', dest='output', type=str, required=True, help='Path to write the resolved G-EQDSK file to')
@@ -276,7 +272,7 @@ def main():
 
     eq_new, eq_orig, jstar_target, relax_used = resolve_with_kinetic_profiles(
         args.geqdsk, psin_p, p_new,
-        jstar_trust_from=args.jstar_trust_from, jstar_poly_degree=args.jstar_poly_degree,
+        jstar_trust_from=args.jstar_trust_from,
         niter=args.niter, erreq=args.erreq,
     )
 

@@ -259,9 +259,17 @@ the axis — a near-axis flux-surface-tracing artifact (confirmed: `megpy`'s own
 near-axis contours), not real physics. Feeding it in as-is can produce a genuinely unphysical
 (non-monotonic/folded) resolved `psi` map in the core. `core/math.build_core_smoothed_jstar_target`
 fixes this by trusting the raw `jstar` only above a `trust_from` psinorm threshold and replacing the
-rest with a smooth (zero-slope-at-axis) polynomial extrapolation in `psinorm**2` — always run a
-real, as-loaded G-EQDSK's `jstar` through this before using it as a `derive_f_profile_from_jstar_
-target` target.
+rest with a quadratic-in-`psinorm` extrapolation — always run a real, as-loaded G-EQDSK's `jstar`
+through this before using it as a `derive_f_profile_from_jstar_target` target. The extrapolation is
+built by ramping `d(jstar)/d(psinorm)` *linearly* from zero at the true axis up to the trusted
+region's own local slope at the join point (a finite difference between the two trusted grid points
+nearest `trust_from`), then integrating — **not** an unconstrained least-squares polynomial fit over
+the whole trusted region, which was the first thing tried and is worth remembering not to
+regress to: an unconstrained fit trades join-point accuracy for a better fit further out, which
+produced a visible kink right at `trust_from` in practice (confirmed: ~9% of the local `jstar` value
+at `trust_from=0.2`, on the still-falling tail of the spike being smoothed away; ~3% at the default
+`trust_from=0.5`, small enough there to be easy to miss but not actually zero). The local-slope
+construction is C1-continuous (matches both value and slope) at the join by construction instead.
 
 Also found (and worked around, not fixed, since it's third-party): two more real `megpy` bugs in
 `megpy.tracer.contour` (a `TypeError`/`NameError` in its empty-contour branch, and a separate

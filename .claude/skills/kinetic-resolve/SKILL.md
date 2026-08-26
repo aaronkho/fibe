@@ -71,16 +71,17 @@ supplied pressure profile is implausibly different from the original (a huge, ph
 questionable p' mismatch is exactly what makes the undamped Picard iteration oscillate instead of
 converge).
 
-## When to touch `--jstar-trust-from`/`--jstar-poly-degree`
+## When to touch `--jstar-trust-from`
 
 The original G-EQDSK's own `jstar(psin)` (what the resolved current profile targets) often carries a
 sharp, unphysical near-axis spike from flux-surface-tracing noise — `build_core_smoothed_jstar_target`
-replaces it below `--jstar-trust-from` (default `0.5`) with a smooth polynomial-in-`psin**2`
-extrapolation from the trusted region. If the output plot's psi contours are still folded/non-monotonic
-near the axis, or the "target" j* curve in the plot still shows a visible near-axis spike, raise
-`--jstar-trust-from` (e.g. `0.7`) so more of the untrustworthy region gets smoothed over; if the
-smoothed curve looks like it's fighting real curvature in the trusted region, try a different
-`--jstar-poly-degree` before just cranking the trust radius further.
+replaces it below `--jstar-trust-from` (default `0.5`) with a quadratic-in-`psin` extrapolation,
+built by ramping d(jstar)/d(psin) linearly from zero at the true axis up to the trusted region's own
+local slope at the join point — continuous in both value and slope (C1) at the join by construction,
+not an independent fit that merely approximates it. If the output plot's psi contours are still
+folded/non-monotonic near the axis, or the "target" j* curve in the plot still shows a visible
+near-axis spike, raise `--jstar-trust-from` (e.g. `0.7`) so more of the untrustworthy region gets
+smoothed over.
 
 ## Known limitations (don't over-promise these to whoever asked)
 

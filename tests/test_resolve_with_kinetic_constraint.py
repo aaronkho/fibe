@@ -76,7 +76,7 @@ class TestBuildCoreSmoothedJstarTarget:
     def test_trusted_region_unchanged(self):
         psinorm = np.linspace(0.0, 1.0, 51)
         jstar = 5.0 + 3.0 * psinorm ** 2 - 1.5 * psinorm ** 4
-        target = build_core_smoothed_jstar_target(psinorm, jstar, trust_from=0.5, poly_degree=2)
+        target = build_core_smoothed_jstar_target(psinorm, jstar, trust_from=0.5)
         trusted = psinorm >= 0.5
         assert np.allclose(target[trusted], jstar[trusted])
 
@@ -86,11 +86,35 @@ class TestBuildCoreSmoothedJstarTarget:
         # the (smooth, physically-sensible) profile.
         jstar = 5.0 + 3.0 * psinorm ** 2
         jstar[:5] += np.array([0.0, 40.0, 30.0, 10.0, 2.0])
-        target = build_core_smoothed_jstar_target(psinorm, jstar, trust_from=0.5, poly_degree=2)
+        target = build_core_smoothed_jstar_target(psinorm, jstar, trust_from=0.5)
         assert target[1] < jstar[1] and target[2] < jstar[2]  # spike removed
         # Zero-slope-at-axis, to within finite-difference resolution.
         dcore = np.diff(target[:5])
         assert abs(dcore[0]) < abs(dcore[-1])
+
+    def test_join_is_slope_continuous_not_just_value_continuous(self):
+        # A trusted region with real local curvature of its own (not just
+        # the exact quadratic-in-psinorm the extrapolation reproduces) --
+        # an unconstrained least-squares fit over the whole trusted region
+        # (the original, buggy implementation) trades join-point accuracy
+        # for a better fit further out, producing a visible kink right at
+        # trust_from; this checks the fix (a local, closed-form value+slope
+        # match at the join) actually eliminates that kink, black-box, by
+        # comparing finite-difference slopes just inside the extrapolated
+        # core vs. just inside the trusted region.
+        psinorm = np.linspace(0.0, 1.0, 201)
+        jstar = 5.0 + 3.0 * psinorm ** 2 + 20.0 * np.sin(4.0 * psinorm)
+        trust_from = 0.3
+        target = build_core_smoothed_jstar_target(psinorm, jstar, trust_from=trust_from)
+        idx = int(np.searchsorted(psinorm, trust_from))
+        dpsin = psinorm[1] - psinorm[0]
+        slope_core_side = (target[idx - 1] - target[idx - 2]) / dpsin
+        slope_trusted_side = (target[idx + 1] - target[idx]) / dpsin
+        assert slope_core_side == pytest.approx(slope_trusted_side, rel=0.1)
+        # And the two arrays' values right at the join are close (not just
+        # slopes) -- one grid step apart, so a genuinely smooth join should
+        # differ by O(dpsin), not O(1).
+        assert target[idx - 1] == pytest.approx(target[idx], abs=2.0 * abs(slope_trusted_side) * dpsin)
 
 
 class TestDeriveFProfileFromJstarTarget:
