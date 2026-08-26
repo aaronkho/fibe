@@ -163,3 +163,84 @@ class TestDeriveFProfileFromJstarTarget:
         # this is exactly what bug #5 (fpol's un-signed sqrt) got wrong
         # before the fix, for a bcentr<0 equilibrium.
         assert np.sign(np.median(eq_new._data['qpsi'])) == np.sign(np.median(eq_orig._data['qpsi']))
+
+
+class TestSolvePsiWithFIteration:
+
+    def test_seed_then_f_iteration_converges_with_no_current_hole(self, tmp_path):
+        '''The validated two-stage workflow (see FIBE_IMPROVEMENT.md's
+        "Best-validated workflow" and Next-tasks items 1-3): seed F once
+        via derive_f_profile_from_jstar_target (avoids a core current hole
+        from the first Picard iteration), then hand off entirely to
+        solve_psi_with_f_iteration (re-derives F from the equilibrium's own
+        resolved current each outer iteration, not from jstar_target again).
+        Confirms convergence, cpasma preservation, and -- using the
+        check_flux_surface_monotonicity utility, not just eyeballing a plot
+        (see the "methodology trap" this exact black-box check was built to
+        avoid) -- that no current hole/non-nested flux surfaces result.
+        '''
+        eq_orig = _build_negative_bt_equilibrium()
+        geqdsk_path = tmp_path / 'negative_bt_f_iteration.geqdsk'
+        eq_orig.to_geqdsk(geqdsk_path)
+
+        eq_for_target = FixedBoundaryEquilibrium.from_geqdsk(geqdsk_path)
+        eq_for_target.generate_psi_bivariate_spline()
+        eq_for_target._fs = eq_for_target.trace_flux_surfaces()
+        eq_for_target.compute_flux_surface_averaged_jstar_profile()
+        psin_grid = np.linspace(0.0, 1.0, eq_for_target._data['nr'])
+        jstar_target = build_core_smoothed_jstar_target(psin_grid, eq_for_target._data['jstar'])
+
+        eq_new = FixedBoundaryEquilibrium.from_geqdsk(geqdsk_path)
+        cpasma_true = float(eq_new._data['cpasma'])
+        new_pressure = 0.5 * eq_new._data['pres'] + 0.5 * eq_new._data['pres'][-1]
+        eq_new.define_pressure_profile(new_pressure, psinorm=psin_grid)
+        eq_new.derive_f_profile_from_jstar_target(jstar_target, psinorm=psin_grid)  # seed F, avoids a core current hole
+
+        eq_new.find_magnetic_axis = lambda: None  # see module docstring of resolve_with_kinetic_constraint.py
+        eq_new.solve_psi_with_f_iteration(nfiter=10, errf=1.0e-4, relaxf=1.0, nxiter=200, erreq=1.0e-8, relax=1.0, relaxj=1.0)
+
+        assert eq_new.converged
+        assert eq_new._data['cpasma'] == pytest.approx(cpasma_true, rel=1.0e-6)
+        n_bad, bad_angles = eq_new.check_flux_surface_monotonicity()
+        assert n_bad == 0, f'non-monotonic xpsi (possible current hole) at angles {bad_angles}'
+
+    def test_estimate_flux_surface_averaged_fpol_self_calibrates_sign(self, tmp_path):
+        '''_estimate_flux_surface_averaged_fpol (the F-re-derivation
+        solve_psi_with_f_iteration calls each outer iteration) self-
+        calibrates the raw-vs-labeled cpasma sign convention rather than
+        assuming they match -- confirmed on a real device G-EQDSK this
+        session (see FIBE_IMPROVEMENT.md's "mixed sign conventions" entry)
+        where compute_jtor's raw grid-integrated current came out opposite
+        -signed from the file's own labeled cpasma. Before the fix, this
+        made the function raise ValueError('Requested plasma current is
+        less than the computed pressure contribution!') immediately.
+
+        Reproduced synthetically here, under full control: build a normal,
+        self-consistent equilibrium, then reload it with ip_sign=-1, which
+        flips only the *labeled* cpasma (reset_plasma_current_sign, called
+        inside insert_geqdsk_dict) -- ffprime/pprime/psi (and hence
+        compute_jtor's raw grid-integrated current) are left untouched, so
+        the labeled and raw-integrated signs now genuinely disagree, the
+        same shape of bug as the real G-EQDSK case.
+        '''
+        eq_orig = _build_negative_bt_equilibrium()
+        geqdsk_path = tmp_path / 'negative_bt_sign_mismatch.geqdsk'
+        eq_orig.to_geqdsk(geqdsk_path)
+
+        eq_new = FixedBoundaryEquilibrium.from_geqdsk(geqdsk_path, ip_sign=-1)
+        cpasma_flipped = float(eq_new._data['cpasma'])
+        assert cpasma_flipped == pytest.approx(-float(eq_orig._data['cpasma']))
+
+        psin_grid = np.linspace(0.0, 1.0, eq_new._data['nr'])
+        new_pressure = 0.5 * eq_new._data['pres'] + 0.5 * eq_new._data['pres'][-1]
+        eq_new.define_pressure_profile(new_pressure, psinorm=psin_grid)
+        eq_new.find_magnetic_axis = lambda: None
+
+        # No ValueError here is itself the primary assertion (see docstring).
+        eq_new.solve_psi_with_f_iteration(nfiter=10, errf=1.0e-3, nxiter=200, erreq=1.0e-7, relax=0.5, relaxj=0.5)
+        assert eq_new.converged
+        # solve_psi's own current rescaling always forces the total current
+        # to match self._data['cpasma'] regardless of the raw/labeled
+        # convention -- the labeled (flipped) value should still come out
+        # preserved, not silently corrupted back toward the raw convention.
+        assert eq_new._data['cpasma'] == pytest.approx(cpasma_flipped, rel=1.0e-6)

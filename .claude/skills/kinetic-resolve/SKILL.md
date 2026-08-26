@@ -7,16 +7,20 @@ description: Re-solve a G-EQDSK fixed-boundary equilibrium's pressure profile ag
 
 `fibe_kinetic_resolve` (installed console command, `src/fibe/scripts/resolve_with_kinetic_constraint.py`)
 loads a G-EQDSK, replaces its pressure profile with an externally supplied one, and re-solves —
-holding the boundary, total plasma current, and total current *profile* (`jstar(psin)`) fixed to the
-original. F(psi) is re-derived (`FixedBoundaryEquilibrium.derive_f_profile_from_jstar_target`), not
-frozen, so only the pressure-driven/F-driven *split* of the current changes. **Do not** re-solve by
-just calling `define_pressure_profile` + `solve_psi` directly with F(psi) left untouched from the
-loaded G-EQDSK — that's the naive approach this tool exists to replace, and it produces a real,
-visible "current hole": the core current density dips/reverses unphysically wherever the new p'(psi)
-mismatches the original F(psi)'s implicit assumptions, which shows up as a genuinely non-monotonic
-(folded) psi map near the axis, not just a cosmetically-different profile.
+holding the boundary and total plasma current fixed, and F(psi) re-derived (not frozen) so only the
+pressure-driven/F-driven *split* of the current changes. Two-stage internally: `derive_f_profile_
+from_jstar_target` seeds F once (against the *original*, core-smoothed `jstar(psin)`, purely to
+avoid an unphysical core "current hole" from the first Picard iteration), then `solve_psi_with_f_
+iteration` takes over entirely, re-deriving F each outer iteration from the equilibrium's own
+*actual* resolved current — so the target `jstar` is **not** preserved as ground truth throughout,
+only used to avoid the hole. **Do not** re-solve by just calling `define_pressure_profile` +
+`solve_psi` directly with F(psi) left untouched from the loaded G-EQDSK — that's the naive approach
+this tool exists to replace, and it produces a real, visible "current hole": the core current
+density dips/reverses unphysically wherever the new p'(psi) mismatches the original F(psi)'s
+implicit assumptions, which shows up as a genuinely non-monotonic (folded) psi map near the axis,
+not just a cosmetically-different profile.
 
-Background, the three real bugs this had to work around, and validation details all live in this
+Background, the real bugs this had to work around, and validation details all live in this
 repo's `CLAUDE.md` under "Re-solving an already-loaded equilibrium against a new pressure profile
 while preserving jstar" — read that if something here doesn't add up or the tool misbehaves in a new
 way; don't re-derive the physics from scratch.
@@ -55,10 +59,17 @@ fibe_kinetic_resolve \
 
 `--output` and `--geqdsk`/`--profiles` are required; `--plot` is optional but cheap and worth always
 asking for — the comparison figure (pressure, q, j*, psi contours, psi_norm difference, all
-original-vs-resolved) is the fastest way to confirm the result is physical before handing it back to
-whoever asked for it. Check specifically: are the psi contours nested (no folding/crossing) near the
-axis, and does the j* panel's "resolved" curve roughly track the "target" curve's shape (not
-necessarily its magnitude — see limitations below)?
+original-vs-resolved) is the fastest way to eyeball the result before handing it back to whoever
+asked for it. But don't rely on eyeballing the psi-contours panel alone to confirm "no current
+hole" — call `FixedBoundaryEquilibrium.check_flux_surface_monotonicity()` on the resolved
+equilibrium (see `CLAUDE.md`'s "Verifying 'no current hole' properly") for an actual check;
+a naive visual check on a shaped/asymmetric plasma can miss a real defect or flag a false one.
+
+`--nfiter`/`--errf`/`--relaxf` (defaults `10`/`1e-4`/`1.0`) control the outer `solve_psi_with_f_
+iteration` loop (how many times F gets re-derived, its own convergence tolerance, and its own
+damping) — separate from `--niter`/`--erreq`, which control each *inner* `solve_psi` call. Leave
+these at their defaults unless the F-error specifically isn't converging (rare — the two-stage
+workflow converges undamped on every real scenario checked so far).
 
 Console output reports `converged=True/False` and the final `psi_error` — a `WARNING: did not
 converge` on stderr means every entry in the internal relax schedule
@@ -85,10 +96,12 @@ smoothed over.
 
 ## Known limitations (don't over-promise these to whoever asked)
 
-- The resolved j* matches the target's *shape* but can under-match its *magnitude* by a factor of a
-  few, and differ in more detail near the edge — an accepted limitation of the one-shot F-derivation
-  (it uses the *original* equilibrium's flux-surface geometry, not the final resolved one). The total
-  current (`cpasma`) itself is still preserved exactly, unlike the profile shape.
-- The resolved magnetic axis position comes from the last converged Picard iteration, not a finer
-  root-finder refinement (skipped due to an unrelated `megpy` bug) — negligible in practice but worth
-  knowing if someone asks about axis-position precision specifically.
+- F(psi) is only *seeded* from the target `jstar`, not preserved as ground truth throughout — the
+  two-stage workflow's own `solve_psi_with_f_iteration` stage re-derives F from the equilibrium's
+  actual resolved current each outer iteration, so the resolved `jstar` need not match the target
+  exactly (it isn't trying to). The total current (`cpasma`) itself is still preserved exactly.
+- The resolved magnetic axis position, and `simagx`/`sibdry` (psi at the axis/boundary), come from
+  the last converged Picard iteration, not a finer root-finder refinement (skipped due to an
+  unrelated `megpy` bug) — negligible in practice (`psi.min()` differs from the written `simagx` by
+  a relative ~1e-5 in cases checked) but worth knowing if someone asks about axis-position precision
+  specifically, or needs `simagx`/`sibdry` to exactly match the true resolved psi extrema.
