@@ -546,13 +546,13 @@ class FixedBoundaryEquilibrium():
             self.define_f_profile(-self._data['fpol'], smooth=False, symmetrical=False, redefine_bcentre=True)
 
 
-    def derive_monotonic_f_profile_from_jstar_target(self, jstar_target, psinorm=None, edge_weight=1.0e8):
+    def derive_monotonic_f_profile_from_jstar_target(self, jstar_target, psinorm=None):
         '''Alternative to derive_f_profile_from_jstar_target -- uses the same
         jstar_target-driven derivation as a *starting point* (calls it
         directly, reusing all of its own cpasma-preservation and fpol/
-        bcentr sign-consistency fixes), then projects the resulting F(psi)
-        onto the nearest profile whose magnitude |F| is monotonically
-        non-increasing from the axis to the boundary (see
+        bcentr sign-consistency fixes), then replaces the resulting F(psi)
+        with a smooth cubic Hermite/Bezier profile whose magnitude |F| is
+        monotonically non-increasing from the axis to the boundary (see
         core.math.enforce_monotonic_diamagnetic_fpol) -- the physically-
         expected diamagnetic behavior.
 
@@ -583,7 +583,7 @@ class FixedBoundaryEquilibrium():
         toroidal field, so bcentr is allowed to shift once F changes.
         '''
         self.derive_f_profile_from_jstar_target(jstar_target, psinorm=psinorm)
-        fpol_corrected = enforce_monotonic_diamagnetic_fpol(self._data['fpol'], edge_weight=edge_weight)
+        fpol_corrected = enforce_monotonic_diamagnetic_fpol(self._data['fpol'])
         self.define_f_profile(fpol_corrected, smooth=False, symmetrical=False, redefine_bcentre=True)
 
 
@@ -1794,9 +1794,8 @@ class FixedBoundaryEquilibrium():
             # denom_fprime floored at an absolute *fraction of the profile's
             # own scale* (nanmax|fprime_after|), not a fixed tiny epsilon --
             # F'(psi) can be genuinely near-zero at individual grid points
-            # (e.g. a near-flat plateau, deliberately common wherever
-            # enforce_monotonic_diamagnetic_fpol has pooled a monotonicity
-            # violation), and
+            # (e.g. right at an endpoint enforce_monotonic_diamagnetic_fpol
+            # clamped to zero), and
             # flooring at a fixed 1e-30 there left the *local* denominator
             # near-zero too, blowing the ratio up to absurd values (~1e16
             # -1e26 confirmed empirically) even once fpol_after itself (and
@@ -1830,24 +1829,19 @@ class FixedBoundaryEquilibrium():
             )
 
             if enforce_monotonic_f:
-                # fprime_error has a persistent, non-shrinking floor here
-                # (confirmed empirically: plateaus around ~1e-2, orders of
-                # magnitude above a typical errf=1e-4) whenever F is
-                # periodically re-projected through isotonic regression
-                # (enforce_monotonic_diamagnetic_fpol) -- PAVA's own
-                # pooling-boundary location can shift by a grid index between outer
-                # iterations even once the underlying (pre-projection) F
-                # estimate has genuinely stopped changing (f_error already
-                # tiny, ~1e-6/1e-7, curscalef rock-stable), producing small
-                # but persistent local derivative jitter that does not
-                # shrink with more outer iterations. Requiring fprime_error
-                # <= errf in this mode would therefore never be satisfied
-                # regardless of nfiter, silently discarding an otherwise
-                # excellent, already-converged psi solution (confirmed:
-                # psi_error ~1e-8/1e-9) -- so f_error alone gates
-                # convergence when monotonicity enforcement is active;
-                # fprime_error is still computed/logged/recorded for
-                # diagnostic visibility either way.
+                # f_error alone gates convergence when monotonicity
+                # enforcement is active, since F is periodically
+                # re-projected through enforce_monotonic_diamagnetic_fpol
+                # every outer iteration -- fprime_error is still computed/
+                # logged/recorded for diagnostic visibility either way.
+                # (Previously needed because the isotonic-regression/PAVA
+                # projection this replaced left a persistent, non-shrinking
+                # fprime_error floor -- confirmed empirically at the time,
+                # ~1e-2 -- from its pooling-boundary index shifting between
+                # outer iterations even after f_error itself had converged;
+                # not re-verified whether the smooth Hermite/Bezier
+                # replacement still needs this relaxed gate, so it is kept
+                # as-is rather than assumed fixed.)
                 is_converged_f = f_error <= self._options['errf']
             else:
                 is_converged_f = f_error <= self._options['errf'] and fprime_error <= self._options['errf']

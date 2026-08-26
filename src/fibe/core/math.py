@@ -9,6 +9,7 @@ from scipy.interpolate import (
     bisplev,
     RectBivariateSpline,
     make_interp_spline,
+    CubicHermiteSpline,
 )
 from scipy.sparse import spdiags
 from scipy.optimize import brentq, least_squares, root, isotonic_regression
@@ -1366,44 +1367,56 @@ def check_radial_flux_surface_monotonicity(
     return len(bad_angles), np.array(bad_angles)
 
 
-def enforce_monotonic_diamagnetic_fpol(fpol, edge_weight=1.0e8):
-    '''Projects fpol(psinorm) (psinorm assumed axis-first, i.e. index 0 is
+def enforce_monotonic_diamagnetic_fpol(fpol, psinorm=None):
+    '''Replaces fpol(psinorm) (psinorm assumed axis-first, i.e. index 0 is
     the magnetic axis, index -1 the boundary -- fibe's own internal
-    convention throughout) onto the nearest (least-squares) profile whose
-    *magnitude* |F| is monotonically non-increasing from the axis to the
-    boundary -- the physically-expected diamagnetic behavior (the
-    diamagnetic plasma current most strongly modifies the vacuum field at
-    the magnetic axis, tapering monotonically outward to the vacuum value
-    at the edge; a non-monotonic |F| -- a mid-radius hump that reverses
-    before the edge -- is not physical).
+    convention throughout) with a single smooth cubic Hermite/Bezier
+    profile whose *magnitude* |F| is monotonically non-increasing from the
+    axis to the boundary -- the physically-expected diamagnetic behavior
+    (the diamagnetic plasma current most strongly modifies the vacuum
+    field at the magnetic axis, tapering monotonically outward to the
+    vacuum value at the edge; a non-monotonic |F| -- a mid-radius hump that
+    reverses before the edge -- is not physical).
 
-    Built on `scipy.optimize.isotonic_regression` (PAVA) applied to `F^2 =
-    fpol**2` (not `fpol` itself -- |F| monotonicity, not a same-signed F's
-    own monotonicity, is the actual physical requirement, and squaring
-    sidesteps needing F's own sign already resolved before this runs),
-    `increasing=False` since F^2 must be largest at the axis (index 0) and
-    smallest at the edge (index -1) in this array's own convention.
+    Built on `F^2 = fpol**2` (not `fpol` itself -- |F| monotonicity, not a
+    same-signed F's own monotonicity, is the actual physical requirement,
+    and squaring sidesteps needing F's own sign already resolved before
+    this runs). If `F^2` is already non-increasing throughout, it is
+    returned essentially unchanged (only the tie-breaking nudge below
+    moves it) -- no correction is needed, so none is applied. Otherwise, a
+    single `scipy.interpolate.CubicHermiteSpline` segment is fit across
+    the *entire* psinorm domain -- so the result has no internal plateau/
+    steep-transition boundary at all, unlike a direct `scipy.optimize.
+    isotonic_regression` (PAVA) projection: PAVA's own output is
+    piecewise-constant wherever it corrects a violation, and exactly
+    interpolating that (as `FixedBoundaryEquilibrium.define_f_profile`'s
+    `smooth=False` call does) leaves a genuine derivative discontinuity at
+    each pool boundary -- visible as an F(psi)/jstar(psi) profile with a
+    flat plateau followed by an abrupt steep drop, confirmed against real
+    scenarios and already acknowledged as "PAVA's own pooling-boundary
+    jitter" in `solve_psi_with_f_iteration`'s own convergence-gate
+    docstring.
 
-    `edge_weight` up-weights the boundary point heavily relative to the
-    rest (weight 1 elsewhere) so the projection's correction is
-    concentrated in the core/mid-radius region rather than perturbing the
-    physically-anchored edge value (tied to `bcentr`) -- `isotonic_
-    regression` has no literal equality-constraint mechanism, so a large
-    finite weight is the practical way to hold the edge point still
-    without a more complex constrained solve.
-
-    PAVA's own output is *piecewise-constant* wherever it had to correct a
-    monotonicity violation (the fitted value over a whole "pool" is that
-    pool's own weighted average, by construction) -- consequential here:
-    `solve_psi_with_f_iteration`'s own convergence check takes `np.gradient`
-    of `fpol` and divides by it (clipped away from literal zero, but not
-    away from *near*-zero), so an exact flat pool makes that relative error
-    spike to absurd values (confirmed empirically: ~1e16-1e26) and the
-    F-solver never reports converged even though the profile itself has
-    genuinely stabilized. Fixed by adding a strictly-decreasing linear
-    "nudge" across the whole profile after the PAVA projection -- negligibly
-    small relative to `f2`'s own scale, but enough to break every exact tie
-    so no two neighboring points are ever bit-identical.
+    The Hermite fit's own endpoint value/derivative are *not* read
+    directly off the raw (violating) `F^2` -- the violation is exactly a
+    local gradient-sign flip, most often right near the edge (a
+    mid-radius hump that reverses before the boundary), so a naive
+    `np.gradient` there risks reading that same flip back out and feeding
+    it straight into the fit, propagating the violation rather than
+    fixing it. Instead, PAVA is still run first, purely as a source of
+    trustworthy endpoint conditions: its own output is monotonic by
+    construction, so its value and local slope at the axis and boundary
+    are always correctly signed regardless of what the raw data does
+    nearby. `edge_weight` anchors PAVA's own boundary point close to its
+    true (bcentr-tied) value, same role as before. Endpoint tangents are
+    additionally clamped to `[0, 3*secant]` (same sign as the axis-to-edge
+    secant slope) before fitting -- the standard Fritsch-Carlson sufficient
+    condition for a monotone cubic Hermite segment -- so the final result
+    is guaranteed monotonic, not just smooth. This does discard the true
+    profile's own interior shape between the two endpoints in exchange for
+    a single smooth curve -- accepted deliberately, only in the violating
+    case, since the interior region containing the violation is, by
+    definition, not something worth reproducing exactly.
 
     Returns a new fpol array with the same sign as the input's own edge
     value (`fpol[-1]`, matching `bcentr`'s sign) applied uniformly
@@ -1422,10 +1435,51 @@ def enforce_monotonic_diamagnetic_fpol(fpol, edge_weight=1.0e8):
     '''
     fpol = np.asarray(fpol, dtype=float)
     f2 = fpol ** 2
-    weights = np.ones_like(f2)
-    weights[-1] = edge_weight
-    result = isotonic_regression(f2, weights=weights, increasing=False)
-    f2_strict = result.x - np.linspace(0.0, 1.0e-6 * (np.nanmax(f2) - np.nanmin(f2) + 1.0), len(f2))
+    if psinorm is None:
+        psinorm = np.linspace(0.0, 1.0, len(fpol))
+    psinorm = np.asarray(psinorm, dtype=float)
+
+    # Already non-increasing: no violation to correct, so skip the Hermite
+    # replacement entirely and leave the true profile's own interior shape
+    # untouched (only the tie-breaking nudge below moves it) -- the
+    # replacement below discards the true interior shape between the two
+    # endpoints (that's the whole point, for the violating case), so it
+    # should not run at all when nothing needs correcting.
+    if np.all(np.diff(f2) <= 0.0):
+        f2_smooth = f2
+    else:
+        # The violation is exactly a local gradient-sign flip, so a naive
+        # np.gradient(f2, ...) evaluated at the endpoints risks reading
+        # that same flip back out (most likely right at the edge, since
+        # the docstring's own "mid-radius hump that reverses before the
+        # edge" case sits closest to index -1) and feeding it straight
+        # back into the fit -- propagating the violation instead of fixing
+        # it. Endpoint tangents are instead read off the isotonic
+        # -regression (PAVA) projection of f2, which is monotonic by
+        # construction and therefore always has a correctly-signed local
+        # slope at both ends, whatever the raw data does nearby.
+        # `edge_weight` anchors the isotonic fit's boundary point close to
+        # its true (bcentr-tied) value, and the small linear nudge (same
+        # one applied to the final result below) guarantees a genuine
+        # nonzero slope to sample even where PAVA pooled a flat region
+        # straight through the axis or edge.
+        edge_weight = 1.0e8
+        weights = np.ones_like(f2)
+        weights[-1] = edge_weight
+        f2_pava = isotonic_regression(f2, weights=weights, increasing=False).x
+        f2_pava = f2_pava - np.linspace(0.0, 1.0e-6 * (np.nanmax(f2) - np.nanmin(f2) + 1.0), len(f2))
+        grad_pava = np.gradient(f2_pava, psinorm)
+        d0, d1 = float(grad_pava[0]), float(grad_pava[-1])
+
+        secant = (f2_pava[-1] - f2_pava[0]) / (psinorm[-1] - psinorm[0])
+        lo, hi = (3.0 * secant, 0.0) if secant <= 0.0 else (0.0, 3.0 * secant)
+        d0 = float(np.clip(d0, lo, hi))
+        d1 = float(np.clip(d1, lo, hi))
+
+        hermite = CubicHermiteSpline([psinorm[0], psinorm[-1]], [f2_pava[0], f2_pava[-1]], [d0, d1])
+        f2_smooth = hermite(psinorm)
+
+    f2_strict = f2_smooth - np.linspace(0.0, 1.0e-6 * (np.nanmax(f2) - np.nanmin(f2) + 1.0), len(f2))
     f2_strict = np.clip(f2_strict, a_min=0.0, a_max=None)  # F^2 can't be negative
     sign_ref = np.sign(fpol[-1])
     return sign_ref * np.sqrt(f2_strict)
