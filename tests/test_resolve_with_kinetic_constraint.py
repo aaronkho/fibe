@@ -146,7 +146,12 @@ class TestDeriveFProfileFromJstarTarget:
 
         assert eq_new._data['cpasma'] == pytest.approx(cpasma_true)
         assert np.sign(eq_new._data['fpol'][-1]) == np.sign(bcentr_true)
-        assert eq_new._data['bcentr'] == pytest.approx(bcentr_true)  # untouched by the fix
+        # bcentr is *not* pinned to its pre-derivation value (redefine_bcentre=True,
+        # 2026-08-25 decision): F's own diamagnetic current genuinely
+        # contributes to the toroidal field, so bcentr is allowed to shift
+        # once F is re-derived against a new jstar_target -- only its sign
+        # (fixed by the bug this test targets) is guaranteed to match.
+        assert np.sign(eq_new._data['bcentr']) == np.sign(bcentr_true)
 
         eq_new.find_magnetic_axis = lambda: None  # see module docstring of resolve_with_kinetic_constraint.py
         eq_new.solve_psi(nxiter=200, erreq=1.0e-7, relax=0.5, relaxj=0.5)

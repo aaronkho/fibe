@@ -1297,6 +1297,75 @@ def build_core_smoothed_jstar_target(psinorm, jstar, trust_from=0.5):
     return jstar_target
 
 
+def check_radial_flux_surface_monotonicity(
+    rmagx, zmagx, simagx, sibdry, psi_tck, rbounds, zbounds,
+    n_angles=144, n_samples=200, tol=1.0e-3, xpsi_margin=1.0,
+):
+    '''Shape-agnostic check for a "current hole" / non-nested flux surfaces:
+    traces radial rays outward from the magnetic axis (rmagx, zmagx) at
+    n_angles evenly spaced angles (a bivariate-spline evaluation of psi
+    along each ray, not a grid-index walk) and confirms xpsi = (psi -
+    simagx) / (sibdry - simagx) is non-decreasing along each ray, from the
+    axis out to the LCFS.
+
+    A naive row/column-based check (splitting a horizontal or vertical
+    grid cut at the magnetic axis's own R/Z index and calling the two
+    halves "inward"/"outward") is *not* shape-agnostic: for an up-down- or
+    left-right-asymmetric plasma, a cut at a fixed Z (or R) far from the
+    axis's own height does not pass through the local center of the flux
+    surfaces there, so splitting it at the axis's own index is not a
+    meaningful monotonicity test away from the axis's own row/column --
+    confirmed to raise false alarms (a "49/61 bad rows" false positive on a
+    genuinely good equilibrium) before this radial-ray approach replaced
+    it. This function only walks each ray up to its first crossing of
+    xpsi_margin: points further out are in the extrapolated exterior
+    (beyond the LCFS, not a physical flux map -- see
+    extend_psi_beyond_boundary) and are excluded rather than checked, and
+    `tol` (default 1e-3) absorbs small spline-evaluation noise right at
+    the LCFS itself (observed up to a few times 1e-4 in xpsi on real,
+    good equilibria; an order of magnitude or more larger than that on a
+    deliberately injected core defect, so this default cleanly separates
+    the two).
+
+    Returns (n_bad, bad_angles): the count of angles (out of n_angles)
+    whose ray showed non-monotonic xpsi, and the array of their angles (in
+    radians, counter-clockwise from the R-axis) for inspection. n_bad == 0
+    means no current hole / properly nested flux surfaces were found.
+    '''
+    rmin, rmax = rbounds
+    zmin, zmax = zbounds
+    dpsi_dpsinorm = sibdry - simagx
+    bad_angles = []
+    for i in range(n_angles):
+        theta = 2.0 * np.pi * i / n_angles
+        dR, dZ = np.cos(theta), np.sin(theta)
+        s_candidates = []
+        if dR > 0.0:
+            s_candidates.append((rmax - rmagx) / dR)
+        elif dR < 0.0:
+            s_candidates.append((rmin - rmagx) / dR)
+        if dZ > 0.0:
+            s_candidates.append((zmax - zmagx) / dZ)
+        elif dZ < 0.0:
+            s_candidates.append((zmin - zmagx) / dZ)
+        s_max = min(s_candidates) if s_candidates else 1.0
+
+        s = np.linspace(0.0, s_max, n_samples)[1:]  # skip s=0, the axis itself
+        r = rmagx + s * dR
+        z = zmagx + s * dZ
+        psi_ray = np.array([bisplev(rr, zz, psi_tck) for rr, zz in zip(r, z)])
+        xpsi_ray = (psi_ray - simagx) / dpsi_dpsinorm
+
+        inside = xpsi_ray <= xpsi_margin
+        n_inside = int(np.argmax(~inside)) if not np.all(inside) else len(inside)
+        xpsi_ray = xpsi_ray[:n_inside]
+        if len(xpsi_ray) < 3:
+            continue
+        if np.any(np.diff(xpsi_ray) < -tol):
+            bad_angles.append(theta)
+    return len(bad_angles), np.array(bad_angles)
+
+
 def trace_contours_with_contourpy(rvec, zvec, dmap, levels, rcheck, zcheck):
     point_inside = Point([float(rcheck), float(zcheck)])
     rmesh, zmesh = np.meshgrid(rvec, zvec)

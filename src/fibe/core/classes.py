@@ -41,6 +41,7 @@ from .math import (
     compute_jtor_contour_integral,
     compute_jstar_contour_integral,
     build_core_smoothed_jstar_target,
+    check_radial_flux_surface_monotonicity,
     trace_contours_with_contourpy,
     trace_contour_with_splines,
     trace_contour_with_megpy,
@@ -506,7 +507,17 @@ class FixedBoundaryEquilibrium():
           recompute_q_profile_from_scratch) comes out with the wrong overall
           sign as a result -- confirmed on a real, negative-Ip/negative-Bt
           device G-EQDSK. This method re-signs fpol to match bcentr
-          immediately after initialize_current runs, if needed.
+          immediately after initialize_current runs, if needed -- via
+          define_f_profile(..., redefine_bcentre=True), so bcentr is
+          recomputed from the re-signed fpol's own edge value rather than
+          pinned to the pre-derivation original. This is a deliberate
+          choice (2026-08-25), matching solve_psi_with_f_iteration's own
+          reasoning: F's diamagnetic current genuinely contributes to the
+          toroidal field, so bcentr is physically allowed -- expected -- to
+          shift slightly once F is re-derived from a new jstar_target,
+          rather than staying artificially pinned to the pre-derivation
+          value. cpasma is unaffected either way (pinned back to the true
+          value below, independent of bcentr).
 
         Uses the *current* (pre-derivation) flux-surface geometry to do this
         decomposition (an implementation detail of initialize_current, not
@@ -530,7 +541,7 @@ class FixedBoundaryEquilibrium():
         self.initialize_current()
         self._data['cpasma'] = cpasma_true
         if np.sign(self._data['fpol'][-1]) != np.sign(bcentr_true):
-            self.define_f_profile(-self._data['fpol'], smooth=False, symmetrical=False, redefine_bcentre=False)
+            self.define_f_profile(-self._data['fpol'], smooth=False, symmetrical=False, redefine_bcentre=True)
 
 
     def compute_normalized_psi_map(self):
@@ -1304,7 +1315,25 @@ class FixedBoundaryEquilibrium():
         j_f_grid = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp_grid.ravel(), 0.0))
         i_p_grid = np.sum(j_p_grid) * self._data['hrz']
         i_f_grid = np.sum(j_f_grid) * self._data['hrz']
-        j_f_target = float(self._data['cpasma'] - i_p_grid)
+        # compute_jtor's raw grid-integrated current is not guaranteed to
+        # share cpasma's own labeled sign (compute_jtor bakes in a "-1 for
+        # COCOS convention" factor that isn't universally consistent with
+        # every G-EQDSK's own cpasma labeling -- confirmed empirically:
+        # a real device G-EQDSK, negative Ip/Bt, integrates with *opposite*
+        # sign from its own labeled cpasma, while fibe's own positive-Ip
+        # test fixture integrates with the *same* sign -- so this isn't a
+        # fixed, hardcodable offset). Rather than assume either way,
+        # self-calibrate per equilibrium from the *total* raw current
+        # (i_p_grid + i_f_grid) against cpasma, and use that same sign to
+        # bring cpasma into the raw grid-integral convention before
+        # comparing it against i_p_grid below -- everything from here on
+        # (j_f_target, scale, and the qaxis_target branch's own analogous
+        # recomputation further down) must be expressed in that same raw
+        # convention, since ffprime/fpol themselves are never re-signed
+        # here, only scaled.
+        raw_total = i_p_grid + i_f_grid
+        cpasma_raw = float(np.sign(self._data['cpasma']) * np.sign(raw_total)) * self._data['cpasma']
+        j_f_target = float(cpasma_raw - i_p_grid)
         scale = float(j_f_target / i_f_grid)  # This scaling does not account for 2D current distribution mismatch
         if scale <= 0.0:
             raise ValueError('Requested plasma current is less than the computed pressure contribution!')
@@ -1359,7 +1388,7 @@ class FixedBoundaryEquilibrium():
             ffp_grid_check = np.interp(self._data['xpsi'], psinorm, ffprime)
             j_f_grid_check = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp_grid_check.ravel(), 0.0))
             i_f_grid_check = np.sum(j_f_grid_check) * self._data['hrz']
-            scale = float((self._data['cpasma'] - i_p_grid) / i_f_grid_check)
+            scale = float((cpasma_raw - i_p_grid) / i_f_grid_check)  # same raw-convention cpasma as above
         # Edge constraint, if specified (applies to FF')
         if 'qedge_target' in self._data:
             ffprime_edge = 2 * np.pi * self._data['qedge_target'] / ir2_fs[-1]
@@ -1436,6 +1465,31 @@ class FixedBoundaryEquilibrium():
             dq_rel = (self._data['qpsi_target'] - self._data['qpsi']) / self._data['qpsi']
             fpol = self._data['fpol'] + relax * dq_rel * self._data['fpol']
             self.define_f_profile(fpol, smooth=False)
+
+
+    def check_flux_surface_monotonicity(self, n_angles=144, n_samples=200, tol=1.0e-3, xpsi_margin=1.0):
+        '''Thin wrapper around check_radial_flux_surface_monotonicity (see
+        its own docstring for the method and why a naive row/column check
+        is not shape-agnostic) -- extracts this equilibrium's own magnetic
+        axis, psi normalization, bivariate spline, and rectangular grid
+        bounds, then delegates. Generates the psi bivariate spline itself
+        if not already present.
+
+        Returns (n_bad, bad_angles): n_bad == 0 means no current hole /
+        properly nested flux surfaces were found.
+        '''
+        if 'psi_rz' not in self._fit:
+            self.generate_psi_bivariate_spline()
+        rmin = self._data['rleft']
+        rmax = self._data['rleft'] + self._data['rdim']
+        zmin = self._data['zmid'] - 0.5 * self._data['zdim']
+        zmax = self._data['zmid'] + 0.5 * self._data['zdim']
+        return check_radial_flux_surface_monotonicity(
+            self._data['rmagx'], self._data['zmagx'],
+            self._data['simagx'], self._data['sibdry'],
+            self._fit['psi_rz']['tck'], (rmin, rmax), (zmin, zmax),
+            n_angles=n_angles, n_samples=n_samples, tol=tol, xpsi_margin=xpsi_margin,
+        )
 
 
     def compute_flux_surface_averaged_jtor_profile(self):
@@ -1619,6 +1673,22 @@ class FixedBoundaryEquilibrium():
             fprime_before = np.gradient(fpol_before.flatten(), np.linspace(0.0, 1.0, self._data['nr']).flatten(), axis=0)
             # fpol_after = self._compute_flux_surface_averaged_fpol()
             fpol_after = self._estimate_flux_surface_averaged_fpol()
+            # _estimate_flux_surface_averaged_fpol, like recompute_f_from_
+            # toroidal_current_density, always returns fpol = sqrt(F**2) --
+            # an unconditionally non-negative array, regardless of the true
+            # sign of bcentr/F (harmless for Jtor/FF', both invariant under
+            # a global F -> -F flip, but wrong for anything depending on
+            # fpol's own sign directly, e.g. q). Re-sign (flip, not pin --
+            # redefine_bcentre=True below is deliberately kept: F genuinely
+            # can shift bcentr's true *magnitude* iteration to iteration,
+            # since the plasma's own diamagnetic current contributes to the
+            # toroidal field, and forcing bcentr to stay fixed would just
+            # make F over-constrained/inconsistent with the rest of the
+            # solve) to match the current bcentr's sign before fpol_after is
+            # used for anything below -- only the sqrt sign artifact is
+            # being corrected here, not genuine physical drift.
+            if np.sign(fpol_after[-1]) != np.sign(self._data['bcentr']):
+                fpol_after = -fpol_after
             if self._options['relaxf'] > 0.0 and self._options['relaxf'] < 1.0:
                 fpol_after = fpol_before + self._options['relaxf'] * (fpol_after - fpol_before)
             fprime_after = np.gradient(fpol_after.flatten(), np.linspace(0.0, 1.0, self._data['nr']).flatten(), axis=0)

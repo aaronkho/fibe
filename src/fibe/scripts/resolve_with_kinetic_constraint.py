@@ -37,11 +37,12 @@ device G-EQDSK, not this script's own bugs:
   `megpy` version or only the one this was found against; keeping the
   patch local here until that's known.
 
-The resolved jstar matches the (optionally core-smoothed, see
-`--jstar-trust-from`) target in shape but can under-match it in magnitude
-by a factor of a few, and differ in detail near the edge -- an accepted,
-documented limitation of the one-shot geometry approximation
-`derive_f_profile_from_jstar_target` uses (see its docstring), not a bug.
+F(psi) is only *seeded* from the (optionally core-smoothed, see
+`--jstar-trust-from`) target jstar via `derive_f_profile_from_jstar_target`
+-- `solve_psi_with_f_iteration` then re-derives F each outer iteration from
+the equilibrium's own resolved current, so the target is not preserved as
+ground truth throughout, only used to avoid an unphysical core "current
+hole" from the first iteration onward.
 
 Usage:
     python3 -m fibe.scripts.resolve_with_kinetic_constraint \\
@@ -113,18 +114,41 @@ def resolve_with_kinetic_profiles(
     relax_schedule=DEFAULT_RELAX_SCHEDULE,
     niter=300,
     erreq=1.0e-8,
+    nfiter=10,
+    errf=1.0e-4,
+    relaxf=1.0,
 ):
     """Loads `geqdsk_path`, replaces its pressure profile with (psin_p,
-    p_new), derives F(psi) so the total current profile matches the
-    original G-EQDSK's own (core-smoothed) jstar (see
-    `FixedBoundaryEquilibrium.derive_f_profile_from_jstar_target` and
-    `fibe.core.math.build_core_smoothed_jstar_target`), and re-solves psi
-    holding the boundary and cpasma fixed. Tries each relaxation factor in
-    `relax_schedule` in turn -- a substantially different p(psi) than the
-    original reconstruction can make an un-damped (relax=1.0) Picard
-    iteration oscillate in a limit cycle instead of converging -- and
-    returns the first equilibrium that converges (or the last attempt,
-    unconverged, with a warning, if none do).
+    p_new), and re-solves under a new F(psi) so the total current profile
+    matches the original G-EQDSK's own (core-smoothed) jstar, holding the
+    boundary and cpasma fixed. Two-stage approach (validated as strictly
+    better than a one-shot F-derivation -- converges faster, undamped, and
+    to a genuinely self-consistent current split rather than a uniformly-
+    rescaled one):
+      1. `FixedBoundaryEquilibrium.derive_f_profile_from_jstar_target`
+         seeds F(psi) once, against the *original* (pre-solve) flux-surface
+         geometry, purely to avoid an unphysical "current hole" forming in
+         the core from the very first Picard iteration.
+      2. `solve_psi_with_f_iteration` then takes over entirely: each outer
+         iteration re-solves psi and re-derives F from the *actual* solved
+         current (`_estimate_flux_surface_averaged_fpol`, self-consistency-
+         driven), not from `jstar_target` again -- so the final F is
+         consistent with the resolved geometry, not the pre-solve one.
+         `jstar_target` is intentionally not preserved as ground truth
+         throughout; it is only a better-than-frozen-F starting point, and
+         the one hard physical requirement is that no current hole forms.
+
+    Tries each relaxation factor in `relax_schedule` in turn (applied to
+    both the F-iteration's own damping, via `relaxf`/`errf`/`nfiter` held
+    fixed across the schedule, and each inner `solve_psi` call's own
+    `relax`/`relaxj`) -- a substantially different p(psi) than the original
+    reconstruction can make an un-damped Picard iteration oscillate in a
+    limit cycle instead of converging -- and returns the first equilibrium
+    that converges (or the last attempt, unconverged, with a warning, if
+    none do). Confirmed on three real device G-EQDSKs (C-Mod shot
+    1030516024, scenarios 54/9/197) to converge undamped
+    (`relax=relaxj=1.0`) -- including scenario 197, which needed
+    `relax=0.5` under the older one-shot approach.
 
     Returns (eq_resolved, eq_original, jstar_target, relax_used).
     """
@@ -137,9 +161,12 @@ def resolve_with_kinetic_profiles(
     for relax in relax_schedule:
         eq = FixedBoundaryEquilibrium.from_geqdsk(geqdsk_path)
         eq.define_pressure_profile(p_new, psinorm=psin_p)
-        eq.derive_f_profile_from_jstar_target(jstar_target, psinorm=psin_grid)
+        eq.derive_f_profile_from_jstar_target(jstar_target, psinorm=psin_grid)  # seed F, avoids a core current hole
         eq.find_magnetic_axis = lambda: None  # see module docstring
-        eq.solve_psi(nxiter=niter, erreq=erreq, relax=relax, relaxj=relax)
+        eq.solve_psi_with_f_iteration(
+            nfiter=nfiter, errf=errf, relaxf=relaxf,
+            nxiter=niter, erreq=erreq, relax=relax, relaxj=relax,
+        )
         eq.compute_flux_surface_averaged_jstar_profile()
         last_eq = eq
         if eq.converged:
@@ -250,8 +277,11 @@ def parse_args():
     parser.add_argument('--ni-ratio', dest='ni_ratio', type=float, default=1.0, help='n_i = ni_ratio * n_e (only used if --profiles supplies ne/te rather than pres directly)')
     parser.add_argument('--ti-ratio', dest='ti_ratio', type=float, default=1.0, help='T_i = ti_ratio * T_e (only used if --profiles supplies ne/te rather than pres directly)')
     parser.add_argument('--jstar-trust-from', dest='jstar_trust_from', type=float, default=0.5, help='psin above which the original G-EQDSK jstar is trusted as-is; below it, a smooth (quadratic-in-psin, C1-continuous at the join) extrapolation replaces it (see build_core_smoothed_jstar_target)')
-    parser.add_argument('--niter', dest='niter', type=int, default=300, help='Max Picard iterations per relax attempt')
-    parser.add_argument('--erreq', dest='erreq', type=float, default=1.0e-8, help='Convergence criterion on max relative psi error')
+    parser.add_argument('--niter', dest='niter', type=int, default=300, help='Max Picard iterations per inner solve_psi call')
+    parser.add_argument('--erreq', dest='erreq', type=float, default=1.0e-8, help='Convergence criterion on max relative psi error, per inner solve_psi call')
+    parser.add_argument('--nfiter', dest='nfiter', type=int, default=10, help='Max outer F-iterations (solve_psi_with_f_iteration)')
+    parser.add_argument('--errf', dest='errf', type=float, default=1.0e-4, help='Convergence criterion on max relative F error between outer F-iterations')
+    parser.add_argument('--relaxf', dest='relaxf', type=float, default=1.0, help='Relaxation factor applied to F itself between outer F-iterations (1.0 = undamped)')
     parser.add_argument('--output', dest='output', type=str, required=True, help='Path to write the resolved G-EQDSK file to')
     parser.add_argument('--plot', dest='plot', type=str, default=None, help='Optional path to save a comparison plot (pressure/q/jstar/psi) to')
     return parser.parse_args()
@@ -274,6 +304,7 @@ def main():
         args.geqdsk, psin_p, p_new,
         jstar_trust_from=args.jstar_trust_from,
         niter=args.niter, erreq=args.erreq,
+        nfiter=args.nfiter, errf=args.errf, relaxf=args.relaxf,
     )
 
     output = Path(args.output)
