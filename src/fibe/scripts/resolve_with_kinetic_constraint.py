@@ -163,17 +163,38 @@ def resolve_with_kinetic_profiles(
         eq.define_pressure_profile(p_new, psinorm=psin_p)
         eq.derive_f_profile_from_jstar_target(jstar_target, psinorm=psin_grid)  # seed F, avoids a core current hole
         eq.find_magnetic_axis = lambda: None  # see module docstring
-        eq.solve_psi_with_f_iteration(
-            nfiter=nfiter, errf=errf, relaxf=relaxf,
-            nxiter=niter, erreq=erreq, relax=relax, relaxj=relax,
-        )
+        try:
+            eq.solve_psi_with_f_iteration(
+                nfiter=nfiter, errf=errf, relaxf=relaxf,
+                nxiter=niter, erreq=erreq, relax=relax, relaxj=relax,
+            )
+        except Exception as exc:
+            # An undamped (or insufficiently damped) Picard iteration can
+            # diverge badly enough (psi -> NaN) that some *downstream*
+            # geometry step -- not the Picard loop itself -- raises a raw
+            # exception instead of solve_psi_with_f_iteration returning
+            # normally with converged=False (confirmed: a real production
+            # scenario hit generate_boundary_gradient_spline's IndexError
+            # this way, from an all-NaN boundary gradient trace after F
+            # blew up at relax=1.0). Treat any such exception the same as
+            # a clean non-convergence -- log it and let the schedule try
+            # the next, more damped relax value, rather than letting one
+            # bad relax level abort the whole retry loop (and, one level
+            # up, potentially an entire multi-scenario batch).
+            print(
+                f'WARNING: solve_psi_with_f_iteration raised {type(exc).__name__}: {exc} '
+                f'at relax={relax} -- treating as non-convergence and trying the next relax value.',
+                file=sys.stderr,
+            )
+            last_eq = eq
+            continue
         eq.compute_flux_surface_averaged_jstar_profile()
         last_eq = eq
         if eq.converged:
             return eq, eq_orig, jstar_target, relax
     print(
         f'WARNING: did not converge with any relax in {relax_schedule} '
-        f'(final psi_error={last_eq._data["psi_error"]:.3e}) -- using the last attempt anyway.',
+        f'(final psi_error={last_eq._data.get("psi_error", float("nan")):.3e}) -- using the last attempt anyway.',
         file=sys.stderr,
     )
     return last_eq, eq_orig, jstar_target, relax_schedule[-1]
