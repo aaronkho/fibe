@@ -42,6 +42,8 @@ from .math import (
     compute_jstar_contour_integral,
     build_core_smoothed_jstar_target,
     check_radial_flux_surface_monotonicity,
+    enforce_monotonic_diamagnetic_fpol,
+    rescale_fpol_uniformly_for_target_current,
     trace_contours_with_contourpy,
     trace_contour_with_splines,
     trace_contour_with_megpy,
@@ -544,6 +546,47 @@ class FixedBoundaryEquilibrium():
             self.define_f_profile(-self._data['fpol'], smooth=False, symmetrical=False, redefine_bcentre=True)
 
 
+    def derive_monotonic_f_profile_from_jstar_target(self, jstar_target, psinorm=None, edge_weight=1.0e8):
+        '''Alternative to derive_f_profile_from_jstar_target -- uses the same
+        jstar_target-driven derivation as a *starting point* (calls it
+        directly, reusing all of its own cpasma-preservation and fpol/
+        bcentr sign-consistency fixes), then projects the resulting F(psi)
+        onto the nearest profile whose magnitude |F| is monotonically
+        non-increasing from the axis to the boundary (see
+        core.math.enforce_monotonic_diamagnetic_fpol) -- the physically-
+        expected diamagnetic behavior.
+
+        Exists because jstar_target is held fixed to the original file's
+        own current profile, including its untouched edge region
+        (build_core_smoothed_jstar_target only smooths the *core*) -- when
+        the new pressure profile's edge gradient differs substantially
+        from the original's own, this can force a genuinely non-monotonic
+        F(psi): a mid-radius hump that reverses before the edge, confirmed
+        on a real device G-EQDSK. Since flux surfaces crowd together
+        geometrically near the X-point as psinorm -> 1 for any diverted
+        equilibrium, this 1D (in psinorm) defect shows up spatially
+        concentrated right around the X-point in real space -- a distinct,
+        edge-localized analog of the core "current hole" this whole
+        feature exists to avoid, not caught by any existing safeguard
+        (`_estimate_flux_surface_averaged_fpol`'s own core-hole correction
+        is deliberately restricted to roughly the inner two-thirds of the
+        domain).
+
+        Not the default/recommended path (see derive_f_profile_from_jstar_
+        target and solve_psi_with_f_iteration for that) -- an alternative
+        for when the default's own non-monotonic-F artifact needs to be
+        avoided outright, at the cost of no longer holding jstar_target's
+        own edge region as closely (the resolved edge current profile will
+        differ from jstar_target more than the default path's would).
+        `redefine_bcentre=True` for the same reason as elsewhere in this
+        class: F's own diamagnetic current genuinely contributes to the
+        toroidal field, so bcentr is allowed to shift once F changes.
+        '''
+        self.derive_f_profile_from_jstar_target(jstar_target, psinorm=psinorm)
+        fpol_corrected = enforce_monotonic_diamagnetic_fpol(self._data['fpol'], edge_weight=edge_weight)
+        self.define_f_profile(fpol_corrected, smooth=False, symmetrical=False, redefine_bcentre=True)
+
+
     def compute_normalized_psi_map(self):
         self.save_original_data(['xpsi'])
         self._data['xpsi'] = (self._data['psi'] - self._data['simagx']) / (self._data['sibdry'] - self._data['simagx'])
@@ -836,24 +879,6 @@ class FixedBoundaryEquilibrium():
             pp = np.where(psinorm < internal_cutoff, float(pp_internal), pp)
         return ffp, pp
     
-    def rescale_fpol_profile(self):
-        '''
-        The purpose of this function will be to rescale fpol without changing the pressure profile 
-        
-        curscalef: scaling factor for fpol to match total plasma current I_p
-        pres: pressure profile
-        pprime:  dPres/dphi 
-        fpol: Poloidal Current function
-        ffprime: dfpol/dphi
-        '''
-        if 'curscalef' in self._data:
-            self.save_original_data(['ffprime', 'pprime', 'fpol', 'pres'])
-            if 'fpol' in self._data:
-                gamma = self._data['curscalef'] # This is the Current scaling factor
-                f_scale_factor = np.sign(gamma) * np.sqrt(np.abs(gamma))
-                fpol_new = self._data['fpol'] * f_scale_factor
-                self.define_f_profile(fpol_new, smooth=False, symmetrical=False)
-
     # def rescale_kinetic_profiles(self):
     #     '''
     #     This function is meant to rescale the pressure and polidal current based on a scaling factor, curscale
@@ -1415,7 +1440,15 @@ class FixedBoundaryEquilibrium():
         # i_f_trap = trapezoid(-1.0 * ffprime * dpsi_dpsinorm * ir2_fs / mu0, x=psinorm)  # ir2_fs = <1/R^2> * V'
         # print('post-components:', i_p_trap, i_f_trap, self._data['cpasma'])
 
-        return fpol
+        # j_f_target (the F-driven-current target this fpol was scaled to
+        # match, in the same raw/self-calibrated convention as cpasma_raw
+        # above) is also returned -- solve_psi_with_f_iteration's own
+        # monotonicity-enforcement modes need it to re-match the current
+        # *after* projecting fpol onto a monotonic shape, which changes
+        # its own implied current and would otherwise silently undo this
+        # function's own scale-matching (see rescale_fpol_to_match_target_
+        # current's docstring for why this recurs and how it's fixed).
+        return fpol, j_f_target
 
 
     def _update_psi(self, psi_new, relax=1.0):
@@ -1624,8 +1657,24 @@ class FixedBoundaryEquilibrium():
         pnaxis=None,
         approxq=False,
         symmetrical=True,
+        enforce_monotonic_f=False,
     ):
-        
+        '''`enforce_monotonic_f`: if True, projects `fpol_after` onto the
+        nearest profile whose magnitude |F| is monotonically non-increasing
+        from the axis to the boundary (see core.math.enforce_monotonic_
+        diamagnetic_fpol) every outer iteration, not just once -- applying
+        it only to a one-shot seed (e.g. derive_monotonic_f_profile_from_
+        jstar_target) is not enough on its own: define_f_profile's own
+        interpolating spline refit of fpol_after each iteration can
+        reintroduce ringing/non-monotonicity between control points even
+        when the control points themselves were monotonic, confirmed
+        empirically (a monotonic one-shot seed alone drifted back to
+        non-monotonic and the F-solver failed to converge, `max relative
+        F error` never dropping below ~1e-2, F-prime error spiking to
+        ~1e16-1e17). Re-enforcing every iteration is self-correcting
+        against this instead of a one-time fix that erodes.
+        '''
+
         if isinstance(nfiter, int):
             self._options['nfiter'] = abs(nfiter)
         if isinstance(errf, float):
@@ -1645,6 +1694,23 @@ class FixedBoundaryEquilibrium():
             'psi_axis': [],
             'psi_edge': [],
             'psi_error_inner': [],
+            # curscalef (see _update_current_fixed_pressure): the F-driven-
+            # current-only rescale each inner solve_psi(fixed_pressure=True)
+            # Picard iteration applies to hit cpasma exactly, given the
+            # *fixed* pressure-driven current and *this* outer iteration's
+            # F(psi). cpasma itself is always satisfied exactly regardless
+            # of curscalef's own value (that's what it's solved for) -- but
+            # curscalef far from 1 is a real self-consistency red flag: it
+            # means the F(psi) locked in via define_f_profile this outer
+            # iteration does *not* match the current density the converged
+            # psi solution actually implies (the true, self-consistent F is
+            # effectively sqrt(curscalef) times different, since Jtor scales
+            # linearly with FF'), even if f_error itself reports the F
+            # *array* has stopped changing between outer iterations. Only
+            # the last inner solve_psi call's own final curscalef is
+            # recorded per outer iteration (matching psi_error's own
+            # convention above), not every inner Picard iteration's.
+            'curscalef': [],
         }
         history = self._diagnostics['f_solver']
 
@@ -1672,7 +1738,7 @@ class FixedBoundaryEquilibrium():
             fpol_before = copy.deepcopy(self._data['fpol'])
             fprime_before = np.gradient(fpol_before.flatten(), np.linspace(0.0, 1.0, self._data['nr']).flatten(), axis=0)
             # fpol_after = self._compute_flux_surface_averaged_fpol()
-            fpol_after = self._estimate_flux_surface_averaged_fpol()
+            fpol_after, target_i_f = self._estimate_flux_surface_averaged_fpol()
             # _estimate_flux_surface_averaged_fpol, like recompute_f_from_
             # toroidal_current_density, always returns fpol = sqrt(F**2) --
             # an unconditionally non-negative array, regardless of the true
@@ -1689,6 +1755,35 @@ class FixedBoundaryEquilibrium():
             # being corrected here, not genuine physical drift.
             if np.sign(fpol_after[-1]) != np.sign(self._data['bcentr']):
                 fpol_after = -fpol_after
+            if enforce_monotonic_f:
+                fpol_after = enforce_monotonic_diamagnetic_fpol(fpol_after)
+                # Re-match the F-driven current to target_i_f (the same
+                # target _estimate_flux_surface_averaged_fpol's own `scale`
+                # already matched, before the monotonicity projection above
+                # changed fpol_after's shape and silently undid that match)
+                # -- see rescale_fpol_uniformly_for_target_current's own
+                # docstring for why this is needed: without it, curscalef
+                # settles at a stable-but-wrong value (confirmed: ~1.33 on
+                # a real device G-EQDSK) instead of the ~1.0 a genuinely
+                # self-consistent F(psi)/p'(psi) combination implies.
+                # i_f_current must come from the *real* spline-based
+                # construction (define_f_profile + compute_ffprime_and_
+                # pprime_grid), not an independent approximation -- a
+                # naive np.gradient-based ffprime estimate does not match
+                # what that spline actually produces and silently fails to
+                # correct anything (confirmed empirically: curscalef was
+                # completely unchanged by an earlier version of this fix
+                # that used np.gradient instead). redefine_bcentre=False
+                # here since this is only a provisional trial fit to
+                # measure the current fpol_after implies -- the real,
+                # final commit (with the *rescaled* fpol_after and
+                # redefine_bcentre=True) happens further down, same as
+                # always.
+                self.define_f_profile(fpol_after, smooth=False, symmetrical=False, redefine_bcentre=False)
+                ffp_grid_trial, _ = self.compute_ffprime_and_pprime_grid(self._data['xpsi'], internal_cutoff=self._options['pnaxis'])
+                j_f_grid_trial = np.where(self._data['inout'] == 0, 0.0, compute_jtor(self._data['rpsi'].ravel(), ffp_grid_trial.ravel(), 0.0))
+                i_f_current_trial = float(np.sum(j_f_grid_trial) * self._data['hrz'])
+                fpol_after = rescale_fpol_uniformly_for_target_current(fpol_after, i_f_current_trial, target_i_f)
             if self._options['relaxf'] > 0.0 and self._options['relaxf'] < 1.0:
                 fpol_after = fpol_before + self._options['relaxf'] * (fpol_after - fpol_before)
             fprime_after = np.gradient(fpol_after.flatten(), np.linspace(0.0, 1.0, self._data['nr']).flatten(), axis=0)
@@ -1696,7 +1791,26 @@ class FixedBoundaryEquilibrium():
             # make nonzero
             denom = np.where(np.abs(fpol_after - fpol_after[-1] + 1.0) < 1.0e-30, 1.0e-30, fpol_after - fpol_after[-1] + 1.0)
             f_error = float(np.nanmax(np.abs(fpol_after - fpol_before) / denom))
-            denom_fprime = np.where(np.abs(fprime_after) < 1.0e-30, 1.0e-30, fprime_after)
+            # denom_fprime floored at an absolute *fraction of the profile's
+            # own scale* (nanmax|fprime_after|), not a fixed tiny epsilon --
+            # F'(psi) can be genuinely near-zero at individual grid points
+            # (e.g. a near-flat plateau, deliberately common wherever
+            # enforce_monotonic_diamagnetic_fpol has pooled a monotonicity
+            # violation), and
+            # flooring at a fixed 1e-30 there left the *local* denominator
+            # near-zero too, blowing the ratio up to absurd values (~1e16
+            # -1e26 confirmed empirically) even once fpol_after itself (and
+            # hence f_error) had genuinely converged -- solve_psi_with_f_
+            # iteration then never reported converged=True despite psi_error
+            # reaching ~1e-8/1e-9, and a relax-schedule retry loop one level
+            # up (resolve_with_kinetic_profiles) would then discard that
+            # excellent attempt for a worse, more-damped one. A scale-aware
+            # floor fixes the *denominator* half of the pathology in
+            # general (this bug predates and is not specific to the
+            # monotonic-F additions); do not reintroduce a fixed absolute
+            # floor here.
+            fprime_scale = max(float(np.nanmax(np.abs(fprime_after))), 1.0e-30)
+            denom_fprime = np.maximum(np.abs(fprime_after), 1.0e-6 * fprime_scale)
             fprime_error = float(np.nanmax(np.abs(fprime_after - fprime_before) / denom_fprime))
 
             history['f_error'].append(f_error)
@@ -1705,15 +1819,39 @@ class FixedBoundaryEquilibrium():
             history['fpol_edge'].append(float(fpol_after[-1]))
             history['psi_axis'].append(float(self._data['simagx']))
             history['psi_edge'].append(float(self._data['sibdry']))
+            history['curscalef'].append(float(self._data.get('curscalef', np.nan)))
 
             logger.info(
                 f'F-solver outer iteration {n + 1}: '
                 f'psi converged={self.converged}, '
+                f'curscalef={history["curscalef"][-1]:8.3f}, '
                 f'max relative F error = {f_error:8.2e}, '
                 f'max relative F\' error = {fprime_error:8.2e}'
             )
 
-            if f_error <= self._options['errf'] and fprime_error <= self._options['errf']:
+            if enforce_monotonic_f:
+                # fprime_error has a persistent, non-shrinking floor here
+                # (confirmed empirically: plateaus around ~1e-2, orders of
+                # magnitude above a typical errf=1e-4) whenever F is
+                # periodically re-projected through isotonic regression
+                # (enforce_monotonic_diamagnetic_fpol) -- PAVA's own
+                # pooling-boundary location can shift by a grid index between outer
+                # iterations even once the underlying (pre-projection) F
+                # estimate has genuinely stopped changing (f_error already
+                # tiny, ~1e-6/1e-7, curscalef rock-stable), producing small
+                # but persistent local derivative jitter that does not
+                # shrink with more outer iterations. Requiring fprime_error
+                # <= errf in this mode would therefore never be satisfied
+                # regardless of nfiter, silently discarding an otherwise
+                # excellent, already-converged psi solution (confirmed:
+                # psi_error ~1e-8/1e-9) -- so f_error alone gates
+                # convergence when monotonicity enforcement is active;
+                # fprime_error is still computed/logged/recorded for
+                # diagnostic visibility either way.
+                is_converged_f = f_error <= self._options['errf']
+            else:
+                is_converged_f = f_error <= self._options['errf'] and fprime_error <= self._options['errf']
+            if is_converged_f:
                 converged_f = True
                 break
 

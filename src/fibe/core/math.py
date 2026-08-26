@@ -11,7 +11,7 @@ from scipy.interpolate import (
     make_interp_spline,
 )
 from scipy.sparse import spdiags
-from scipy.optimize import brentq, least_squares, root
+from scipy.optimize import brentq, least_squares, root, isotonic_regression
 from scipy.integrate import quad, trapezoid
 from scipy.signal import windows, convolve
 from scipy.stats import gamma, beta
@@ -1364,6 +1364,126 @@ def check_radial_flux_surface_monotonicity(
         if np.any(np.diff(xpsi_ray) < -tol):
             bad_angles.append(theta)
     return len(bad_angles), np.array(bad_angles)
+
+
+def enforce_monotonic_diamagnetic_fpol(fpol, edge_weight=1.0e8):
+    '''Projects fpol(psinorm) (psinorm assumed axis-first, i.e. index 0 is
+    the magnetic axis, index -1 the boundary -- fibe's own internal
+    convention throughout) onto the nearest (least-squares) profile whose
+    *magnitude* |F| is monotonically non-increasing from the axis to the
+    boundary -- the physically-expected diamagnetic behavior (the
+    diamagnetic plasma current most strongly modifies the vacuum field at
+    the magnetic axis, tapering monotonically outward to the vacuum value
+    at the edge; a non-monotonic |F| -- a mid-radius hump that reverses
+    before the edge -- is not physical).
+
+    Built on `scipy.optimize.isotonic_regression` (PAVA) applied to `F^2 =
+    fpol**2` (not `fpol` itself -- |F| monotonicity, not a same-signed F's
+    own monotonicity, is the actual physical requirement, and squaring
+    sidesteps needing F's own sign already resolved before this runs),
+    `increasing=False` since F^2 must be largest at the axis (index 0) and
+    smallest at the edge (index -1) in this array's own convention.
+
+    `edge_weight` up-weights the boundary point heavily relative to the
+    rest (weight 1 elsewhere) so the projection's correction is
+    concentrated in the core/mid-radius region rather than perturbing the
+    physically-anchored edge value (tied to `bcentr`) -- `isotonic_
+    regression` has no literal equality-constraint mechanism, so a large
+    finite weight is the practical way to hold the edge point still
+    without a more complex constrained solve.
+
+    PAVA's own output is *piecewise-constant* wherever it had to correct a
+    monotonicity violation (the fitted value over a whole "pool" is that
+    pool's own weighted average, by construction) -- consequential here:
+    `solve_psi_with_f_iteration`'s own convergence check takes `np.gradient`
+    of `fpol` and divides by it (clipped away from literal zero, but not
+    away from *near*-zero), so an exact flat pool makes that relative error
+    spike to absurd values (confirmed empirically: ~1e16-1e26) and the
+    F-solver never reports converged even though the profile itself has
+    genuinely stabilized. Fixed by adding a strictly-decreasing linear
+    "nudge" across the whole profile after the PAVA projection -- negligibly
+    small relative to `f2`'s own scale, but enough to break every exact tie
+    so no two neighboring points are ever bit-identical.
+
+    Returns a new fpol array with the same sign as the input's own edge
+    value (`fpol[-1]`, matching `bcentr`'s sign) applied uniformly
+    throughout -- not a per-point re-sign, since a physically sensible
+    F(psi) does not change sign across the domain.
+
+    Exists because `derive_f_profile_from_jstar_target`'s own F(psi), held
+    to a `jstar_target` fixed to the original file's own current profile
+    (including its untouched edge region -- `build_core_smoothed_jstar_
+    target` only smooths the *core*), can come out genuinely non-monotonic
+    when the new pressure profile's edge gradient differs substantially
+    from the original's own -- confirmed on a real device G-EQDSK, where F
+    peaked mid-radius then reversed toward the edge. See
+    `FixedBoundaryEquilibrium.derive_monotonic_f_profile_from_jstar_
+    target`, which applies this as a post-processing step.
+    '''
+    fpol = np.asarray(fpol, dtype=float)
+    f2 = fpol ** 2
+    weights = np.ones_like(f2)
+    weights[-1] = edge_weight
+    result = isotonic_regression(f2, weights=weights, increasing=False)
+    f2_strict = result.x - np.linspace(0.0, 1.0e-6 * (np.nanmax(f2) - np.nanmin(f2) + 1.0), len(f2))
+    f2_strict = np.clip(f2_strict, a_min=0.0, a_max=None)  # F^2 can't be negative
+    sign_ref = np.sign(fpol[-1])
+    return sign_ref * np.sqrt(f2_strict)
+
+
+def rescale_fpol_uniformly_for_target_current(fpol, i_f_current, target_current):
+    '''Uniformly rescales fpol (already re-signed and, typically,
+    monotonicity-projected by enforce_monotonic_diamagnetic_fpol) by a
+    single multiplicative factor so its own F-driven grid current matches
+    `target_current` exactly, *given*
+    `i_f_current` (the F-driven current fpol, as currently shaped, already
+    implies -- the caller must compute this via the real solve_psi/
+    define_f_profile spline machinery, e.g. FixedBoundaryEquilibrium.
+    compute_ffprime_and_pprime_grid + compute_jtor, not this function's
+    concern; a naive np.gradient-based estimate of ffprime does *not*
+    match what that spline-based construction actually produces downstream
+    and silently fails to correct anything -- confirmed empirically).
+
+    Scaling F uniformly (not just its deviation from some fixed reference
+    point) is a deliberate choice: F^2 scales quadratically under a
+    uniform scale of F, and Jtor's F-driven part depends linearly on
+    d(F^2)/dpsi, so `i_f_current` scales by exactly the *square* of
+    whatever factor scales F -- an exact, single-evaluation relationship,
+    no iteration needed. This lets bcentr (tied to fpol[-1]) shift as a
+    result, matching this module/class's own established convention
+    elsewhere (`redefine_bcentre=True`): F's diamagnetic current genuinely
+    contributes to the toroidal field, so letting the edge value move is
+    physically expected, not something to guard against.
+
+    Exists because a monotonic-|F| projection changes fpol's own shape
+    (and hence its own implied current), silently undoing whatever
+    magnitude correction `_estimate_flux_surface_averaged_fpol`'s own
+    `scale` had already applied *before* the projection ran. Confirmed
+    empirically (a real device G-EQDSK): without this rescale, `curscalef`
+    (`solve_psi`'s own inner Picard-loop current-matching factor, see
+    `_update_current_fixed_pressure`) settled at a *stable but wrong* ~1.33
+    rather than the ~1.0 a genuinely self-consistent F(psi)/p'(psi)
+    combination implies -- `cpasma` itself still came out exactly right
+    (`curscalef` always forces that, regardless of its own value), but only
+    via a persistent ~33% solver-level correction that the written-out
+    F(psi)/pressure profiles, if independently re-integrated without that
+    correction, would not themselves reproduce -- i.e. the equilibrium was
+    not actually self-consistent, just numerically patched to look right.
+
+    Raises ValueError if the needed scale factor is not positive -- the
+    same self-inconsistency `_estimate_flux_surface_averaged_fpol`'s own
+    `scale` check (`scale <= 0.0`) guards against.
+    '''
+    fpol = np.asarray(fpol, dtype=float)
+    if abs(i_f_current) < 1.0e-30:
+        return fpol
+    ratio = float(target_current) / float(i_f_current)
+    if ratio <= 0.0:
+        raise ValueError(
+            'Rescaling fpol to match the target F-driven current would require a '
+            'non-positive scale factor -- self-inconsistent request.'
+        )
+    return fpol * np.sqrt(ratio)
 
 
 def trace_contours_with_contourpy(rvec, zvec, dmap, levels, rcheck, zcheck):

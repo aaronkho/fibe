@@ -4,7 +4,11 @@ import megpy.tracer as megpy_tracer
 
 import fibe.core.classes as classes_mod
 from fibe import FixedBoundaryEquilibrium
-from fibe.core.math import build_core_smoothed_jstar_target
+from fibe.core.math import (
+    build_core_smoothed_jstar_target,
+    enforce_monotonic_diamagnetic_fpol,
+    rescale_fpol_uniformly_for_target_current,
+)
 
 
 # Two environment-level bugs in the installed megpy's null-point/contour
@@ -244,3 +248,89 @@ class TestSolvePsiWithFIteration:
         # convention -- the labeled (flipped) value should still come out
         # preserved, not silently corrupted back toward the raw convention.
         assert eq_new._data['cpasma'] == pytest.approx(cpasma_flipped, rel=1.0e-6)
+
+
+class TestEnforceMonotonicDiamagneticFpol:
+
+    def test_corrects_a_mid_radius_hump_to_strictly_decreasing(self):
+        psinorm = np.linspace(0.0, 1.0, 51)
+        fpol = 10.0 - 2.0 * psinorm
+        fpol[20:25] += 3.0  # mid-radius hump: |F| rises before falling again
+        assert not np.all(np.diff(np.abs(fpol)) <= 0.0)  # confirm the setup is actually a violation
+
+        result = enforce_monotonic_diamagnetic_fpol(fpol)
+        assert np.all(np.diff(np.abs(result)) < 0.0)  # strictly decreasing, see tie-breaking-nudge docstring
+        assert np.sign(result[-1]) == np.sign(fpol[-1])
+        assert result[-1] == pytest.approx(fpol[-1], rel=1.0e-4)  # edge_weight holds the boundary point still
+
+    def test_preserves_negative_edge_sign(self):
+        psinorm = np.linspace(0.0, 1.0, 51)
+        fpol = -(10.0 - 2.0 * psinorm)
+        fpol[20:25] -= 3.0  # same hump, mirrored onto a bcentr<0 profile
+        result = enforce_monotonic_diamagnetic_fpol(fpol)
+        assert np.all(result < 0.0)
+        assert np.all(np.diff(np.abs(result)) < 0.0)
+
+    def test_already_monotonic_profile_left_nearly_unchanged(self):
+        psinorm = np.linspace(0.0, 1.0, 51)
+        fpol = 10.0 - 2.0 * psinorm  # no violation to correct
+        result = enforce_monotonic_diamagnetic_fpol(fpol)
+        assert np.allclose(result, fpol, atol=1.0e-4)  # only the tie-breaking nudge should move it
+
+
+class TestRescaleFpolUniformlyForTargetCurrent:
+
+    def test_scales_by_sqrt_of_current_ratio(self):
+        fpol = np.array([10.0, 9.5, 9.0, 8.5])
+        i_f_current, target_current = 5.0e5, 8.0e5
+        result = rescale_fpol_uniformly_for_target_current(fpol, i_f_current, target_current)
+        expected_factor = np.sqrt(target_current / i_f_current)
+        assert np.allclose(result, fpol * expected_factor)
+
+    def test_negligible_i_f_current_returns_fpol_unchanged(self):
+        fpol = np.array([10.0, 9.5, 9.0, 8.5])
+        result = rescale_fpol_uniformly_for_target_current(fpol, 1.0e-31, 8.0e5)
+        assert np.allclose(result, fpol)
+
+    def test_raises_on_non_positive_required_ratio(self):
+        # target_current and i_f_current with opposite signs implies a
+        # negative scale factor -- self-inconsistent, must raise rather
+        # than silently return a sign-flipped fpol.
+        fpol = np.array([10.0, 9.5, 9.0, 8.5])
+        with pytest.raises(ValueError):
+            rescale_fpol_uniformly_for_target_current(fpol, 5.0e5, -8.0e5)
+
+
+class TestDeriveMonotonicFProfileFromJstarTarget:
+
+    def test_seed_is_monotonic_and_preserves_cpasma(self, tmp_path):
+        '''derive_monotonic_f_profile_from_jstar_target's own contract: same
+        cpasma-preservation and sign-consistency guarantees as derive_f_
+        profile_from_jstar_target (which it calls directly as its own first
+        step -- see that method's own dedicated test class above), plus a
+        monotonically non-increasing |F| from axis to edge, checked here
+        directly rather than assumed.
+        '''
+        eq_orig = _build_negative_bt_equilibrium()
+        geqdsk_path = tmp_path / 'negative_bt_monotonic_seed.geqdsk'
+        eq_orig.to_geqdsk(geqdsk_path)
+
+        eq_for_target = FixedBoundaryEquilibrium.from_geqdsk(geqdsk_path)
+        eq_for_target.generate_psi_bivariate_spline()
+        eq_for_target._fs = eq_for_target.trace_flux_surfaces()
+        eq_for_target.compute_flux_surface_averaged_jstar_profile()
+        psin_grid = np.linspace(0.0, 1.0, eq_for_target._data['nr'])
+        jstar_target = build_core_smoothed_jstar_target(psin_grid, eq_for_target._data['jstar'])
+
+        eq_new = FixedBoundaryEquilibrium.from_geqdsk(geqdsk_path)
+        cpasma_true = float(eq_new._data['cpasma'])
+        bcentr_true = float(eq_new._data['bcentr'])
+        new_pressure = 0.5 * eq_new._data['pres'] + 0.5 * eq_new._data['pres'][-1]
+        eq_new.define_pressure_profile(new_pressure, psinorm=psin_grid)
+
+        eq_new.derive_monotonic_f_profile_from_jstar_target(jstar_target, psinorm=psin_grid)
+
+        assert eq_new._data['cpasma'] == pytest.approx(cpasma_true)
+        assert np.sign(eq_new._data['fpol'][-1]) == np.sign(bcentr_true)
+        f2 = eq_new._data['fpol'] ** 2
+        assert np.all(np.diff(f2) <= 1.0e-9)  # non-increasing |F| toward the edge
