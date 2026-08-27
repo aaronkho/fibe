@@ -209,7 +209,40 @@ converges to the true equilibrium, so the achieved `jstar` profile (check via
 solve, even though it matches almost exactly right after `initialize_psi()`.
 
 ### Re-solving an *already-loaded* equilibrium against a new pressure profile while preserving jstar
-(`FixedBoundaryEquilibrium.derive_f_profile_from_jstar_target`, `fibe_kinetic_resolve`)
+(`FixedBoundaryEquilibrium.derive_f_profile_from_jstar_target`, `solve_psi_with_f_iteration`, `fibe_kinetic_resolve`)
+
+**Recommended workflow** (validated 2026-08-25 as strictly better than a one-shot F-derivation
+alone — converges faster, undamped, and to a genuinely self-consistent current split rather than a
+uniformly-rescaled one): use `derive_f_profile_from_jstar_target` only *once*, to seed F with a
+hole-avoiding initial guess against the *original* (pre-solve) flux-surface geometry, then hand off
+entirely to `solve_psi_with_f_iteration`, which re-derives F each outer iteration from the
+equilibrium's own *actual* resolved current (`_estimate_flux_surface_averaged_fpol`, self-
+consistency-driven), not from `jstar_target` again. `jstar_target` is intentionally *not*
+preserved as ground truth throughout — it's only a better-than-frozen-F starting point; the one
+hard physical requirement is that no current hole forms. `fibe_kinetic_resolve`/
+`resolve_with_kinetic_profiles` (`fibe/scripts/resolve_with_kinetic_constraint.py`) is wired this
+way already:
+
+```python
+eq = FixedBoundaryEquilibrium.from_geqdsk(geqdsk_path)
+eq.define_pressure_profile(p_new, psinorm=psin_p)          # the new kinetic pressure
+eq.derive_f_profile_from_jstar_target(jstar_target, psinorm=psin_grid)  # seed F, avoids a hole at the start
+eq.find_magnetic_axis = lambda: None  # megpy root-finder bug, see below
+eq.solve_psi_with_f_iteration(nfiter=10, errf=1.0e-4, relaxf=1.0, nxiter=200, erreq=1.0e-8, relax=1.0, relaxj=1.0)
+```
+
+Confirmed on three real device G-EQDSKs (C-Mod shot 1030516024, scenarios 54/9/197) to converge
+**undamped** (`relax=relaxj=1.0`), including scenario 197, which needed `relax=0.5` under the
+one-shot approach alone. Verify the result with `eq.check_flux_surface_monotonicity()` (see below)
+rather than only eyeballing a plot — see the "methodology trap" this check exists to avoid.
+
+Both `derive_f_profile_from_jstar_target`'s one-shot seed call and `solve_psi_with_f_iteration`'s
+own per-outer-iteration re-derivation use `redefine_bcentre=True` when re-signing `fpol` (see bug 2
+below) — a deliberate choice: F's own diamagnetic current genuinely contributes to the toroidal
+field, so `bcentr` is physically allowed, expected even, to shift once F is re-derived, rather than
+staying artificially pinned to its pre-derivation value. (An earlier attempt pinned `bcentr` in
+`solve_psi_with_f_iteration` too, reasoning it would keep things simpler — wrong, this fights the
+physics and makes the solve over-constrained; don't reintroduce it.)
 
 The j*-driven initialization above is documented (and, before this was added, only ever used) for
 from-scratch setup (`initialize_psi()`, before any `solve_psi()` has run). Re-using the same
@@ -220,7 +253,9 @@ vs. F-driven split changes but the total doesn't — avoiding a "current hole" w
 `fpol` outright instead would let the mismatched new p' distort the core) — needs care around three
 bugs, found and fixed while adding `derive_f_profile_from_jstar_target`/`fibe_resolve_kinetic_
 pressure`, none of them hypothetical (all three confirmed against a real device G-EQDSK, `analysis_
-1030516024_0054_s00.geqdsk`, cpasma≈-7.9e5 A, bcentr≈-5.2 T):
+1030516024_0054_s00.geqdsk`, cpasma≈-7.9e5 A, bcentr≈-5.2 T). Bugs 2 and 3 recur, in slightly
+different form, in `_estimate_flux_surface_averaged_fpol` (the F-re-derivation
+`solve_psi_with_f_iteration` calls each outer iteration) — see the note after bug 3.
 
 1. **`initialize_current` overwrites `self._data['cpasma']`** with its own approximate integral of
    the newly-derived current — not the true value already present from the loaded G-EQDSK.
@@ -252,6 +287,34 @@ pressure`, none of them hypothetical (all three confirmed against a real device 
    2-3e-3 instead of converging to `1e-8`). Pass `jstar_target` through exactly as `compute_flux_
    surface_averaged_jstar_profile` produces it.
 
+**Bugs 2 and 3 also affect `_estimate_flux_surface_averaged_fpol`** (the F-re-derivation
+`solve_psi_with_f_iteration` calls each outer iteration), in its own, independently-computed logic
+— fixed the same way in each case, not by sharing code with `derive_f_profile_from_jstar_target`:
+- The `fpol = sqrt(F**2)` sign bug (bug 2): re-signs `fpol_after` against the *current*
+  `self._data['bcentr']` (allowed to drift each outer iteration, unlike the one-shot seed call's
+  single frozen `bcentr_true`) before it's used for the `f_error`/`relaxf` blending or the
+  `define_f_profile(..., redefine_bcentre=True)` call.
+- The raw/labeled `cpasma` mismatch (bug 3): self-calibrates from its own raw current integral
+  (`i_p_grid + i_f_grid`) against `self._data['cpasma']`, the same formula as bug 3's fix —
+  `cpasma_raw = sign(cpasma) * sign(raw_total) * cpasma`, used in place of `cpasma` directly
+  wherever the function needs to compare against raw-convention grid integrals (both the main
+  `j_f_target`/`scale` computation and the `qaxis_target` branch's own analogous recomputation).
+
+  **What actually determines the raw/labeled mismatch** (settled 2026-08-25, previously an open
+  question — not `sign(bcentr)` or `sign(cpasma)` individually, though the two files checked before
+  this happened to have them co-signed): the file's COCOS `sigma_Bp`, computable as `sBp =
+  sign(sibdry - simagx) * sign(cpasma)` — exactly `fibe.utils.eqdsk.detect_cocos`'s own quantity,
+  not currently wired back into `compute_jtor`'s output at load time. `compute_jtor` hardcodes a
+  single, unconditional `-1` COCOS-convention factor, implicitly assuming every input is already in
+  the one COCOS that factor is correct for (`sBp = +1`); `insert_geqdsk_dict` only ever normalizes
+  the `simagx > sibdry` ordering quirk on load, never calls `convert_cocos` to fully normalize an
+  incoming file's COCOS. Confirmed on three real G-EQDSKs: `sBp = +1` → raw/labeled match (`tests/
+  data/test_input.geqdsk`, and an ARC-class reactor-design file); `sBp = -1` → mismatch (the real
+  C-Mod file above — detected COCOS 8, vs. fibe's own declared internal COCOS 2). The self-
+  calibrating fixes above don't need this explanation to work (they self-calibrate either way), but
+  it means the raw/labeled relationship is predictable at load time from `simagx`/`sibdry`/`cpasma`
+  alone, without a grid current integral — a possible future refinement, not done as part of this.
+
 Separately (a data-quality issue, not a code bug): the raw `jstar(psinorm)` read directly off a
 real, as-loaded equilibrium can carry a sharp, unphysical spike in the first few grid points near
 the axis — a near-axis flux-surface-tracing artifact (confirmed: `megpy`'s own contour tracer emits
@@ -259,9 +322,17 @@ the axis — a near-axis flux-surface-tracing artifact (confirmed: `megpy`'s own
 near-axis contours), not real physics. Feeding it in as-is can produce a genuinely unphysical
 (non-monotonic/folded) resolved `psi` map in the core. `core/math.build_core_smoothed_jstar_target`
 fixes this by trusting the raw `jstar` only above a `trust_from` psinorm threshold and replacing the
-rest with a smooth (zero-slope-at-axis) polynomial extrapolation in `psinorm**2` — always run a
-real, as-loaded G-EQDSK's `jstar` through this before using it as a `derive_f_profile_from_jstar_
-target` target.
+rest with a quadratic-in-`psinorm` extrapolation — always run a real, as-loaded G-EQDSK's `jstar`
+through this before using it as a `derive_f_profile_from_jstar_target` target. The extrapolation is
+built by ramping `d(jstar)/d(psinorm)` *linearly* from zero at the true axis up to the trusted
+region's own local slope at the join point (a finite difference between the two trusted grid points
+nearest `trust_from`), then integrating — **not** an unconstrained least-squares polynomial fit over
+the whole trusted region, which was the first thing tried and is worth remembering not to
+regress to: an unconstrained fit trades join-point accuracy for a better fit further out, which
+produced a visible kink right at `trust_from` in practice (confirmed: ~9% of the local `jstar` value
+at `trust_from=0.2`, on the still-falling tail of the spike being smoothed away; ~3% at the default
+`trust_from=0.5`, small enough there to be easy to miss but not actually zero). The local-slope
+construction is C1-continuous (matches both value and slope) at the join by construction instead.
 
 Also found (and worked around, not fixed, since it's third-party): two more real `megpy` bugs in
 `megpy.tracer.contour` (a `TypeError`/`NameError` in its empty-contour branch, and a separate
@@ -283,6 +354,20 @@ to target the already-bound copy on `fibe.core.classes`, not the original on `me
 isn't established whether these affect every installed `megpy` version or only the one this was
 found against (`megpy>=2.0.2` per `pyproject.toml`'s own floor) — worth a proper upstream report at
 some point, not done as part of this work.
+
+**Verifying "no current hole" properly**: `FixedBoundaryEquilibrium.check_flux_surface_
+monotonicity(n_angles=144, n_samples=200, tol=1.0e-3, xpsi_margin=1.0)` (wrapping the pure function
+`core/math.check_radial_flux_surface_monotonicity`) traces radial rays outward from the magnetic
+axis at many angles (bivariate-spline evaluation of `psi` along each ray, not a grid-index walk)
+and confirms `xpsi` is non-decreasing along each ray out to the LCFS, returning `(n_bad,
+bad_angles)` — `n_bad == 0` means properly nested flux surfaces. Use this, not just eyeballing a
+plot: a naive row/column-index-based check (splitting a horizontal/vertical grid cut at the axis's
+own index and calling the two halves "inward"/"outward") is **not** shape-agnostic and raises false
+alarms on an asymmetric plasma (confirmed: a "49/61 bad rows" false positive on a genuinely good
+equilibrium, purely from that check's own indexing assumption breaking down away from the axis's
+own row/column — not a real defect). `tol`/`xpsi_margin` were tuned against both a real resolved
+equilibrium (must give `0/144`) and a deliberately injected synthetic core defect (must be clearly
+flagged) — don't loosen `tol` without re-checking both.
 
 ## JAX autodiff scaffold (`src/fibe/jax/`, `jax-autodiff` branch, experimental)
 

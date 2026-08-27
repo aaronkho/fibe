@@ -9,9 +9,10 @@ from scipy.interpolate import (
     bisplev,
     RectBivariateSpline,
     make_interp_spline,
+    CubicHermiteSpline,
 )
 from scipy.sparse import spdiags
-from scipy.optimize import brentq, least_squares, root
+from scipy.optimize import brentq, least_squares, root, isotonic_regression
 from scipy.integrate import quad, trapezoid
 from scipy.signal import windows, convolve
 from scipy.stats import gamma, beta
@@ -1239,12 +1240,25 @@ def compute_jstar_contour_integral(contour, ffp, pp):
     return val
 
 
-def build_core_smoothed_jstar_target(psinorm, jstar, trust_from=0.5, poly_degree=2):
+def build_core_smoothed_jstar_target(psinorm, jstar, trust_from=0.5):
     '''Replaces jstar(psinorm) for psinorm < trust_from with a smooth
-    extrapolation from the trusted (psinorm >= trust_from) region, fit as a
-    polynomial in psinorm**2 (guaranteeing zero slope at the true axis,
-    psinorm=0, the physically-expected even-symmetry boundary condition for
-    a well-behaved flux-surface-averaged profile).
+    extrapolation from the trusted (psinorm >= trust_from) region: the
+    physical slope d(jstar)/d(psinorm) is taken to ramp *linearly* from
+    zero at the true axis (psinorm=0 -- the physically-required symmetry
+    condition for a well-behaved flux-surface-averaged profile) up to the
+    trusted region's own local slope at the join point (psinorm=trust_from,
+    estimated from the two trusted grid points nearest the join, a local
+    finite difference, not a global property of the trusted data).
+    Integrating that linear slope ramp gives a profile that is quadratic in
+    psinorm across the core and, by construction, continuous in both value
+    and slope (C1) at the join -- not an independent least-squares fit to
+    the trusted region that merely approximates the join point (which, tried
+    first, produced a visible kink right at trust_from: confirmed on a real
+    device G-EQDSK, an unconstrained quadratic-in-psinorm**2 fit was off by
+    ~9% of the local jstar value at a trust_from=0.2 join, on the still-
+    steeply-falling tail of the near-axis spike being smoothed away, and by
+    ~3% at trust_from=0.5 further out where the profile is flatter -- small
+    enough there to be easy to miss, but not actually zero).
 
     This exists because jstar read directly off a real, as-loaded
     equilibrium (compute_flux_surface_averaged_jstar_profile) can carry a
@@ -1259,20 +1273,271 @@ def build_core_smoothed_jstar_target(psinorm, jstar, trust_from=0.5, poly_degree
     monotonic/folded) resolved psi map in the core; smoothing it first
     with this function fixes that.
 
-    `trust_from`/`poly_degree` are left to the caller to judge (no single
-    default suits every device/equilibrium) -- if the near-axis
-    instability visibly extends past the default trust_from=0.5, or the
-    quadratic default under/over-fits the trusted region's curvature,
-    override them.
+    `trust_from` is left to the caller to judge (no single default suits
+    every device/equilibrium) -- if the near-axis instability visibly
+    extends past the default trust_from=0.5, lower it.
     '''
-    psinorm = np.asarray(psinorm)
-    jstar = np.asarray(jstar)
+    psinorm = np.asarray(psinorm, dtype=float)
+    jstar = np.asarray(jstar, dtype=float)
     trusted = psinorm >= trust_from
-    poly = np.poly1d(np.polyfit(psinorm[trusted] ** 2, jstar[trusted], poly_degree))
+    order = np.argsort(psinorm[trusted])
+    idx = np.flatnonzero(trusted)[order]
+    p0, p1 = psinorm[idx[0]], psinorm[idx[1]]
+    y0, y1 = jstar[idx[0]], jstar[idx[1]]
+    value_join = y0
+    slope_join = (y1 - y0) / (p1 - p0)  # d(jstar)/d(psinorm) at the join, in physical psinorm space
+
+    # d(jstar)/d(psinorm)(s) = slope_join * s / p0 for s in [0, p0] (zero at
+    # the axis, slope_join at the join); integrating from p0 down to psinorm
+    # gives jstar(psinorm) = value_join - integral_{psinorm}^{p0} of that,
+    # i.e. a quadratic in psinorm with coefficient b below.
+    b = slope_join / (2.0 * p0)
     jstar_target = jstar.copy()
     core = ~trusted
-    jstar_target[core] = poly(psinorm[core] ** 2)
+    jstar_target[core] = value_join + b * (psinorm[core] ** 2 - p0 ** 2)
     return jstar_target
+
+
+def check_radial_flux_surface_monotonicity(
+    rmagx, zmagx, simagx, sibdry, psi_tck, rbounds, zbounds,
+    n_angles=144, n_samples=200, tol=1.0e-3, xpsi_margin=1.0,
+):
+    '''Shape-agnostic check for a "current hole" / non-nested flux surfaces:
+    traces radial rays outward from the magnetic axis (rmagx, zmagx) at
+    n_angles evenly spaced angles (a bivariate-spline evaluation of psi
+    along each ray, not a grid-index walk) and confirms xpsi = (psi -
+    simagx) / (sibdry - simagx) is non-decreasing along each ray, from the
+    axis out to the LCFS.
+
+    A naive row/column-based check (splitting a horizontal or vertical
+    grid cut at the magnetic axis's own R/Z index and calling the two
+    halves "inward"/"outward") is *not* shape-agnostic: for an up-down- or
+    left-right-asymmetric plasma, a cut at a fixed Z (or R) far from the
+    axis's own height does not pass through the local center of the flux
+    surfaces there, so splitting it at the axis's own index is not a
+    meaningful monotonicity test away from the axis's own row/column --
+    confirmed to raise false alarms (a "49/61 bad rows" false positive on a
+    genuinely good equilibrium) before this radial-ray approach replaced
+    it. This function only walks each ray up to its first crossing of
+    xpsi_margin: points further out are in the extrapolated exterior
+    (beyond the LCFS, not a physical flux map -- see
+    extend_psi_beyond_boundary) and are excluded rather than checked, and
+    `tol` (default 1e-3) absorbs small spline-evaluation noise right at
+    the LCFS itself (observed up to a few times 1e-4 in xpsi on real,
+    good equilibria; an order of magnitude or more larger than that on a
+    deliberately injected core defect, so this default cleanly separates
+    the two).
+
+    Returns (n_bad, bad_angles): the count of angles (out of n_angles)
+    whose ray showed non-monotonic xpsi, and the array of their angles (in
+    radians, counter-clockwise from the R-axis) for inspection. n_bad == 0
+    means no current hole / properly nested flux surfaces were found.
+    '''
+    rmin, rmax = rbounds
+    zmin, zmax = zbounds
+    dpsi_dpsinorm = sibdry - simagx
+    bad_angles = []
+    for i in range(n_angles):
+        theta = 2.0 * np.pi * i / n_angles
+        dR, dZ = np.cos(theta), np.sin(theta)
+        s_candidates = []
+        if dR > 0.0:
+            s_candidates.append((rmax - rmagx) / dR)
+        elif dR < 0.0:
+            s_candidates.append((rmin - rmagx) / dR)
+        if dZ > 0.0:
+            s_candidates.append((zmax - zmagx) / dZ)
+        elif dZ < 0.0:
+            s_candidates.append((zmin - zmagx) / dZ)
+        s_max = min(s_candidates) if s_candidates else 1.0
+
+        s = np.linspace(0.0, s_max, n_samples)[1:]  # skip s=0, the axis itself
+        r = rmagx + s * dR
+        z = zmagx + s * dZ
+        psi_ray = np.array([bisplev(rr, zz, psi_tck) for rr, zz in zip(r, z)])
+        xpsi_ray = (psi_ray - simagx) / dpsi_dpsinorm
+
+        inside = xpsi_ray <= xpsi_margin
+        n_inside = int(np.argmax(~inside)) if not np.all(inside) else len(inside)
+        xpsi_ray = xpsi_ray[:n_inside]
+        if len(xpsi_ray) < 3:
+            continue
+        if np.any(np.diff(xpsi_ray) < -tol):
+            bad_angles.append(theta)
+    return len(bad_angles), np.array(bad_angles)
+
+
+def enforce_monotonic_diamagnetic_fpol(fpol, psinorm=None):
+    '''Replaces fpol(psinorm) (psinorm assumed axis-first, i.e. index 0 is
+    the magnetic axis, index -1 the boundary -- fibe's own internal
+    convention throughout) with a single smooth cubic Hermite/Bezier
+    profile whose *magnitude* |F| is monotonically non-increasing from the
+    axis to the boundary -- the physically-expected diamagnetic behavior
+    (the diamagnetic plasma current most strongly modifies the vacuum
+    field at the magnetic axis, tapering monotonically outward to the
+    vacuum value at the edge; a non-monotonic |F| -- a mid-radius hump that
+    reverses before the edge -- is not physical).
+
+    Built on `F^2 = fpol**2` (not `fpol` itself -- |F| monotonicity, not a
+    same-signed F's own monotonicity, is the actual physical requirement,
+    and squaring sidesteps needing F's own sign already resolved before
+    this runs). If `F^2` is already non-increasing throughout, it is
+    returned essentially unchanged (only the tie-breaking nudge below
+    moves it) -- no correction is needed, so none is applied. Otherwise, a
+    single `scipy.interpolate.CubicHermiteSpline` segment is fit across
+    the *entire* psinorm domain -- so the result has no internal plateau/
+    steep-transition boundary at all, unlike a direct `scipy.optimize.
+    isotonic_regression` (PAVA) projection: PAVA's own output is
+    piecewise-constant wherever it corrects a violation, and exactly
+    interpolating that (as `FixedBoundaryEquilibrium.define_f_profile`'s
+    `smooth=False` call does) leaves a genuine derivative discontinuity at
+    each pool boundary -- visible as an F(psi)/jstar(psi) profile with a
+    flat plateau followed by an abrupt steep drop, confirmed against real
+    scenarios and already acknowledged as "PAVA's own pooling-boundary
+    jitter" in `solve_psi_with_f_iteration`'s own convergence-gate
+    docstring.
+
+    The Hermite fit's own endpoint value/derivative are *not* read
+    directly off the raw (violating) `F^2` -- the violation is exactly a
+    local gradient-sign flip, most often right near the edge (a
+    mid-radius hump that reverses before the boundary), so a naive
+    `np.gradient` there risks reading that same flip back out and feeding
+    it straight into the fit, propagating the violation rather than
+    fixing it. Instead, PAVA is still run first, purely as a source of
+    trustworthy endpoint conditions: its own output is monotonic by
+    construction, so its value and local slope at the axis and boundary
+    are always correctly signed regardless of what the raw data does
+    nearby. `edge_weight` anchors PAVA's own boundary point close to its
+    true (bcentr-tied) value, same role as before. Endpoint tangents are
+    additionally clamped to `[0, 3*secant]` (same sign as the axis-to-edge
+    secant slope) before fitting -- the standard Fritsch-Carlson sufficient
+    condition for a monotone cubic Hermite segment -- so the final result
+    is guaranteed monotonic, not just smooth. This does discard the true
+    profile's own interior shape between the two endpoints in exchange for
+    a single smooth curve -- accepted deliberately, only in the violating
+    case, since the interior region containing the violation is, by
+    definition, not something worth reproducing exactly.
+
+    Returns a new fpol array with the same sign as the input's own edge
+    value (`fpol[-1]`, matching `bcentr`'s sign) applied uniformly
+    throughout -- not a per-point re-sign, since a physically sensible
+    F(psi) does not change sign across the domain.
+
+    Exists because `derive_f_profile_from_jstar_target`'s own F(psi), held
+    to a `jstar_target` fixed to the original file's own current profile
+    (including its untouched edge region -- `build_core_smoothed_jstar_
+    target` only smooths the *core*), can come out genuinely non-monotonic
+    when the new pressure profile's edge gradient differs substantially
+    from the original's own -- confirmed on a real device G-EQDSK, where F
+    peaked mid-radius then reversed toward the edge. See
+    `FixedBoundaryEquilibrium.derive_monotonic_f_profile_from_jstar_
+    target`, which applies this as a post-processing step.
+    '''
+    fpol = np.asarray(fpol, dtype=float)
+    f2 = fpol ** 2
+    if psinorm is None:
+        psinorm = np.linspace(0.0, 1.0, len(fpol))
+    psinorm = np.asarray(psinorm, dtype=float)
+
+    # Already non-increasing: no violation to correct, so skip the Hermite
+    # replacement entirely and leave the true profile's own interior shape
+    # untouched (only the tie-breaking nudge below moves it) -- the
+    # replacement below discards the true interior shape between the two
+    # endpoints (that's the whole point, for the violating case), so it
+    # should not run at all when nothing needs correcting.
+    if np.all(np.diff(f2) <= 0.0):
+        f2_smooth = f2
+    else:
+        # The violation is exactly a local gradient-sign flip, so a naive
+        # np.gradient(f2, ...) evaluated at the endpoints risks reading
+        # that same flip back out (most likely right at the edge, since
+        # the docstring's own "mid-radius hump that reverses before the
+        # edge" case sits closest to index -1) and feeding it straight
+        # back into the fit -- propagating the violation instead of fixing
+        # it. Endpoint tangents are instead read off the isotonic
+        # -regression (PAVA) projection of f2, which is monotonic by
+        # construction and therefore always has a correctly-signed local
+        # slope at both ends, whatever the raw data does nearby.
+        # `edge_weight` anchors the isotonic fit's boundary point close to
+        # its true (bcentr-tied) value, and the small linear nudge (same
+        # one applied to the final result below) guarantees a genuine
+        # nonzero slope to sample even where PAVA pooled a flat region
+        # straight through the axis or edge.
+        edge_weight = 1.0e8
+        weights = np.ones_like(f2)
+        weights[-1] = edge_weight
+        f2_pava = isotonic_regression(f2, weights=weights, increasing=False).x
+        f2_pava = f2_pava - np.linspace(0.0, 1.0e-6 * (np.nanmax(f2) - np.nanmin(f2) + 1.0), len(f2))
+        grad_pava = np.gradient(f2_pava, psinorm)
+        d0, d1 = float(grad_pava[0]), float(grad_pava[-1])
+
+        secant = (f2_pava[-1] - f2_pava[0]) / (psinorm[-1] - psinorm[0])
+        lo, hi = (3.0 * secant, 0.0) if secant <= 0.0 else (0.0, 3.0 * secant)
+        d0 = float(np.clip(d0, lo, hi))
+        d1 = float(np.clip(d1, lo, hi))
+
+        hermite = CubicHermiteSpline([psinorm[0], psinorm[-1]], [f2_pava[0], f2_pava[-1]], [d0, d1])
+        f2_smooth = hermite(psinorm)
+
+    f2_strict = f2_smooth - np.linspace(0.0, 1.0e-6 * (np.nanmax(f2) - np.nanmin(f2) + 1.0), len(f2))
+    f2_strict = np.clip(f2_strict, a_min=0.0, a_max=None)  # F^2 can't be negative
+    sign_ref = np.sign(fpol[-1])
+    return sign_ref * np.sqrt(f2_strict)
+
+
+def rescale_fpol_uniformly_for_target_current(fpol, i_f_current, target_current):
+    '''Uniformly rescales fpol (already re-signed and, typically,
+    monotonicity-projected by enforce_monotonic_diamagnetic_fpol) by a
+    single multiplicative factor so its own F-driven grid current matches
+    `target_current` exactly, *given*
+    `i_f_current` (the F-driven current fpol, as currently shaped, already
+    implies -- the caller must compute this via the real solve_psi/
+    define_f_profile spline machinery, e.g. FixedBoundaryEquilibrium.
+    compute_ffprime_and_pprime_grid + compute_jtor, not this function's
+    concern; a naive np.gradient-based estimate of ffprime does *not*
+    match what that spline-based construction actually produces downstream
+    and silently fails to correct anything -- confirmed empirically).
+
+    Scaling F uniformly (not just its deviation from some fixed reference
+    point) is a deliberate choice: F^2 scales quadratically under a
+    uniform scale of F, and Jtor's F-driven part depends linearly on
+    d(F^2)/dpsi, so `i_f_current` scales by exactly the *square* of
+    whatever factor scales F -- an exact, single-evaluation relationship,
+    no iteration needed. This lets bcentr (tied to fpol[-1]) shift as a
+    result, matching this module/class's own established convention
+    elsewhere (`redefine_bcentre=True`): F's diamagnetic current genuinely
+    contributes to the toroidal field, so letting the edge value move is
+    physically expected, not something to guard against.
+
+    Exists because a monotonic-|F| projection changes fpol's own shape
+    (and hence its own implied current), silently undoing whatever
+    magnitude correction `_estimate_flux_surface_averaged_fpol`'s own
+    `scale` had already applied *before* the projection ran. Confirmed
+    empirically (a real device G-EQDSK): without this rescale, `curscalef`
+    (`solve_psi`'s own inner Picard-loop current-matching factor, see
+    `_update_current_fixed_pressure`) settled at a *stable but wrong* ~1.33
+    rather than the ~1.0 a genuinely self-consistent F(psi)/p'(psi)
+    combination implies -- `cpasma` itself still came out exactly right
+    (`curscalef` always forces that, regardless of its own value), but only
+    via a persistent ~33% solver-level correction that the written-out
+    F(psi)/pressure profiles, if independently re-integrated without that
+    correction, would not themselves reproduce -- i.e. the equilibrium was
+    not actually self-consistent, just numerically patched to look right.
+
+    Raises ValueError if the needed scale factor is not positive -- the
+    same self-inconsistency `_estimate_flux_surface_averaged_fpol`'s own
+    `scale` check (`scale <= 0.0`) guards against.
+    '''
+    fpol = np.asarray(fpol, dtype=float)
+    if abs(i_f_current) < 1.0e-30:
+        return fpol
+    ratio = float(target_current) / float(i_f_current)
+    if ratio <= 0.0:
+        raise ValueError(
+            'Rescaling fpol to match the target F-driven current would require a '
+            'non-positive scale factor -- self-inconsistent request.'
+        )
+    return fpol * np.sqrt(ratio)
 
 
 def trace_contours_with_contourpy(rvec, zvec, dmap, levels, rcheck, zcheck):

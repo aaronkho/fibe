@@ -37,11 +37,23 @@ device G-EQDSK, not this script's own bugs:
   `megpy` version or only the one this was found against; keeping the
   patch local here until that's known.
 
-The resolved jstar matches the (optionally core-smoothed, see
-`--jstar-trust-from`) target in shape but can under-match it in magnitude
-by a factor of a few, and differ in detail near the edge -- an accepted,
-documented limitation of the one-shot geometry approximation
-`derive_f_profile_from_jstar_target` uses (see its docstring), not a bug.
+F(psi) is only *seeded* from the (optionally core-smoothed, see
+`--jstar-trust-from`) target jstar via `derive_f_profile_from_jstar_target`
+-- `solve_psi_with_f_iteration` then re-derives F each outer iteration from
+the equilibrium's own resolved current, so the target is not preserved as
+ground truth throughout, only used to avoid an unphysical core "current
+hole" from the first iteration onward.
+
+By default, F(psi) is additionally kept monotonically non-increasing in
+`|F|` from axis to boundary throughout (seeded via `derive_monotonic_f_
+profile_from_jstar_target`, re-enforced every outer F-iteration via
+`solve_psi_with_f_iteration`'s own `enforce_monotonic_f=True`) -- fixes a
+real artifact seen without it: a non-monotonic F(psi) hump that shows up as
+a visibly distorted X-point region in the resolved psi map, whenever the
+new pressure profile's edge gradient differs substantially from the
+original's own (see FIBE_IMPROVEMENT.md's "Phase 12" section for the full
+diagnosis). Disable with `--no-enforce-monotonic-f` to fall back to the
+plain jstar-preserving seed with no monotonicity enforcement.
 
 Usage:
     python3 -m fibe.scripts.resolve_with_kinetic_constraint \\
@@ -110,46 +122,113 @@ def resolve_with_kinetic_profiles(
     psin_p,
     p_new,
     jstar_trust_from=0.5,
-    jstar_poly_degree=2,
     relax_schedule=DEFAULT_RELAX_SCHEDULE,
     niter=300,
     erreq=1.0e-8,
+    nfiter=10,
+    errf=1.0e-4,
+    relaxf=1.0,
+    enforce_monotonic_f=True,
 ):
     """Loads `geqdsk_path`, replaces its pressure profile with (psin_p,
-    p_new), derives F(psi) so the total current profile matches the
-    original G-EQDSK's own (core-smoothed) jstar (see
-    `FixedBoundaryEquilibrium.derive_f_profile_from_jstar_target` and
-    `fibe.core.math.build_core_smoothed_jstar_target`), and re-solves psi
-    holding the boundary and cpasma fixed. Tries each relaxation factor in
-    `relax_schedule` in turn -- a substantially different p(psi) than the
-    original reconstruction can make an un-damped (relax=1.0) Picard
-    iteration oscillate in a limit cycle instead of converging -- and
-    returns the first equilibrium that converges (or the last attempt,
-    unconverged, with a warning, if none do).
+    p_new), and re-solves under a new F(psi) so the total current profile
+    matches the original G-EQDSK's own (core-smoothed) jstar, holding the
+    boundary and cpasma fixed. Two-stage approach (validated as strictly
+    better than a one-shot F-derivation -- converges faster, undamped, and
+    to a genuinely self-consistent current split rather than a uniformly-
+    rescaled one):
+      1. `FixedBoundaryEquilibrium.derive_f_profile_from_jstar_target`
+         seeds F(psi) once, against the *original* (pre-solve) flux-surface
+         geometry, purely to avoid an unphysical "current hole" forming in
+         the core from the very first Picard iteration.
+      2. `solve_psi_with_f_iteration` then takes over entirely: each outer
+         iteration re-solves psi and re-derives F from the *actual* solved
+         current (`_estimate_flux_surface_averaged_fpol`, self-consistency-
+         driven), not from `jstar_target` again -- so the final F is
+         consistent with the resolved geometry, not the pre-solve one.
+         `jstar_target` is intentionally not preserved as ground truth
+         throughout; it is only a better-than-frozen-F starting point, and
+         the one hard physical requirement is that no current hole forms.
+
+    `enforce_monotonic_f` (default True): also keeps F(psi) monotonically
+    non-increasing in `|F|` from axis to boundary throughout -- seeds via
+    `derive_monotonic_f_profile_from_jstar_target` instead of the plain
+    `derive_f_profile_from_jstar_target`, and passes `enforce_monotonic_f=
+    True` through to `solve_psi_with_f_iteration` so the projection is
+    re-applied every outer iteration (a one-shot seed alone drifts back to
+    non-monotonic once `define_f_profile`'s own spline refit runs again).
+    Fixes a real artifact: `jstar_target` holds the *edge* current profile
+    fixed to the original file's own shape, which can force a genuinely
+    non-monotonic F(psi) -- a mid-radius hump that reverses again before the
+    edge -- whenever the new pressure profile's edge gradient differs
+    substantially from the original's; since flux surfaces crowd together
+    near the X-point as psinorm -> 1, this shows up as a visibly distorted
+    X-point region in the resolved psi map. See FIBE_IMPROVEMENT.md's
+    "Phase 12" section for the full diagnosis, including the `curscalef`/
+    `fprime_error` self-consistency fixes this enforcement needed along the
+    way. Set False to restore the original (pre-Phase-12) behavior.
+
+    Tries each relaxation factor in `relax_schedule` in turn (applied to
+    both the F-iteration's own damping, via `relaxf`/`errf`/`nfiter` held
+    fixed across the schedule, and each inner `solve_psi` call's own
+    `relax`/`relaxj`) -- a substantially different p(psi) than the original
+    reconstruction can make an un-damped Picard iteration oscillate in a
+    limit cycle instead of converging -- and returns the first equilibrium
+    that converges (or the last attempt, unconverged, with a warning, if
+    none do). Confirmed on three real device G-EQDSKs (C-Mod shot
+    1030516024, scenarios 54/9/197) to converge undamped
+    (`relax=relaxj=1.0`) -- including scenario 197, which needed
+    `relax=0.5` under the older one-shot approach.
 
     Returns (eq_resolved, eq_original, jstar_target, relax_used).
     """
     eq_orig = FixedBoundaryEquilibrium.from_geqdsk(geqdsk_path)
     compute_original_flux_surface_quantities(eq_orig)
     psin_grid = np.linspace(0.0, 1.0, eq_orig._data['nr'])
-    jstar_target = build_core_smoothed_jstar_target(
-        psin_grid, eq_orig._data['jstar'], trust_from=jstar_trust_from, poly_degree=jstar_poly_degree,
-    )
+    jstar_target = build_core_smoothed_jstar_target(psin_grid, eq_orig._data['jstar'], trust_from=jstar_trust_from)
 
     last_eq = None
     for relax in relax_schedule:
         eq = FixedBoundaryEquilibrium.from_geqdsk(geqdsk_path)
         eq.define_pressure_profile(p_new, psinorm=psin_p)
-        eq.derive_f_profile_from_jstar_target(jstar_target, psinorm=psin_grid)
+        if enforce_monotonic_f:
+            eq.derive_monotonic_f_profile_from_jstar_target(jstar_target, psinorm=psin_grid)  # seed F, avoids a core current hole and a non-monotonic |F|
+        else:
+            eq.derive_f_profile_from_jstar_target(jstar_target, psinorm=psin_grid)  # seed F, avoids a core current hole
         eq.find_magnetic_axis = lambda: None  # see module docstring
-        eq.solve_psi(nxiter=niter, erreq=erreq, relax=relax, relaxj=relax)
+        try:
+            eq.solve_psi_with_f_iteration(
+                nfiter=nfiter, errf=errf, relaxf=relaxf,
+                nxiter=niter, erreq=erreq, relax=relax, relaxj=relax,
+                enforce_monotonic_f=enforce_monotonic_f,
+            )
+        except Exception as exc:
+            # An undamped (or insufficiently damped) Picard iteration can
+            # diverge badly enough (psi -> NaN) that some *downstream*
+            # geometry step -- not the Picard loop itself -- raises a raw
+            # exception instead of solve_psi_with_f_iteration returning
+            # normally with converged=False (confirmed: a real production
+            # scenario hit generate_boundary_gradient_spline's IndexError
+            # this way, from an all-NaN boundary gradient trace after F
+            # blew up at relax=1.0). Treat any such exception the same as
+            # a clean non-convergence -- log it and let the schedule try
+            # the next, more damped relax value, rather than letting one
+            # bad relax level abort the whole retry loop (and, one level
+            # up, potentially an entire multi-scenario batch).
+            print(
+                f'WARNING: solve_psi_with_f_iteration raised {type(exc).__name__}: {exc} '
+                f'at relax={relax} -- treating as non-convergence and trying the next relax value.',
+                file=sys.stderr,
+            )
+            last_eq = eq
+            continue
         eq.compute_flux_surface_averaged_jstar_profile()
         last_eq = eq
         if eq.converged:
             return eq, eq_orig, jstar_target, relax
     print(
         f'WARNING: did not converge with any relax in {relax_schedule} '
-        f'(final psi_error={last_eq._data["psi_error"]:.3e}) -- using the last attempt anyway.',
+        f'(final psi_error={last_eq._data.get("psi_error", float("nan")):.3e}) -- using the last attempt anyway.',
         file=sys.stderr,
     )
     return last_eq, eq_orig, jstar_target, relax_schedule[-1]
@@ -252,10 +331,13 @@ def parse_args():
     parser.add_argument('--profiles-interface', dest='profiles_interface', type=str, default='xarray', choices=['xarray', 'pandas', 'ascii'], help='Backend to read --profiles with (see fibe.utils.profiles.read_profiles_file)')
     parser.add_argument('--ni-ratio', dest='ni_ratio', type=float, default=1.0, help='n_i = ni_ratio * n_e (only used if --profiles supplies ne/te rather than pres directly)')
     parser.add_argument('--ti-ratio', dest='ti_ratio', type=float, default=1.0, help='T_i = ti_ratio * T_e (only used if --profiles supplies ne/te rather than pres directly)')
-    parser.add_argument('--jstar-trust-from', dest='jstar_trust_from', type=float, default=0.5, help='psin above which the original G-EQDSK jstar is trusted as-is; below it, a smooth extrapolation replaces it (see build_core_smoothed_jstar_target)')
-    parser.add_argument('--jstar-poly-degree', dest='jstar_poly_degree', type=int, default=2, help='Degree (in psin**2) of the core-smoothing polynomial fit')
-    parser.add_argument('--niter', dest='niter', type=int, default=300, help='Max Picard iterations per relax attempt')
-    parser.add_argument('--erreq', dest='erreq', type=float, default=1.0e-8, help='Convergence criterion on max relative psi error')
+    parser.add_argument('--jstar-trust-from', dest='jstar_trust_from', type=float, default=0.5, help='psin above which the original G-EQDSK jstar is trusted as-is; below it, a smooth (quadratic-in-psin, C1-continuous at the join) extrapolation replaces it (see build_core_smoothed_jstar_target)')
+    parser.add_argument('--niter', dest='niter', type=int, default=300, help='Max Picard iterations per inner solve_psi call')
+    parser.add_argument('--erreq', dest='erreq', type=float, default=1.0e-8, help='Convergence criterion on max relative psi error, per inner solve_psi call')
+    parser.add_argument('--nfiter', dest='nfiter', type=int, default=10, help='Max outer F-iterations (solve_psi_with_f_iteration)')
+    parser.add_argument('--errf', dest='errf', type=float, default=1.0e-4, help='Convergence criterion on max relative F error between outer F-iterations')
+    parser.add_argument('--relaxf', dest='relaxf', type=float, default=1.0, help='Relaxation factor applied to F itself between outer F-iterations (1.0 = undamped)')
+    parser.add_argument('--no-enforce-monotonic-f', dest='enforce_monotonic_f', action='store_false', default=True, help='Disable keeping F(psi) monotonically non-increasing in |F| from axis to boundary (default: enabled -- fixes a real X-point-distortion artifact, see FIBE_IMPROVEMENT.md Phase 12); pass this to restore the original, pre-Phase-12 behavior')
     parser.add_argument('--output', dest='output', type=str, required=True, help='Path to write the resolved G-EQDSK file to')
     parser.add_argument('--plot', dest='plot', type=str, default=None, help='Optional path to save a comparison plot (pressure/q/jstar/psi) to')
     return parser.parse_args()
@@ -276,8 +358,10 @@ def main():
 
     eq_new, eq_orig, jstar_target, relax_used = resolve_with_kinetic_profiles(
         args.geqdsk, psin_p, p_new,
-        jstar_trust_from=args.jstar_trust_from, jstar_poly_degree=args.jstar_poly_degree,
+        jstar_trust_from=args.jstar_trust_from,
         niter=args.niter, erreq=args.erreq,
+        nfiter=args.nfiter, errf=args.errf, relaxf=args.relaxf,
+        enforce_monotonic_f=args.enforce_monotonic_f,
     )
 
     output = Path(args.output)
