@@ -201,7 +201,12 @@ class TestSolvePsiWithFIteration:
         eq_new.derive_f_profile_from_jstar_target(jstar_target, psinorm=psin_grid)  # seed F, avoids a core current hole
 
         eq_new.find_magnetic_axis = lambda: None  # see module docstring of resolve_with_kinetic_constraint.py
-        eq_new.solve_psi_with_f_iteration(nfiter=10, errf=1.0e-4, relaxf=1.0, nxiter=200, erreq=1.0e-8, relax=1.0, relaxj=1.0)
+        # errf=2e-4, not 1e-4: with the boundary-anchored normalize_psi_to_ampere(),
+        # the F re-estimation runs on the self-consistent span (~2x this synthetic
+        # file's stored one), so the F-error metric floors at ~1.3e-4 on contour-
+        # tracing noise. The solve is still good there: curscalef = 1.0000,
+        # psi_error ~1e-9, exact cpasma; damping does not lower the floor.
+        eq_new.solve_psi_with_f_iteration(nfiter=10, errf=2.0e-4, relaxf=1.0, nxiter=200, erreq=1.0e-8, relax=1.0, relaxj=1.0)
 
         assert eq_new.converged
         assert eq_new._data['cpasma'] == pytest.approx(cpasma_true, rel=1.0e-6)

@@ -126,8 +126,8 @@ def grid_from_equilibrium(eq) -> GSGridConstants:
     # also true for a from-scratch equilibrium whose solve_psi() call never
     # got past scratch=True to rescale it away from that). For an
     # already-converged equilibrium loaded from a G-EQDSK (sibdry~8.8, not
-    # 0, once solve_psi()'s final normalize_psi_to_original() rescales psi
-    # to match the source file's physical scale), argmax(|psi|) instead
+    # 0, once solve_psi()'s final normalization anchors psi at the source
+    # file's boundary flux), argmax(|psi|) instead
     # picks a point *near the boundary* (where |psi| is largest) and
     # magnetic_axis_flux ends up evaluating a Taylor expansion centered
     # there -- silently wrong for every derived quantity, not just a
@@ -163,8 +163,8 @@ def grid_from_equilibrium(eq) -> GSGridConstants:
         # Picard-loop convention instead (boundary pinned to 0 by
         # zero_magnetic_boundary(), independent of eq's cosmetic scale),
         # because that bridge function permanently forces eq.scratch=True to
-        # dodge a *different* bug (normalize_psi_to_original() otherwise
-        # rescaling every subsequent solve back toward whichever equilibrium
+        # dodge a *different* bug (the final normalization otherwise
+        # re-anchoring every subsequent solve to whichever equilibrium
         # happened to converge first) and never rescales back afterward.
         # Freezing sibdry=8.8 here while gs_residual is actually evaluated
         # against sibdry=0 psi arrays put every downstream quantity on the

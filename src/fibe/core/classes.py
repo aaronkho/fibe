@@ -1200,6 +1200,60 @@ class FixedBoundaryEquilibrium():
             self.scratch = False
 
 
+    def compute_ampere_plasma_current(self, boundary_fraction=None, cell_margin=2.0):
+        '''Ip implied by the current psi map via Ampere's law: the closed loop
+        integral of B_pol = |grad psi|/R along the boundary contour, shrunk
+        toward the magnetic axis, divided by mu0. The contour must clear the
+        last grid cells inside the LCFS, where the spline gradients mix in a
+        solved map's exterior values and corrupt the integral by several
+        percent. That zone scales with the grid spacing, so the default
+        fraction is derived from the grid: cell_margin cells of clearance at
+        the boundary point closest to the axis, capped to [0.9, 0.995].'''
+        self.generate_psi_bivariate_spline()
+        tck = self._fit['psi_rz']['tck']
+        bmask = np.asarray(self._data['rbdry']) > 1.0e-3  # guard against zero-padded boundary arrays
+        if boundary_fraction is None:
+            dist = np.sqrt((self._data['rbdry'][bmask] - self._data['rmagx']) ** 2 + (self._data['zbdry'][bmask] - self._data['zmagx']) ** 2)
+            hr = self._data['hr'] if 'hr' in self._data else self._data['rdim'] / float(self._data['nr'] - 1)
+            hz = self._data['hz'] if 'hz' in self._data else self._data['zdim'] / float(self._data['nz'] - 1)
+            boundary_fraction = float(np.clip(1.0 - cell_margin * max(float(hr), float(hz)) / np.min(dist), 0.9, 0.995))
+        rb = self._data['rmagx'] + boundary_fraction * (self._data['rbdry'][bmask] - self._data['rmagx'])
+        zb = self._data['zmagx'] + boundary_fraction * (self._data['zbdry'][bmask] - self._data['zmagx'])
+        dpsidr = np.array([bisplev(r, z, tck, dx=1) for r, z in zip(rb, zb)])
+        dpsidz = np.array([bisplev(r, z, tck, dy=1) for r, z in zip(rb, zb)])
+        bpol = np.sqrt(dpsidr ** 2 + dpsidz ** 2) / rb
+        dl = np.sqrt(np.diff(rb) ** 2 + np.diff(zb) ** 2)
+        return float(np.sum(0.5 * (bpol[1:] + bpol[:-1]) * dl) / self.mu0)
+
+
+    def normalize_psi_to_ampere(self):
+        '''Post-solve psi normalization replacing normalize_psi_to_original():
+        anchors the boundary flux at the original input sibdry and lets the
+        axis flux float, preserving the solved flux span exactly. That span is
+        Ampere-consistent with cpasma by construction, so this is a pure
+        offset -- unlike the old behavior, which compressed a genuinely
+        different self-consistent span back to the input file's and uniformly
+        inflated any q recomputed from it. The Ampere loop integral is stored
+        as a diagnostic only ('ip_ampere', 'ampere_error'); its quadrature is
+        less accurate than the FD solution it would otherwise rescale.'''
+        if not self.scratch and 'simagx_orig' in self._data and 'sibdry_orig' in self._data:
+            ip_ampere = self.compute_ampere_plasma_current()
+            self._data['ip_ampere'] = ip_ampere
+            self._data['ampere_error'] = float(np.abs(ip_ampere / self._data['cpasma'])) - 1.0
+            if np.abs(self._data['ampere_error']) > 0.05:
+                logger.info(f'Ampere diagnostic deviates from cpasma by {100.0 * self._data["ampere_error"]:+.1f}%; psi solution and cpasma may be inconsistent')
+            # Solved span magnitude, but the original input's sign orientation
+            # (the raw Picard solution can come out inverted for negative Ip)
+            sibdry_new = self._data['sibdry_orig']
+            span_new = np.sign(self._data['sibdry_orig'] - self._data['simagx_orig']) * np.abs(self._data['sibdry'] - self._data['simagx'])
+            simagx_new = sibdry_new - span_new
+            self.renormalize_psi(simagx_new, sibdry_new)
+            self._fit.pop('psi_rz', None)  # invalidate spline of the pre-offset map
+        else:
+            self.save_original_data(['simagx', 'sibdry'], overwrite=True)
+            self.scratch = False
+
+
     def _update_current(self, current_new, relax=1.0):
         if relax > 0.0 and relax < 1.0:
             current_new = self._data['cur'] + relax * (current_new - self._data['cur'])
@@ -1623,7 +1677,7 @@ class FixedBoundaryEquilibrium():
                 break
         self.create_boundary_gradient_splines(smooth=True)
         self.extend_psi_beyond_boundary()
-        self.normalize_psi_to_original()
+        self.normalize_psi_to_ampere()
         self.compute_normalized_psi_map()
         self.generate_psi_bivariate_spline()
         self.find_magnetic_axis()

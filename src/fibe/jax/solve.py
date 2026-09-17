@@ -102,9 +102,9 @@ def _numpy_forward_solve(
     eq._data['ffprime'] = splev(psinorm, eq._fit['fpol_fs']['tck'], der=1) * eq._data['fpol']
     eq._data['cpasma'] = float(np.asarray(cpasma))
 
-    # solve_psi()'s final normalize_psi_to_original() step affinely rescales
-    # psi to match simagx_orig/sibdry_orig on any *non-scratch* call -- i.e.
-    # the axis flux from whatever solve happened to run first -- which would
+    # solve_psi()'s final normalize_psi_to_ampere() step affinely remaps psi,
+    # anchored at sibdry_orig, on any *non-scratch* call -- i.e. the boundary
+    # flux from whatever solve happened to run first -- which would
     # silently erase the true params sensitivity on every call after the
     # first (found by comparing against an independent from-scratch finite
     # difference, which disagreed sharply with a warm-started one before this
