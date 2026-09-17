@@ -362,7 +362,11 @@ class FixedBoundaryEquilibrium():
             self._data['ffprime'] = splev(np.linspace(0.0, 1.0, self._data['nr']), self._fit['fpol_fs']['tck'], der=1) * self._data['fpol']
             if 'bcentr' not in self._data or redefine_bcentre:
                 rcentr = self._data['rcentr'] if 'rcentr' in self._data else self._data['rleft'] + 0.5 * self._data['rdim']
-                self.define_toroidal_field(self._data['fpol'][0] / rcentr, rcentr=rcentr)
+                # Anchor on fpol[-1], the boundary/vacuum value: bcentr * rcentr is F
+                # outside the LCFS, which is how recompute_f_from_toroidal_current_density
+                # reads it back. Anchoring on fpol[0] instead ratcheted F, q and Phi up by
+                # the diamagnetic axis/edge ratio on every save -> reload -> re-derive cycle.
+                self.define_toroidal_field(self._data['fpol'][-1] / rcentr, rcentr=rcentr)
 
 
     def define_q_profile(self, q, psinorm=None, smooth=True, symmetrical=True, set_targets=True):
@@ -520,6 +524,11 @@ class FixedBoundaryEquilibrium():
           rather than staying artificially pinned to the pre-derivation
           value. cpasma is unaffected either way (pinned back to the true
           value below, independent of bcentr).
+
+          To hold the vacuum field fixed across a re-solve, pin it
+          explicitly with define_vacuum_toroidal_field -- bvacuum/rvacuum,
+          not bcentr, is what _estimate_flux_surface_averaged_fpol anchors
+          F's edge on inside the solve; bcentr otherwise floats with q[-1].
 
         Uses the *current* (pre-derivation) flux-surface geometry to do this
         decomposition (an implementation detail of initialize_current, not
