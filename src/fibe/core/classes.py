@@ -2153,10 +2153,13 @@ class FixedBoundaryEquilibrium():
             self.set_bounding_box_as_wall()
         geqdsk_dict = {k: v for k, v in self._data.items() if k in self.geqdsk_fields}
         dpsinorm_dpsi = 1.0 / (geqdsk_dict['sibdry'] - geqdsk_dict['simagx'])
+        # Rebind rather than *=: the comprehension above is a shallow copy, so an
+        # in-place multiply scales self._data too and a second to_geqdsk() call
+        # would write pprime/ffprime scaled by dpsinorm_dpsi squared.
         if 'pprime' in geqdsk_dict:
-            geqdsk_dict['pprime'] *= dpsinorm_dpsi
+            geqdsk_dict['pprime'] = geqdsk_dict['pprime'] * dpsinorm_dpsi
         if 'ffprime' in geqdsk_dict:
-            geqdsk_dict['ffprime'] *= dpsinorm_dpsi
+            geqdsk_dict['ffprime'] = geqdsk_dict['ffprime'] * dpsinorm_dpsi
         geqdsk_dict['gcase'] = 'FiBE'
         geqdsk_dict['gid'] = 2
         if isinstance(cocos, int):
@@ -2165,7 +2168,7 @@ class FixedBoundaryEquilibrium():
             logger.info(f'Converting GEQDSK from COCOS={current_cocos} to COCOS={cocos}')
             geqdsk_dict = convert_cocos(geqdsk_dict, current_cocos, cocos)
         if legacy_ip:
-            geqdsk_dict['cpasma'] *= -1.0
+            geqdsk_dict['cpasma'] = geqdsk_dict['cpasma'] * -1.0
         return geqdsk_dict
 
 
